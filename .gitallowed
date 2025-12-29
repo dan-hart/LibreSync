@@ -1,0 +1,21 @@
+# Allow literal secret-pattern examples in scripts/docs (not actual secrets).
+^\.gitallowed:
+^\.gitignore:
+^scripts/automation/setup-repo-security\.sh:
+sk-proj-\[A-Za-z0-9_-\]\{20,\}
+sk-\[A-Za-z0-9\]\{20,\}
+ghp_\[A-Za-z0-9\]\{36\}
+gho_\[A-Za-z0-9\]\{36\}
+ghs_\[A-Za-z0-9\]\{36\}
+github_pat_\[A-Za-z0-9_\]\{70,\}
+ATATT\[A-Za-z0-9_-\]\{10,\}
+AKIA\[0-9A-Z\]\{16\}
+AIza\[0-9A-Za-z_-\]\{35\}
+xox\[baprs\]-\[A-Za-z0-9-\]\{10,\}
+Bearer \[A-Za-z0-9._-\]\{20,\}
+BEGIN \(RSA\|DSA\|EC\|OPENSSH\) PRIVATE KEY
+BEGIN PGP PRIVATE KEY BLOCK
+postgres://\[\^:\]\+:\[\^@\]\+@
+mysql://\[\^:\]\+:\[\^@\]\+@
+\(\?i\)api\[_-\]\?key\\s\*[:=]\\s\*\[^\\s\]\+
+\(\?i\)password\\s\*[:=]\\s\*\[^\\s\]\+

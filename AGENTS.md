@@ -4,7 +4,8 @@
 - This repository currently contains project documentation only. Key files live at the root:
   - `README.md` — high-level overview and values.
   - `RESEARCH.md` — design and architecture research notes.
-  - `SECURITY.md`, `PRIVACY.md`, `LICENSE.md` — placeholders for policy and licensing details.
+  - `SECURITY.md`, `PRIVACY.md`, `LICENSE` — security, privacy, and licensing details.
+- `scripts/` contains local security utilities (pre-commit and audit helpers).
 - There is no `src/` or `tests/` directory yet; expect these to be added as the Rust core and platform bindings are implemented.
 
 ## Build, Test, and Development Commands

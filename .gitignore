@@ -1,0 +1,86 @@
+# === SECURITY - MANDATORY ===
+# Credentials & secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.keystore
+*.kdbx
+.pypirc
+pip.conf
+pip.ini
+.npmrc
+
+# Files with sensitive keywords
+*private*
+*sensitive*
+*secret*
+*credential*
+*token*
+*password*
+
+# Directories with sensitive content
+PRIVATE/
+.secrets/
+secrets/
+sensitive/
+
+# Build system lock/cache files (can serialize env)
+.lock-waf*
+.waf-*
+.waf3-*
+CMakeCache.txt
+CMakeFiles/
+config.cache
+config.log
+gradle.properties
+local.properties
+
+# === END SECURITY ===
+
+# Rust
+/target/
+
+# Build artifacts (general)
+build/
+dist/
+coverage/
+*.o
+*.so
+*.dylib
+*.dll
+*.a
+*.out
+
+# Package managers
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+Gemfile.lock
+Pipfile.lock
+poetry.lock
+
+# OS
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Temporary
+*.tmp
+.tmp/

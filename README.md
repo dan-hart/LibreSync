@@ -29,8 +29,19 @@
 ## License
 AGPLv3 - Why? Because it's what we decided upon.
 
+## Security & Privacy Checks
+- Install git-secrets and hooks:
+  - `brew install git-secrets`
+  - `git secrets --install`
+  - `git secrets --register-aws`
+- Or run the one-shot setup: `./scripts/automation/setup-repo-security.sh .`
+- Install the ASP pre-commit hook: `./scripts/automation/install-asp-hooks.sh .`
+- Run a full audit before pushing: `./scripts/utilities/security-audit.sh`
+- See `SECURITY.md`, `PRIVACY.md`, and `CONTRIBUTING.md` for full guidance.
+
 ## Additional documents
 - [Research](RESEARCH.md)
 - [Security](SECURITY.md)
 - [Privacy](PRIVACY.md)
+- [Contributing](CONTRIBUTING.md)
 - [License](LICENSE)

@@ -1,0 +1,11 @@
+* text=auto eol=lf
+
+*.md text eol=lf
+*.sh text eol=lf
+
+# Treat potential secret files as binary to avoid accidental normalization
+*.key -text
+*.pem -text
+*.p12 -text
+*.pfx -text
+*.keystore -text
