@@ -9,7 +9,7 @@ The CLI is a thin wrapper around the core library. It exposes the minimal flow n
 - `pair`: request pairing with a device (mutual consent).
 - `listen`: run the device listener and advertise on LAN.
 - `refresh`: refresh the selected JSON file with a paired device.
-- `watch`: watch the selected JSON file and refresh all paired devices.
+- `watch`: watch the selected JSON file and refresh all paired devices (auto-starts a listener by default).
 - `stop`: stop the background listener for this config.
 - `status`: show identity, selected file, listener status, paired devices, and discovered devices (with last seen time).
 
@@ -52,4 +52,5 @@ You can override the location with `--config` on any command.
 - `stop` reads the PID file next to the config and terminates the listener process.
 - `pair` and `refresh` will prompt for a device if multiple are discovered and no device is specified.
 - `watch` refreshes all paired devices and uses discovery unless `--no-discover` is set.
+- `watch` will start a local listener unless `--no-listen` is set.
 - Use `--verbose` to include debug details when errors occur.

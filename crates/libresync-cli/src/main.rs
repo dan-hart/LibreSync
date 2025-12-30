@@ -261,6 +261,13 @@ enum Commands {
         config: Option<PathBuf>,
         #[arg(
             long,
+            default_value = DEFAULT_LISTEN,
+            help = "Local address to listen on while watching.",
+            long_help = "Local address to listen on while watching. Defaults to 0.0.0.0:52345."
+        )]
+        listen: SocketAddr,
+        #[arg(
+            long,
             default_value_t = 1,
             help = "Seconds between background refresh cycles.",
             long_help = "Interval in seconds to refresh with paired devices even if no local change is detected."
@@ -279,6 +286,12 @@ enum Commands {
             long_help = "Skip LAN discovery and only use the last seen addresses stored in the config."
         )]
         no_discover: bool,
+        #[arg(
+            long,
+            help = "Disable auto-starting a local listener while watching.",
+            long_help = "Skip auto-starting a local listener while watching. Use this if you already run `libresync listen`."
+        )]
+        no_listen: bool,
     },
     #[command(
         about = "Stop the background listener for this config.",
@@ -477,12 +490,14 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Watch {
             config,
+            listen,
             interval_secs,
             debounce_ms,
             no_discover,
+            no_listen,
         } => {
             let config = resolve_config_path(config);
-            watch_file(&config, interval_secs, debounce_ms, no_discover)?;
+            watch_file(&config, listen, interval_secs, debounce_ms, no_discover, no_listen)?;
         }
         Commands::Stop { config } => {
             let config = resolve_config_path(config);
@@ -1320,9 +1335,11 @@ fn format_relative_inner(secs: u64, future: bool) -> String {
 
 fn watch_file(
     path: &Path,
+    listen: SocketAddr,
     interval_secs: u64,
     debounce_ms: u64,
     no_discover: bool,
+    no_listen: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = load_config(path)?;
     let data_path = config
@@ -1344,6 +1361,9 @@ fn watch_file(
         "Refresh interval: {}s (debounce: {}ms)",
         interval_secs, debounce_ms
     );
+    if !no_listen {
+        ensure_listener_running(path, listen)?;
+    }
 
     let (tx, rx) = std::sync::mpsc::channel();
     let mut watcher = RecommendedWatcher::new(tx, notify::Config::default())?;
@@ -1398,6 +1418,42 @@ fn watch_file(
     Ok(())
 }
 
+fn ensure_listener_running(
+    path: &Path,
+    listen: SocketAddr,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if is_port_listening(listen)? {
+        println!("Listener: already running on {}", listen);
+        return Ok(());
+    }
+
+    match spawn_background_listener(path, listen, false, false, None) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            if let Some(io_error) = error.downcast_ref::<io::Error>() {
+                if io_error.kind() == io::ErrorKind::AddrInUse {
+                    println!("Listener: already running on {}", listen);
+                    return Ok(());
+                }
+            }
+            Err(error)
+        }
+    }
+}
+
+fn is_port_listening(addr: SocketAddr) -> Result<bool, Box<dyn std::error::Error>> {
+    let mut addr = addr;
+    if addr.ip().is_unspecified() {
+        addr.set_ip(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+    }
+    match std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(300)) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::TimedOut => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn refresh_all_devices(
     path: &Path,
     config: &mut Config,
@@ -1407,48 +1463,77 @@ fn refresh_all_devices(
         return Ok(false);
     }
 
+    let discovered = if discover {
+        browse_mdns(&config.app_id, Duration::from_secs(2))?
+    } else {
+        Vec::new()
+    };
+    let discovered = filter_out_local(discovered, &config.device_id);
+    let discovered_map: HashMap<String, SocketAddr> = discovered
+        .into_iter()
+        .map(|device| (device.device_id, device.address))
+        .collect();
+
     let mut any_changed = false;
     let device_ids: Vec<String> = config.devices.keys().cloned().collect();
     for device_id in device_ids {
-        let addr = resolve_device_for_watch(config, &device_id, discover)?;
-        let Some(addr) = addr else {
+        let addresses = resolve_addresses_for_watch(config, &device_id, &discovered_map);
+        if addresses.is_empty() {
             continue;
-        };
-        let refreshed = refresh_with_address(path, config, addr)?;
-        if refreshed {
-            any_changed = true;
+        }
+
+        let mut last_error = None::<String>;
+        let mut refreshed = false;
+        for addr in addresses {
+            match refresh_with_address(path, config, addr) {
+                Ok(changed) => {
+                    if changed {
+                        any_changed = true;
+                    }
+                    refreshed = true;
+                    break;
+                }
+                Err(error) => {
+                    last_error = Some(error.to_string());
+                }
+            }
+        }
+
+        if !refreshed {
+            if let Some(error) = last_error {
+                if error.contains("Connection refused") {
+                    eprintln!(
+                        "Refresh error for {device_id}: {error} (is the listener running?)"
+                    );
+                } else {
+                    eprintln!("Refresh error for {device_id}: {error}");
+                }
+            }
         }
     }
 
     Ok(any_changed)
 }
 
-fn resolve_device_for_watch(
+fn resolve_addresses_for_watch(
     config: &Config,
     device_id: &str,
-    discover: bool,
-) -> Result<Option<SocketAddr>, Box<dyn std::error::Error>> {
+    discovered_map: &HashMap<String, SocketAddr>,
+) -> Vec<SocketAddr> {
+    let mut addresses = Vec::new();
+    if let Some(discovered) = discovered_map.get(device_id) {
+        addresses.push(*discovered);
+    }
     if let Some(record) = config.devices.get(device_id) {
         if let Some(addr) = record.last_seen_addr.as_deref() {
             if let Ok(parsed) = addr.parse::<SocketAddr>() {
-                return Ok(Some(parsed));
+                if !addresses.contains(&parsed) {
+                    addresses.push(parsed);
+                }
             }
         }
     }
-
-    if !discover {
-        return Ok(None);
-    }
-
-    let addr = resolve_device_address_with_timeout(
-        &config.app_id,
-        &config.device_id,
-        None,
-        Some(device_id),
-        Duration::from_secs(2),
-    )
-    .ok();
-    Ok(addr)
+    addresses
 }
 
 fn refresh_with_address(

@@ -43,7 +43,7 @@ The CLI is a minimal device-to-device testing tool that uses LAN discovery, devi
 ### Notes
 - Pairing is required before refresh.
 - `pair`/`refresh` will discover devices automatically; if multiple are found, you’ll be prompted to pick one.
-- `watch` refreshes all paired devices on local changes and on a periodic interval.
+- `watch` refreshes all paired devices on local changes and on a periodic interval (auto-starts a listener by default).
 - You can also target a specific device: `--device <ip:port>` or `--device-id <device-id>`.
 - Discovery is unauthenticated and only used to find devices; trust is established at pairing.
 - `status` shows the selected file, listener status, connected devices (discovered now), last seen addresses, and last seen timestamps for paired devices.

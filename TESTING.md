@@ -93,6 +93,7 @@ On each device:
 ```
 libresync watch
 ```
+By default, `watch` auto-starts a local listener on `0.0.0.0:52345`. Use `--no-listen` if you already run `libresync listen`, or `--listen` to override the bind address.
 
 ## 8) Verify refresh
 Edit the JSON file on **Device A**:
