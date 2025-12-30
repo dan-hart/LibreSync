@@ -11,6 +11,9 @@ LibreSync has a working device-to-device MVP for two CLI instances on a LAN. Dev
 - Device listener for inbound connections.
 - CLI commands: init, select, discover, pair, listen, sync, status.
 - Status output with last-seen timestamps.
+- Listener runs in the background by default with PID/log output.
+- Discovery filters out the local device from selection lists.
+- Verbose error output available via `--verbose`.
 - Architecture and CLI docs in `docs/`.
 - Test suite covering core and CLI flows.
 

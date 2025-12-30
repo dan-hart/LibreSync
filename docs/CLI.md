@@ -31,7 +31,7 @@ You can override the location with `--config` on any command.
 ## Typical workflow
 1. On each device, run `init` to create a config.
 2. Run `select` to choose the JSON file to sync.
-3. Start `listen` on both devices (or at least one). The default listener port is `52345`.
+3. Start `listen` on both devices (or at least one). The default listener port is `52345`. The listener runs in the background by default; use `--foreground` to keep it in your terminal.
 4. Run `discover` to list devices on the LAN (optional).
 5. Run `pair` once between devices (consent required). You can either:
    - pass a device address with `--device`, or
@@ -45,4 +45,6 @@ You can override the location with `--config` on any command.
 - Sync exchanges data and requires prior pairing.
 - Discovery only lists devices; it does not grant trust.
 - `listen` can be run with `--no-discovery` to avoid mDNS advertising.
+- `listen` writes logs to `libresync-listen.log` and a PID to `libresync-listen.pid` next to the config file.
 - `pair` and `sync` will prompt for a device if multiple are discovered and no device is specified.
+- Use `--verbose` to include debug details when errors occur.

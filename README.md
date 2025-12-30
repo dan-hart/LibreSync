@@ -45,6 +45,8 @@ The CLI is a minimal device-to-device testing tool that uses LAN discovery, devi
 - Discovery is unauthenticated and only used to find devices; trust is established at pairing.
 - `status` shows connected devices (discovered now), last seen addresses, and last seen timestamps for paired devices.
 - Config defaults to the OS config directory (override with `--config`).
+- `listen` runs in the background by default; use `--foreground` to keep it in the terminal.
+- Use `--verbose` to include debug details when errors occur.
 
 ## Values
 - Privacy: a human right

@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::error::Error as StdError;
 use std::fs;
 use std::io::{self, Write};
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -34,6 +36,22 @@ fn resolve_config_path(config: Option<PathBuf>) -> PathBuf {
     config.unwrap_or_else(default_config_path)
 }
 
+fn log_path_for_config(config_path: &Path) -> PathBuf {
+    let dir = config_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    dir.join("libresync-listen.log")
+}
+
+fn pid_path_for_config(config_path: &Path) -> PathBuf {
+    let dir = config_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    dir.join("libresync-listen.pid")
+}
+
 #[derive(Parser)]
 #[command(
     name = "libresync",
@@ -42,6 +60,14 @@ fn resolve_config_path(config: Option<PathBuf>) -> PathBuf {
     long_about = "A minimal CLI for exercising the LibreSync core. Use it to discover devices on LAN,\npair devices, and sync a selected JSON file over direct connections."
 )]
 struct Cli {
+    #[arg(
+        short,
+        long,
+        global = true,
+        help = "Enable verbose error output.",
+        long_help = "Enable verbose error output, including debug formatting and error causes."
+    )]
+    verbose: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -155,7 +181,7 @@ enum Commands {
     },
     #[command(
         about = "Run a device listener and advertise on LAN.",
-        long_about = "Start a device listener that accepts inbound connections and (by default) advertises via mDNS. Use --no-discovery to disable advertising while still accepting direct connections."
+        long_about = "Start a device listener that accepts inbound connections and (by default) advertises via mDNS. The listener runs in the background by default; use --foreground to keep it attached to your terminal."
     )]
     Listen {
         #[arg(
@@ -183,6 +209,12 @@ enum Commands {
             long_help = "Disable mDNS advertising. The listener still accepts direct connections by address."
         )]
         no_discovery: bool,
+        #[arg(
+            long,
+            help = "Run the listener in the foreground.",
+            long_help = "Run the listener in the foreground instead of spawning a background process. Use this when you want to see logs in the terminal."
+        )]
+        foreground: bool,
         #[arg(long, hide = true)]
         duration_secs: Option<u64>,
     },
@@ -330,9 +362,16 @@ impl DeviceHandler for ConfigHandler {
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() {
     let cli = Cli::parse();
+    let verbose = cli.verbose;
+    if let Err(error) = run(cli) {
+        report_error(&*error, verbose);
+        std::process::exit(1);
+    }
+}
 
+fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Commands::Init {
             config,
@@ -369,10 +408,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             listen,
             auto_accept,
             no_discovery,
+            foreground,
             duration_secs,
         } => {
             let config = resolve_config_path(config);
-            listen_device(&config, listen, auto_accept, no_discovery, duration_secs)?;
+            if foreground {
+                listen_device(&config, listen, auto_accept, no_discovery, duration_secs)?;
+            } else {
+                spawn_background_listener(&config, listen, auto_accept, no_discovery, duration_secs)?;
+            }
         }
         Commands::Sync {
             config,
@@ -393,6 +437,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+fn report_error(error: &dyn StdError, verbose: bool) {
+    eprintln!("Error: {error}");
+    if verbose {
+        eprintln!("Debug: {error:?}");
+        let mut index = 1;
+        let mut source = error.source();
+        while let Some(cause) = source {
+            eprintln!("Caused by ({index}): {cause}");
+            eprintln!("Cause debug ({index}): {cause:?}");
+            source = cause.source();
+            index += 1;
+        }
+    } else {
+        eprintln!("Hint: re-run with --verbose for debug details.");
+    }
 }
 
 fn init_config(
@@ -446,6 +507,7 @@ fn select_file(path: &Path, file: &Path) -> Result<(), Box<dyn std::error::Error
 fn discover_devices(path: &Path, timeout_secs: u64) -> Result<(), Box<dyn std::error::Error>> {
     let config = load_config(path)?;
     let devices = browse_mdns(&config.app_id, Duration::from_secs(timeout_secs))?;
+    let devices = filter_out_local(devices, &config.device_id);
 
     if devices.is_empty() {
         println!("No devices found for app {}", config.app_id);
@@ -470,7 +532,12 @@ fn pair_device(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = load_config(path)?;
     let local_identity = config.identity();
-    let device = resolve_device_address(&config.app_id, device, device_id.as_deref())?;
+    let device = resolve_device_address(
+        &config.app_id,
+        &config.device_id,
+        device,
+        device_id.as_deref(),
+    )?;
 
     let stream = std::net::TcpStream::connect_timeout(&device, Duration::from_secs(5))?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -588,13 +655,76 @@ fn listen_device(
     Ok(())
 }
 
+fn spawn_background_listener(
+    path: &Path,
+    listen: SocketAddr,
+    auto_accept: bool,
+    no_discovery: bool,
+    duration_secs: Option<u64>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _config = load_config(path)?;
+
+    let log_path = log_path_for_config(path);
+    if let Some(parent) = log_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let log = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
+    let log_err = log.try_clone()?;
+
+    let exe = std::env::current_exe()?;
+    let mut cmd = Command::new(exe);
+    cmd.arg("listen")
+        .arg("--foreground")
+        .arg("--config")
+        .arg(path)
+        .arg("--listen")
+        .arg(listen.to_string())
+        .stdin(Stdio::null())
+        .stdout(log)
+        .stderr(log_err);
+
+    if auto_accept {
+        cmd.arg("--auto-accept");
+    }
+
+    if no_discovery {
+        cmd.arg("--no-discovery");
+    }
+
+    if let Some(secs) = duration_secs {
+        cmd.arg("--duration-secs").arg(secs.to_string());
+    }
+
+    let child = cmd.spawn()?;
+    let pid = child.id();
+
+    let pid_path = pid_path_for_config(path);
+    fs::write(&pid_path, pid.to_string())?;
+
+    println!("Listener started in the background.");
+    println!("PID: {pid} (saved to {})", pid_path.display());
+    println!("Logs: {}", log_path.display());
+    println!("Stop: kill {pid}");
+
+    Ok(())
+}
+
 fn sync_file(
     path: &Path,
     device: Option<SocketAddr>,
     device_id: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = load_config(path)?;
-    let device = resolve_device_address(&config.app_id, device, device_id.as_deref())?;
+    let device = resolve_device_address(
+        &config.app_id,
+        &config.device_id,
+        device,
+        device_id.as_deref(),
+    )?;
     let data_path = config
         .data_path
         .clone()
@@ -661,6 +791,7 @@ fn status(
     let mut discovered: Vec<DiscoveredDevice> = Vec::new();
     if discover {
         discovered = browse_mdns(&config.app_id, Duration::from_secs(timeout_secs))?;
+        discovered = filter_out_local(discovered, &config.device_id);
     }
 
     let discovered_map: HashMap<String, DiscoveredDevice> = discovered
@@ -723,17 +854,45 @@ fn status(
 }
 
 fn load_config(path: &Path) -> Result<Config, Box<dyn std::error::Error>> {
-    let data = fs::read(path)?;
-    let config = serde_json::from_slice(&data)?;
+    let data = fs::read(path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("failed to read config {}: {error}", path.display()),
+        )
+    })?;
+    let config = serde_json::from_slice(&data).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to parse config {}: {error}", path.display()),
+        )
+    })?;
     Ok(config)
 }
 
 fn save_config(path: &Path, config: &Config) -> Result<(), Box<dyn std::error::Error>> {
-    let serialized = serde_json::to_vec_pretty(config)?;
+    let serialized = serde_json::to_vec_pretty(config).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to serialize config {}: {error}", path.display()),
+        )
+    })?;
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "failed to create config directory {}: {error}",
+                    parent.display()
+                ),
+            )
+        })?;
     }
-    fs::write(path, serialized)?;
+    fs::write(path, serialized).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("failed to write config {}: {error}", path.display()),
+        )
+    })?;
     Ok(())
 }
 
@@ -760,9 +919,19 @@ fn ensure_json_file(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("failed to create data directory {}: {error}", parent.display()),
+            )
+        })?;
     }
-    fs::write(path, b"{}")?;
+    fs::write(path, b"{}").map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("failed to write data file {}: {error}", path.display()),
+        )
+    })?;
     Ok(())
 }
 
@@ -805,6 +974,16 @@ struct DiscoveredDevice {
     device_id: String,
     user_id: String,
     address: SocketAddr,
+}
+
+fn filter_out_local(
+    devices: Vec<DiscoveredDevice>,
+    local_device_id: &str,
+) -> Vec<DiscoveredDevice> {
+    devices
+        .into_iter()
+        .filter(|device| device.device_id != local_device_id)
+        .collect()
 }
 
 fn browse_mdns(app_id: &str, timeout: Duration) -> Result<Vec<DiscoveredDevice>, Box<dyn std::error::Error>> {
@@ -852,14 +1031,22 @@ fn parse_service_info(info: &ServiceInfo, expected_app_id: &str) -> Option<Disco
 
 fn resolve_device_address(
     app_id: &str,
+    local_device_id: &str,
     device: Option<SocketAddr>,
     device_id: Option<&str>,
 ) -> Result<SocketAddr, Box<dyn std::error::Error>> {
-    resolve_device_address_with_timeout(app_id, device, device_id, Duration::from_secs(3))
+    resolve_device_address_with_timeout(
+        app_id,
+        local_device_id,
+        device,
+        device_id,
+        Duration::from_secs(3),
+    )
 }
 
 fn resolve_device_address_with_timeout(
     app_id: &str,
+    local_device_id: &str,
     device: Option<SocketAddr>,
     device_id: Option<&str>,
     timeout: Duration,
@@ -869,6 +1056,7 @@ fn resolve_device_address_with_timeout(
     }
 
     let devices = browse_mdns(app_id, timeout)?;
+    let devices = filter_out_local(devices, local_device_id);
     if devices.is_empty() {
         return Err("no devices found on the LAN".into());
     }
@@ -1143,6 +1331,7 @@ mod tests {
         let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 52345));
         let resolved = resolve_device_address_with_timeout(
             APP_ID_DEFAULT,
+            "local-device",
             Some(addr),
             None,
             Duration::from_millis(1),
@@ -1155,6 +1344,7 @@ mod tests {
     fn resolve_device_address_errors_when_none_found() {
         let error = resolve_device_address_with_timeout(
             APP_ID_DEFAULT,
+            "local-device",
             None,
             Some("missing-device"),
             Duration::from_millis(5),

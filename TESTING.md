@@ -49,6 +49,7 @@ libresync listen
 ```
 
 By default, listeners bind to port 52345 and advertise via mDNS.
+The listener runs in the background by default; use `--foreground` if you want it attached to your terminal.
 
 ## 4) Discover devices (optional)
 You can verify discovery before pairing:
