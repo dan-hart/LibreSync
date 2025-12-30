@@ -14,7 +14,7 @@ pub use entry::{Entry, LamportClock};
 pub use error::{Error, Result};
 pub use identity::Identity;
 pub use device::DeviceHandler;
-pub use adapter::{AdapterCache, AdapterKind, DataAdapter, JsonFileAdapter};
+pub use adapter::{AdapterCache, AdapterKind, DataAdapter, JsonFileAdapter, SqliteFileAdapter};
 pub use engine::{
     AdapterWatch, DeviceInfo, Engine, EngineConfig, Event, EventSink, PairingDecision,
     PairingRequest, SyncResult,

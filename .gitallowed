@@ -2,6 +2,7 @@
 ^\.gitallowed:
 ^\.gitignore:
 ^scripts/automation/setup-repo-security\.sh:
+frankly/src-tauri/src/main\.rs:.*CREATE TABLE IF NOT EXISTS todos
 sk-proj-\[A-Za-z0-9_-\]\{20,\}
 sk-\[A-Za-z0-9\]\{20,\}
 ghp_\[A-Za-z0-9\]\{36\}

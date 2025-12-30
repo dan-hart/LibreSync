@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Frankly</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Frankly</p>
+          <h1>Local-first todos that sync over LAN.</h1>
+          <p class="subhead">
+            One list. Live on your devices. Private by default.
+          </p>
+        </div>
+        <div class="status" id="status"></div>
+      </header>
+
+      <main class="grid">
+        <section class="card">
+          <div class="card-header">
+            <h2>Todo list</h2>
+            <button id="refresh-todos" class="ghost">Refresh</button>
+          </div>
+          <form id="todo-form" class="todo-form">
+            <input id="todo-input" type="text" placeholder="Add a new task" required />
+            <button type="submit">Add</button>
+          </form>
+          <ul id="todo-list" class="todo-list"></ul>
+        </section>
+
+        <section class="card">
+          <div class="card-header">
+            <h2>Devices</h2>
+            <button id="discover" class="ghost">Discover</button>
+          </div>
+          <div class="device-actions">
+            <input id="manual-address" type="text" placeholder="192.168.1.20:52345" />
+            <button id="manual-link">Link</button>
+            <button id="manual-sync" class="ghost">Sync</button>
+          </div>
+          <div class="device-columns">
+            <div>
+              <h3>Discovered</h3>
+              <div id="discovered-list" class="device-list"></div>
+            </div>
+            <div>
+              <h3>Linked</h3>
+              <div id="linked-list" class="device-list"></div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="main.js"></script>
+  </body>
+</html>

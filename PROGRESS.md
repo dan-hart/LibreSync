@@ -18,6 +18,7 @@ LibreSync has a working device-to-device MVP for two CLI instances on a LAN. Dev
 - Test suite covering core and CLI flows.
 - SDK-first `Engine` API with adapters and device discovery/pairing.
 - CLI dogfoods the `Engine` for listen, discover, pair, refresh, and watch.
+- Frankly Tauri demo app with SQLite-backed todos and LAN device linking.
 
 ## Current MVP behavior
 - Two devices on the same LAN can run `libresync`.
