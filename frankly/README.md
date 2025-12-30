@@ -20,6 +20,10 @@ If you do not have the Tauri CLI installed yet:
 cargo install tauri-cli
 ```
 
+## Icon requirement
+- Tauri expects an RGBA icon at `frankly/src-tauri/icons/icon.png`.
+- The repo includes a tiny placeholder so dev builds work; replace it with a real app icon when needed.
+
 ## Files and paths
 - Config: OS app data dir `config.json` (device identity, keys, linked devices).
 - State: OS app data dir `state.json` (LibreSync state).
