@@ -20,6 +20,14 @@ The config is a JSON file that stores identity and trust state:
 - `data_path`: path to the selected JSON file.
 - `devices`: map of paired devices keyed by device ID.
 
+### Default location
+If `--config` is omitted, LibreSync uses the OS config directory:
+- macOS: `~/Library/Application Support/libresync-cli/libresync.json`
+- Linux: `~/.config/libresync-cli/libresync.json`
+- Windows: `%APPDATA%\\com\\codedbydan\\libresync-cli\\libresync.json`
+
+You can override the location with `--config` on any command.
+
 ## Typical workflow
 1. On each device, run `init` to create a config.
 2. Run `select` to choose the JSON file to sync.

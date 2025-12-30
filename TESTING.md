@@ -16,23 +16,23 @@ cargo build
 ## 1) Initialize the config on each device
 On **Device A**:
 ```
-libresync init --config ~/libresync.json
+libresync init
 ```
 
 On **Device B**:
 ```
-libresync init --config ~/libresync.json
+libresync init
 ```
 
 Optional: provide explicit IDs for consistent testing:
 ```
-libresync init --config ~/libresync.json --device-id amber-river-summit --user-id calm-forest
+libresync init --device-id amber-river-summit --user-id calm-forest
 ```
 
 ## 2) Select the JSON file to sync
 On both devices:
 ```
-libresync select --config ~/libresync.json --file ~/libresync-data.json
+libresync select --file ~/libresync-data.json
 ```
 
 If the file does not exist, LibreSync creates it with `{}`.
@@ -40,12 +40,12 @@ If the file does not exist, LibreSync creates it with `{}`.
 ## 3) Start listeners on both devices
 On **Device A**:
 ```
-libresync listen --config ~/libresync.json
+libresync listen
 ```
 
 On **Device B**:
 ```
-libresync listen --config ~/libresync.json
+libresync listen
 ```
 
 By default, listeners bind to port 52345 and advertise via mDNS.
@@ -53,7 +53,7 @@ By default, listeners bind to port 52345 and advertise via mDNS.
 ## 4) Discover devices (optional)
 You can verify discovery before pairing:
 ```
-libresync discover --config ~/libresync.json
+libresync discover
 ```
 
 This should list the other device on the LAN with its device ID and address.
@@ -63,14 +63,14 @@ Pairing must happen once between devices, with consent on both sides.
 
 On **Device A**:
 ```
-libresync pair --config ~/libresync.json
+libresync pair
 ```
 
 If multiple devices are discovered, you’ll be prompted to select one.
 
 On **Device B** (optional, if you want to initiate pairing from the other side):
 ```
-libresync pair --config ~/libresync.json
+libresync pair
 ```
 
 Pairing establishes trust only; it does **not** sync data.
@@ -78,7 +78,7 @@ Pairing establishes trust only; it does **not** sync data.
 ## 6) Sync the JSON file
 On either device:
 ```
-libresync sync --config ~/libresync.json
+libresync sync
 ```
 
 You’ll be prompted to select a device if more than one is discovered. Sync exchanges the JSON file and applies last‑writer‑wins logic.
@@ -91,7 +91,7 @@ echo '{"from":"device-a"}' > ~/libresync-data.json
 
 Run sync from **Device A**:
 ```
-libresync sync --config ~/libresync.json
+libresync sync
 ```
 
 Check **Device B**:
@@ -104,7 +104,7 @@ Then reverse the direction and repeat to confirm two‑way sync.
 ## 8) Check status
 Use `status` to verify paired devices and last seen info:
 ```
-libresync status --config ~/libresync.json
+libresync status
 ```
 
 ## Troubleshooting
@@ -116,3 +116,4 @@ libresync status --config ~/libresync.json
 - Discovery is unauthenticated and only used to find devices.
 - Pairing is required before sync.
 - The current MVP uses identity strings only; crypto/auth will be added later.
+- Config defaults to the OS config directory; pass `--config` to override.

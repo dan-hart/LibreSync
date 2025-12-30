@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 ctrlc = "3.4"
+directories = "5.0"
 flume = "0.11"
 if-addrs = "0.10"
 libresync = { path = "../libresync" }

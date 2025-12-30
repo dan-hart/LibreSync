@@ -9,6 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
+use directories::ProjectDirs;
 use libresync::{sync_with_device, DeviceHandler, Identity, State, SyncListener};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use rand::seq::SliceRandom;
@@ -18,6 +19,20 @@ const APP_ID_DEFAULT: &str = "com.codedbydan.libresync-cli";
 const SERVICE_TYPE: &str = "_libresync._tcp.local.";
 const FILE_KEY: &str = "file";
 const DEFAULT_LISTEN: &str = "0.0.0.0:52345";
+const CONFIG_FILE_NAME: &str = "libresync.json";
+const CONFIG_QUALIFIER: &str = "com";
+const CONFIG_ORG: &str = "codedbydan";
+const CONFIG_APP: &str = "libresync-cli";
+
+fn default_config_path() -> PathBuf {
+    ProjectDirs::from(CONFIG_QUALIFIER, CONFIG_ORG, CONFIG_APP)
+        .map(|dirs| dirs.config_dir().join(CONFIG_FILE_NAME))
+        .unwrap_or_else(|| PathBuf::from(CONFIG_FILE_NAME))
+}
+
+fn resolve_config_path(config: Option<PathBuf>) -> PathBuf {
+    config.unwrap_or_else(default_config_path)
+}
 
 #[derive(Parser)]
 #[command(
@@ -40,10 +55,10 @@ enum Commands {
     Init {
         #[arg(
             long,
-            help = "Path to the config JSON file.",
-            long_help = "Path where the LibreSync config JSON will be created. The config stores identity and trust state."
+            help = "Path to the config JSON file (defaults to the OS config directory).",
+            long_help = "Path where the LibreSync config JSON will be created. The config stores identity and trust state. Defaults to the OS config directory when omitted."
         )]
-        config: PathBuf,
+        config: Option<PathBuf>,
         #[arg(
             long,
             default_value = APP_ID_DEFAULT,
@@ -77,10 +92,10 @@ enum Commands {
     Select {
         #[arg(
             long,
-            help = "Path to the config JSON file.",
-            long_help = "Config file that stores the selected JSON file path."
+            help = "Path to the config JSON file (defaults to the OS config directory).",
+            long_help = "Config file that stores the selected JSON file path. Defaults to the OS config directory when omitted."
         )]
-        config: PathBuf,
+        config: Option<PathBuf>,
         #[arg(
             long,
             help = "Path to the JSON file to sync.",
@@ -95,10 +110,10 @@ enum Commands {
     Discover {
         #[arg(
             long,
-            help = "Path to the config JSON file.",
-            long_help = "Config file used to determine the app ID and discovery scope."
+            help = "Path to the config JSON file (defaults to the OS config directory).",
+            long_help = "Config file used to determine the app ID and discovery scope. Defaults to the OS config directory when omitted."
         )]
-        config: PathBuf,
+        config: Option<PathBuf>,
         #[arg(
             long,
             default_value_t = 3,
@@ -114,10 +129,10 @@ enum Commands {
     Pair {
         #[arg(
             long,
-            help = "Path to the config JSON file.",
-            long_help = "Config file to store the paired device entry and trust state."
+            help = "Path to the config JSON file (defaults to the OS config directory).",
+            long_help = "Config file to store the paired device entry and trust state. Defaults to the OS config directory when omitted."
         )]
-        config: PathBuf,
+        config: Option<PathBuf>,
         #[arg(
             long,
             help = "Device address to connect to (e.g. 192.168.1.10:52345).",
@@ -145,10 +160,10 @@ enum Commands {
     Listen {
         #[arg(
             long,
-            help = "Path to the config JSON file.",
-            long_help = "Config file that contains the device identity and trust state."
+            help = "Path to the config JSON file (defaults to the OS config directory).",
+            long_help = "Config file that contains the device identity and trust state. Defaults to the OS config directory when omitted."
         )]
-        config: PathBuf,
+        config: Option<PathBuf>,
         #[arg(
             long,
             default_value = DEFAULT_LISTEN,
@@ -178,10 +193,10 @@ enum Commands {
     Sync {
         #[arg(
             long,
-            help = "Path to the config JSON file.",
-            long_help = "Config file that includes the selected JSON file path and device allowlist."
+            help = "Path to the config JSON file (defaults to the OS config directory).",
+            long_help = "Config file that includes the selected JSON file path and device allowlist. Defaults to the OS config directory when omitted."
         )]
-        config: PathBuf,
+        config: Option<PathBuf>,
         #[arg(
             long,
             help = "Device address to connect to (e.g. 192.168.1.10:52345).",
@@ -203,10 +218,10 @@ enum Commands {
     Status {
         #[arg(
             long,
-            help = "Path to the config JSON file.",
-            long_help = "Config file that includes identity, selected file, and paired devices."
+            help = "Path to the config JSON file (defaults to the OS config directory).",
+            long_help = "Config file that includes identity, selected file, and paired devices. Defaults to the OS config directory when omitted."
         )]
-        config: PathBuf,
+        config: Option<PathBuf>,
         #[arg(
             long,
             help = "Disable LAN discovery for this status check.",
@@ -325,35 +340,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             device_id,
             user_id,
             force,
-        } => init_config(&config, &app_id, device_id, user_id, force)?,
-        Commands::Select { config, file } => select_file(&config, &file)?,
+        } => {
+            let config = resolve_config_path(config);
+            init_config(&config, &app_id, device_id, user_id, force)?;
+        }
+        Commands::Select { config, file } => {
+            let config = resolve_config_path(config);
+            select_file(&config, &file)?;
+        }
         Commands::Discover {
             config,
             timeout_secs,
-        } => discover_devices(&config, timeout_secs)?,
+        } => {
+            let config = resolve_config_path(config);
+            discover_devices(&config, timeout_secs)?;
+        }
         Commands::Pair {
             config,
             device,
             device_id,
             yes,
-        } => pair_device(&config, device, device_id, yes)?,
+        } => {
+            let config = resolve_config_path(config);
+            pair_device(&config, device, device_id, yes)?;
+        }
         Commands::Listen {
             config,
             listen,
             auto_accept,
             no_discovery,
             duration_secs,
-        } => listen_device(&config, listen, auto_accept, no_discovery, duration_secs)?,
+        } => {
+            let config = resolve_config_path(config);
+            listen_device(&config, listen, auto_accept, no_discovery, duration_secs)?;
+        }
         Commands::Sync {
             config,
             device,
             device_id,
-        } => sync_file(&config, device, device_id)?,
+        } => {
+            let config = resolve_config_path(config);
+            sync_file(&config, device, device_id)?;
+        }
         Commands::Status {
             config,
             no_discover,
             timeout_secs,
-        } => status(&config, !no_discover, timeout_secs)?,
+        } => {
+            let config = resolve_config_path(config);
+            status(&config, !no_discover, timeout_secs)?;
+        }
     }
 
     Ok(())
@@ -694,6 +730,9 @@ fn load_config(path: &Path) -> Result<Config, Box<dyn std::error::Error>> {
 
 fn save_config(path: &Path, config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     let serialized = serde_json::to_vec_pretty(config)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
     fs::write(path, serialized)?;
     Ok(())
 }
@@ -885,11 +924,26 @@ fn now_unix_secs() -> u64 {
 }
 
 fn pick_address(info: &ServiceInfo, port: u16) -> Option<SocketAddr> {
-    let address = info.get_addresses().iter().find_map(|addr| match addr {
+    let addresses = info.get_addresses();
+    if let Some(ip) = addresses.iter().find_map(|addr| match addr {
         IpAddr::V4(ip) => Some(IpAddr::V4(*ip)),
+        _ => None,
+    }) {
+        return Some(SocketAddr::new(ip, port));
+    }
+
+    if let Some(ip) = addresses.iter().find_map(|addr| match addr {
+        IpAddr::V6(ip) if !ip.is_unicast_link_local() => Some(IpAddr::V6(*ip)),
+        _ => None,
+    }) {
+        return Some(SocketAddr::new(ip, port));
+    }
+
+    let ip = addresses.iter().find_map(|addr| match addr {
         IpAddr::V6(ip) => Some(IpAddr::V6(*ip)),
+        _ => None,
     })?;
-    Some(SocketAddr::new(address, port))
+    Some(SocketAddr::new(ip, port))
 }
 
 fn local_ips(listen_ip: IpAddr) -> Result<Vec<IpAddr>, Box<dyn std::error::Error>> {
@@ -950,6 +1004,7 @@ const NOUNS: &[&str] = &[
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
+    use std::net::Ipv6Addr;
     use std::net::SocketAddrV4;
 
     #[test]
@@ -986,6 +1041,98 @@ mod tests {
     }
 
     #[test]
+    fn pick_address_prefers_ipv4_over_ipv6() {
+        let mut properties = HashMap::new();
+        properties.insert("app_id".to_string(), APP_ID_DEFAULT.to_string());
+        properties.insert("device_id".to_string(), "test-device".to_string());
+        properties.insert("user_id".to_string(), "test-user".to_string());
+
+        let addresses = vec![
+            IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 22)),
+        ];
+
+        let service = ServiceInfo::new(
+            SERVICE_TYPE,
+            "test-device",
+            "test-device.local.",
+            addresses.as_slice(),
+            9000,
+            properties,
+        )
+        .expect("service");
+
+        let picked = pick_address(&service, 9000).expect("address");
+        assert_eq!(
+            picked,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 22)), 9000)
+        );
+    }
+
+    #[test]
+    fn pick_address_skips_link_local_ipv6_when_possible() {
+        let mut properties = HashMap::new();
+        properties.insert("app_id".to_string(), APP_ID_DEFAULT.to_string());
+        properties.insert("device_id".to_string(), "test-device".to_string());
+        properties.insert("user_id".to_string(), "test-user".to_string());
+
+        let addresses = vec![
+            IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2)),
+            IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 3)),
+        ];
+
+        let service = ServiceInfo::new(
+            SERVICE_TYPE,
+            "test-device",
+            "test-device.local.",
+            addresses.as_slice(),
+            9001,
+            properties,
+        )
+        .expect("service");
+
+        let picked = pick_address(&service, 9001).expect("address");
+        assert_eq!(
+            picked,
+            SocketAddr::new(
+                IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 3)),
+                9001
+            )
+        );
+    }
+
+    #[test]
+    fn pick_address_uses_link_local_ipv6_if_only_option() {
+        let mut properties = HashMap::new();
+        properties.insert("app_id".to_string(), APP_ID_DEFAULT.to_string());
+        properties.insert("device_id".to_string(), "test-device".to_string());
+        properties.insert("user_id".to_string(), "test-user".to_string());
+
+        let addresses = vec![IpAddr::V6(Ipv6Addr::new(
+            0xfe80, 0, 0, 0, 0, 0, 0, 5,
+        ))];
+
+        let service = ServiceInfo::new(
+            SERVICE_TYPE,
+            "test-device",
+            "test-device.local.",
+            addresses.as_slice(),
+            9002,
+            properties,
+        )
+        .expect("service");
+
+        let picked = pick_address(&service, 9002).expect("address");
+        assert_eq!(
+            picked,
+            SocketAddr::new(
+                IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 5)),
+                9002
+            )
+        );
+    }
+
+    #[test]
     fn browse_mdns_returns_empty_for_short_timeout() {
         let devices = browse_mdns(APP_ID_DEFAULT, Duration::from_millis(10)).expect("browse");
         assert!(devices.is_empty() || devices.iter().all(|p| p.device_id.len() > 0));
@@ -1009,11 +1156,15 @@ mod tests {
         let error = resolve_device_address_with_timeout(
             APP_ID_DEFAULT,
             None,
-            None,
+            Some("missing-device"),
             Duration::from_millis(5),
         )
         .expect_err("expected error");
-        assert!(error.to_string().contains("no devices found"));
+        let message = error.to_string();
+        assert!(
+            message.contains("no devices found") || message.contains("device not found"),
+            "unexpected error: {message}"
+        );
     }
 
     #[test]
