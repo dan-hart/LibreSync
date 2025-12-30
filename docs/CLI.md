@@ -9,6 +9,7 @@ The CLI is a thin wrapper around the core library. It exposes the minimal flow n
 - `pair`: request pairing with a device (mutual consent).
 - `listen`: run the device listener and advertise on LAN.
 - `sync`: sync the selected JSON file with a paired device.
+- `stop`: stop the background listener for this config.
 - `status`: show identity, paired devices, and discovered devices (with last seen time).
 
 ## Config file
@@ -46,5 +47,6 @@ You can override the location with `--config` on any command.
 - Discovery only lists devices; it does not grant trust.
 - `listen` can be run with `--no-discovery` to avoid mDNS advertising.
 - `listen` writes logs to `libresync-listen.log` and a PID to `libresync-listen.pid` next to the config file.
+- `stop` reads the PID file next to the config and terminates the listener process.
 - `pair` and `sync` will prompt for a device if multiple are discovered and no device is specified.
 - Use `--verbose` to include debug details when errors occur.

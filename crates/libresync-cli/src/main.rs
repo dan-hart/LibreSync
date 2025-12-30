@@ -16,6 +16,7 @@ use libresync::{sync_with_device, DeviceHandler, Identity, State, SyncListener};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
+use sysinfo::{Pid, System};
 
 const APP_ID_DEFAULT: &str = "com.codedbydan.libresync-cli";
 const SERVICE_TYPE: &str = "_libresync._tcp.local.";
@@ -244,6 +245,18 @@ enum Commands {
         device_id: Option<String>,
     },
     #[command(
+        about = "Stop the background listener for this config.",
+        long_about = "Stop the background listener spawned by `libresync listen`. This reads the PID from the config directory and terminates the process."
+    )]
+    Stop {
+        #[arg(
+            long,
+            help = "Path to the config JSON file (defaults to the OS config directory).",
+            long_help = "Config file used to find the background listener PID. Defaults to the OS config directory when omitted."
+        )]
+        config: Option<PathBuf>,
+    },
+    #[command(
         about = "Show device status, paired devices, and recent discovery info.",
         long_about = "Show local identity, selected file, paired devices, and (by default) devices discovered on the LAN. Discovered devices are treated as connected now. Use --no-discover to skip LAN discovery."
     )]
@@ -425,6 +438,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let config = resolve_config_path(config);
             sync_file(&config, device, device_id)?;
+        }
+        Commands::Stop { config } => {
+            let config = resolve_config_path(config);
+            stop_listener(&config)?;
         }
         Commands::Status {
             config,
@@ -710,6 +727,50 @@ fn spawn_background_listener(
     println!("Logs: {}", log_path.display());
     println!("Stop: kill {pid}");
 
+    Ok(())
+}
+
+fn stop_listener(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let _config = load_config(path)?;
+
+    let pid_path = pid_path_for_config(path);
+    let pid_raw = fs::read_to_string(&pid_path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "failed to read listener PID file {}: {error}",
+                pid_path.display()
+            ),
+        )
+    })?;
+    let pid_value = pid_raw
+        .trim()
+        .parse::<u32>()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+
+    let mut system = System::new();
+    system.refresh_processes();
+    let pid = Pid::from_u32(pid_value);
+
+    if let Some(process) = system.process(pid) {
+        let name = process.name().to_lowercase();
+        if !name.contains("libresync") {
+            return Err(format!(
+                "pid {pid_value} is not a libresync process ({})",
+                process.name()
+            )
+            .into());
+        }
+        if !process.kill() {
+            return Err(format!("failed to terminate process {pid_value}").into());
+        }
+        fs::remove_file(&pid_path).ok();
+        println!("Stopped listener process {pid_value}.");
+        return Ok(());
+    }
+
+    fs::remove_file(&pid_path).ok();
+    println!("No listener process found; removed stale PID file.");
     Ok(())
 }
 

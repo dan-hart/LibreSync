@@ -171,6 +171,7 @@ fn cli_help_mentions_commands() {
         .stdout(contains("discover"))
         .stdout(contains("pair"))
         .stdout(contains("listen"))
+        .stdout(contains("stop"))
         .stdout(contains("status"))
         .stdout(contains("sync"));
 }
