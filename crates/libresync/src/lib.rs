@@ -5,6 +5,7 @@ mod device;
 mod adapter;
 mod engine;
 mod discovery;
+mod keys;
 mod protocol;
 mod state;
 mod sync;
@@ -19,6 +20,7 @@ pub use engine::{
     PairingRequest, SyncResult,
 };
 pub use discovery::{browse_mdns, register_mdns, DiscoveredDevice, MdnsAdvertiser};
+pub use keys::DeviceKeys;
 pub use protocol::{read_message, write_message, Message};
 pub use state::State;
-pub use sync::{sync_with_device, SyncListener};
+pub use sync::{pair_with_device, sync_with_device, SyncListener};

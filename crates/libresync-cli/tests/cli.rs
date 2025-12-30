@@ -3,7 +3,7 @@ use std::fs;
 use std::sync::{Arc, Mutex};
 
 use assert_cmd::cargo::cargo_bin_cmd;
-use libresync::{DeviceHandler, Identity, Result, State, SyncListener};
+use libresync::{DeviceHandler, DeviceKeys, Identity, Result, State, SyncListener};
 use predicates::str::contains;
 
 const APP_ID: &str = "com.codedbydan.libresync-cli";
@@ -12,13 +12,15 @@ const FILE_KEY: &str = "file";
 struct TestHandler {
     app_id: String,
     paired: Mutex<HashSet<String>>,
+    keys: DeviceKeys,
 }
 
 impl TestHandler {
-    fn new(app_id: &str) -> Self {
+    fn new(app_id: &str, keys: DeviceKeys) -> Self {
         Self {
             app_id: app_id.to_string(),
             paired: Mutex::new(HashSet::new()),
+            keys,
         }
     }
 }
@@ -41,6 +43,10 @@ impl DeviceHandler for TestHandler {
             .expect("paired lock")
             .insert(identity.device_id.clone());
         Ok(true)
+    }
+
+    fn device_keys(&self) -> Result<DeviceKeys> {
+        Ok(self.keys.clone())
     }
 }
 
@@ -82,7 +88,9 @@ fn cli_init_and_select_sets_paths() {
 
 #[test]
 fn cli_pair_and_refresh_updates_file() {
-    let handler = Arc::new(TestHandler::new(APP_ID));
+    let listener_identity = Identity::new("listener-device", APP_ID, "listener-user");
+    let listener_keys = DeviceKeys::generate(&listener_identity).expect("listener keys");
+    let handler = Arc::new(TestHandler::new(APP_ID, listener_keys));
     let listener_state = Arc::new(Mutex::new(State::new("listener-device")));
     {
         let mut state = listener_state.lock().expect("state");
@@ -90,7 +98,6 @@ fn cli_pair_and_refresh_updates_file() {
         state.set(FILE_KEY.to_string(), br#"{"listener":true,"v":2}"#.to_vec());
     }
 
-    let listener_identity = Identity::new("listener-device", APP_ID, "listener-user");
     let listener = SyncListener::start(
         "127.0.0.1:0".parse().expect("addr"),
         listener_identity,

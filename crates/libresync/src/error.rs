@@ -5,6 +5,7 @@ pub enum Error {
     Io(io::Error),
     Serde(serde_json::Error),
     Protocol(String),
+    Crypto(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -15,6 +16,7 @@ impl fmt::Display for Error {
             Error::Io(error) => write!(formatter, "io error: {error}"),
             Error::Serde(error) => write!(formatter, "serialization error: {error}"),
             Error::Protocol(message) => write!(formatter, "protocol error: {message}"),
+            Error::Crypto(message) => write!(formatter, "crypto error: {message}"),
         }
     }
 }
@@ -25,6 +27,7 @@ impl StdError for Error {
             Error::Io(error) => Some(error),
             Error::Serde(error) => Some(error),
             Error::Protocol(_) => None,
+            Error::Crypto(_) => None,
         }
     }
 }
@@ -38,6 +41,18 @@ impl From<io::Error> for Error {
 impl From<serde_json::Error> for Error {
     fn from(error: serde_json::Error) -> Self {
         Error::Serde(error)
+    }
+}
+
+impl From<rcgen::Error> for Error {
+    fn from(error: rcgen::Error) -> Self {
+        Error::Crypto(error.to_string())
+    }
+}
+
+impl From<rustls::Error> for Error {
+    fn from(error: rustls::Error) -> Self {
+        Error::Crypto(error.to_string())
     }
 }
 

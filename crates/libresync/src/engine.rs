@@ -1,16 +1,14 @@
 use std::collections::HashMap;
-use std::io::{BufReader, BufWriter};
-use std::net::{SocketAddr, TcpStream};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
 use crate::discovery::browse_mdns;
-use crate::protocol::{read_message, write_message, Message};
 use crate::{
     AdapterCache, DataAdapter, DeviceHandler, Error, Identity, Result, State, SyncListener,
-    sync_with_device,
+    pair_with_device, sync_with_device,
 };
 
 #[derive(Clone, Debug)]
@@ -39,6 +37,7 @@ pub struct DeviceInfo {
     pub address: Option<SocketAddr>,
     pub last_seen: Option<SystemTime>,
     pub paired: bool,
+    pub fingerprint: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -195,6 +194,7 @@ impl Engine {
                 identity: device.identity,
                 address: Some(device.address),
                 last_seen: Some(SystemTime::now()),
+                fingerprint: None,
             })
             .collect())
     }
@@ -204,42 +204,16 @@ impl Engine {
     }
 
     pub fn request_pair(&self, address: SocketAddr) -> Result<DeviceInfo> {
-        let stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
-        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-
-        let mut reader = BufReader::new(stream.try_clone()?);
-        let mut writer = BufWriter::new(stream);
-
-        write_message(
-            &mut writer,
-            &Message::PairRequest {
-                identity: self.config.identity.clone(),
-            },
-        )?;
-
-        let response = read_message(&mut reader)?;
-        let (remote_identity, accepted) = match response {
-            Message::PairResponse { identity, accepted } => (identity, accepted),
-            _ => return Err(Error::Protocol("unexpected pairing response".to_string())),
-        };
-
-        if !accepted {
-            return Err(Error::Protocol(format!(
-                "pairing rejected by {}",
-                remote_identity.device_id
-            )));
-        }
-
-        if remote_identity.app_id != self.config.identity.app_id {
-            return Err(Error::Protocol("app id mismatch during pairing".to_string()));
-        }
+        let device_keys = self.device_handler.device_keys()?;
+        let (remote_identity, fingerprint) =
+            pair_with_device(&self.config.identity, &device_keys, address)?;
 
         Ok(DeviceInfo {
             identity: remote_identity,
             address: Some(address),
             last_seen: Some(SystemTime::now()),
             paired: true,
+            fingerprint: Some(fingerprint),
         })
     }
 
@@ -261,19 +235,29 @@ impl Engine {
             adapter.load_into_state(&mut state)?;
         }
 
-        let device_check = |identity: &Identity| -> Result<()> {
+        let device_keys = self.device_handler.device_keys()?;
+        let device_check = |identity: &Identity, fingerprint: &str| -> Result<()> {
             if identity.app_id != self.config.identity.app_id {
                 return Err(Error::Protocol("app id mismatch".to_string()));
             }
-            if !self.device_handler.is_paired(identity) {
+            if !self
+                .device_handler
+                .is_paired_with_fingerprint(identity, fingerprint)
+            {
                 return Err(Error::Protocol("device not paired".to_string()));
             }
             Ok(())
         };
 
-        let remote_identity = {
+        let (remote_identity, fingerprint) = {
             let mut state = self.lock_state()?;
-            sync_with_device(&self.config.identity, &mut state, address, device_check)?
+            sync_with_device(
+                &self.config.identity,
+                &mut state,
+                address,
+                &device_keys,
+                device_check,
+            )?
         };
 
         {
@@ -286,6 +270,7 @@ impl Engine {
             address: Some(address),
             last_seen: Some(SystemTime::now()),
             paired: true,
+            fingerprint: Some(fingerprint),
         };
         self.emit(Event::SyncFinished {
             device: device.clone(),

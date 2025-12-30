@@ -26,13 +26,13 @@ LibreSync has a working device-to-device MVP for two CLI instances on a LAN. Dev
 - Sync exchanges a single JSON file and applies last-writer-wins via Lamport clocks.
 
 ## Known gaps
-- No cryptographic identity or encrypted transport yet (identity is string-only).
+- Device keys are self-signed and stored locally; no rotation/revocation or shared trust roots yet.
+- Pairing uses fingerprint allowlisting (TOFU) without out-of-band verification prompts.
 - Single-file refresh only (one JSON file mapped to the `file` key).
 - No background watchers or continuous refresh.
 
 ## Next steps
-- Add cryptographic device/app keys and signed handshakes.
-- Encrypt transport (Noise or TLS).
+- Add key rotation/export, fingerprint display UX, and re-pairing flows.
 - Expand to multi-file or structured adapters.
 - Add optional file watching for near-real-time refresh.
 - Plan FFI boundary + Swift/Kotlin wrapper approach.

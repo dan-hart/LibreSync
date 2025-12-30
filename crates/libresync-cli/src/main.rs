@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::error::Error as StdError;
 use std::fs;
 use std::io::{self, Write};
@@ -14,8 +14,11 @@ use chrono::{Local, TimeZone};
 use clap::{Parser, Subcommand};
 use directories::ProjectDirs;
 use libresync::{
-    DataAdapter, DeviceHandler, DeviceInfo, Engine, EngineConfig, Identity, JsonFileAdapter, State,
+    DataAdapter, DeviceHandler, DeviceInfo, DeviceKeys, Engine, EngineConfig, Identity,
+    JsonFileAdapter, State,
 };
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine as _;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
@@ -340,7 +343,16 @@ struct Config {
     state_path: PathBuf,
     data_path: Option<PathBuf>,
     #[serde(default)]
+    device_keys: Option<DeviceKeysRecord>,
+    #[serde(default)]
     devices: BTreeMap<String, DeviceRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DeviceKeysRecord {
+    cert_der: String,
+    key_der: String,
+    fingerprint: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -351,6 +363,18 @@ struct DeviceRecord {
     last_seen_addr: Option<String>,
     #[serde(default)]
     last_seen_unix_secs: Option<u64>,
+    #[serde(default)]
+    fingerprint: Option<String>,
+}
+
+impl DeviceKeysRecord {
+    fn from_keys(keys: &DeviceKeys) -> Self {
+        Self {
+            cert_der: BASE64.encode(keys.cert_der()),
+            key_der: BASE64.encode(keys.key_der()),
+            fingerprint: keys.fingerprint().to_string(),
+        }
+    }
 }
 
 impl Config {
@@ -358,26 +382,50 @@ impl Config {
         Identity::new(&self.device_id, &self.app_id, &self.user_id)
     }
 
+    fn device_keys(&self) -> Result<DeviceKeys, Box<dyn std::error::Error>> {
+        let record = self
+            .device_keys
+            .as_ref()
+            .ok_or("device keys missing; re-run libresync init")?;
+        let cert_der = BASE64
+            .decode(record.cert_der.as_bytes())
+            .map_err(|error| format!("failed to decode cert: {error}"))?;
+        let key_der = BASE64
+            .decode(record.key_der.as_bytes())
+            .map_err(|error| format!("failed to decode key: {error}"))?;
+        let keys = DeviceKeys::from_der(cert_der, key_der)?;
+        Ok(keys)
+    }
+
     fn is_paired(&self, device_id: &str) -> bool {
         self.devices.contains_key(device_id)
     }
 
-    fn upsert_device(&mut self, identity: &Identity, addr: Option<SocketAddr>) {
+    fn upsert_device(
+        &mut self,
+        identity: &Identity,
+        addr: Option<SocketAddr>,
+        fingerprint: Option<String>,
+    ) {
         let entry = self
             .devices
             .entry(identity.device_id.clone())
             .or_insert(DeviceRecord {
-            device_id: identity.device_id.clone(),
-            user_id: identity.user_id.clone(),
-            app_id: identity.app_id.clone(),
-            last_seen_addr: None,
-            last_seen_unix_secs: None,
-        });
+                device_id: identity.device_id.clone(),
+                user_id: identity.user_id.clone(),
+                app_id: identity.app_id.clone(),
+                last_seen_addr: None,
+                last_seen_unix_secs: None,
+                fingerprint: None,
+            });
         entry.user_id = identity.user_id.clone();
         entry.app_id = identity.app_id.clone();
         if let Some(addr) = addr {
             entry.last_seen_addr = Some(addr.to_string());
             entry.last_seen_unix_secs = Some(now_unix_secs());
+        }
+        if let Some(fingerprint) = fingerprint {
+            entry.fingerprint = Some(fingerprint);
         }
     }
 }
@@ -400,6 +448,34 @@ impl DeviceHandler for ConfigHandler {
     }
 
     fn approve_pair(&self, identity: &Identity) -> libresync::Result<bool> {
+        self.approve_pair_with_fingerprint(identity, "")
+    }
+
+    fn device_keys(&self) -> libresync::Result<DeviceKeys> {
+        let config = self.config.lock().expect("config lock");
+        config
+            .device_keys()
+            .map_err(|error| libresync::Error::Protocol(error.to_string()))
+    }
+
+    fn is_paired_with_fingerprint(&self, identity: &Identity, fingerprint: &str) -> bool {
+        if fingerprint.is_empty() {
+            return self.is_paired(identity);
+        }
+        let config = self.config.lock().expect("config lock");
+        config
+            .devices
+            .get(&identity.device_id)
+            .and_then(|record| record.fingerprint.as_deref())
+            .map(|stored| stored == fingerprint)
+            .unwrap_or(false)
+    }
+
+    fn approve_pair_with_fingerprint(
+        &self,
+        identity: &Identity,
+        fingerprint: &str,
+    ) -> libresync::Result<bool> {
         if identity.app_id != self.app_id {
             return Ok(false);
         }
@@ -415,7 +491,12 @@ impl DeviceHandler for ConfigHandler {
 
         if accepted {
             let mut config = self.config.lock().expect("config lock");
-            config.upsert_device(identity, None);
+            let fingerprint = if fingerprint.is_empty() {
+                None
+            } else {
+                Some(fingerprint.to_string())
+            };
+            config.upsert_device(identity, None, fingerprint);
             save_config(&self.config_path, &config)
                 .map_err(|error| libresync::Error::Protocol(error.to_string()))?;
         }
@@ -426,7 +507,8 @@ impl DeviceHandler for ConfigHandler {
 
 struct StaticHandler {
     app_id: String,
-    allowed: HashSet<String>,
+    allowed: HashMap<String, String>,
+    keys: DeviceKeys,
 }
 
 impl DeviceHandler for StaticHandler {
@@ -435,24 +517,52 @@ impl DeviceHandler for StaticHandler {
     }
 
     fn is_paired(&self, identity: &Identity) -> bool {
-        self.allowed.contains(&identity.device_id)
+        self.allowed.contains_key(&identity.device_id)
     }
 
     fn approve_pair(&self, _identity: &Identity) -> libresync::Result<bool> {
         Ok(false)
     }
+
+    fn device_keys(&self) -> libresync::Result<DeviceKeys> {
+        Ok(self.keys.clone())
+    }
+
+    fn is_paired_with_fingerprint(&self, identity: &Identity, fingerprint: &str) -> bool {
+        self.allowed
+            .get(&identity.device_id)
+            .map(|stored| stored == fingerprint)
+            .unwrap_or(false)
+    }
 }
 
 fn engine_for_config(config: &Config) -> Engine {
+    let device_keys = config
+        .device_keys()
+        .expect("device keys should exist");
     let handler = Arc::new(StaticHandler {
         app_id: config.app_id.clone(),
-        allowed: config.devices.keys().cloned().collect(),
+        allowed: allowed_fingerprint_map(config),
+        keys: device_keys,
     });
     Engine::new(
         EngineConfig::new(config.identity()),
         State::new(config.device_id.clone()),
         handler,
     )
+}
+
+fn allowed_fingerprint_map(config: &Config) -> HashMap<String, String> {
+    config
+        .devices
+        .iter()
+        .filter_map(|(device_id, record)| {
+            record
+                .fingerprint
+                .as_ref()
+                .map(|fingerprint| (device_id.clone(), fingerprint.clone()))
+        })
+        .collect()
 }
 
 fn main() {
@@ -578,6 +688,9 @@ fn init_config(
     let device_id = device_id.unwrap_or_else(generate_device_id);
     let user_id = user_id.unwrap_or_else(generate_user_id);
     let state_path = default_state_path(path);
+    let identity = Identity::new(&device_id, app_id, &user_id);
+    let device_keys = DeviceKeys::generate(&identity)
+        .map_err(|error| io::Error::new(io::ErrorKind::Other, error.to_string()))?;
 
     let config = Config {
         device_id,
@@ -585,6 +698,7 @@ fn init_config(
         user_id,
         state_path,
         data_path: None,
+        device_keys: Some(DeviceKeysRecord::from_keys(&device_keys)),
         devices: BTreeMap::new(),
     };
 
@@ -663,7 +777,11 @@ fn pair_device(
         return Err("pairing aborted locally".into());
     }
 
-    config.upsert_device(&remote_identity, Some(device));
+    config.upsert_device(
+        &remote_identity,
+        Some(device),
+        remote_device.fingerprint.clone(),
+    );
     save_config(path, &config)?;
 
     println!(
@@ -880,10 +998,12 @@ fn refresh_file(
         .clone()
         .ok_or("no file selected; run libresync select")?;
 
+    let device_keys = config.device_keys()?;
     let state = load_or_init_state(&config)?;
     let handler = Arc::new(StaticHandler {
         app_id: config.app_id.clone(),
-        allowed: config.devices.keys().cloned().collect(),
+        allowed: allowed_fingerprint_map(&config),
+        keys: device_keys,
     });
     let mut engine = Engine::new(EngineConfig::new(config.identity()), state, handler);
     let adapter = Arc::new(JsonFileAdapter::new(FILE_KEY, data_path));
@@ -897,7 +1017,11 @@ fn refresh_file(
         .lock()
         .expect("state lock")
         .save(&config.state_path)?;
-    config.upsert_device(&remote_device.identity, Some(device));
+    config.upsert_device(
+        &remote_device.identity,
+        Some(device),
+        remote_device.fingerprint.clone(),
+    );
     save_config(path, &config)?;
 
     println!(
@@ -1059,12 +1183,21 @@ fn load_config(path: &Path) -> Result<Config, Box<dyn std::error::Error>> {
             format!("failed to read config {}: {error}", path.display()),
         )
     })?;
-    let config = serde_json::from_slice(&data).map_err(|error| {
+    let mut config: Config = serde_json::from_slice(&data).map_err(|error| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("failed to parse config {}: {error}", path.display()),
         )
     })?;
+
+    if config.device_keys.is_none() {
+        let identity = config.identity();
+        let keys = DeviceKeys::generate(&identity)
+            .map_err(|error| io::Error::new(io::ErrorKind::Other, error.to_string()))?;
+        config.device_keys = Some(DeviceKeysRecord::from_keys(&keys));
+        save_config(path, &config)?;
+    }
+
     Ok(config)
 }
 
@@ -1492,10 +1625,12 @@ fn refresh_with_address(
         .ok_or("no file selected; run libresync select")?;
 
     let before_bytes = fs::read(&data_path).unwrap_or_default();
+    let device_keys = config.device_keys()?;
     let state = load_or_init_state(config)?;
     let handler = Arc::new(StaticHandler {
         app_id: config.app_id.clone(),
-        allowed: config.devices.keys().cloned().collect(),
+        allowed: allowed_fingerprint_map(config),
+        keys: device_keys,
     });
     let mut engine = Engine::new(EngineConfig::new(config.identity()), state, handler);
     let adapter = Arc::new(JsonFileAdapter::new(FILE_KEY, data_path.clone()));
@@ -1511,7 +1646,11 @@ fn refresh_with_address(
         .lock()
         .expect("state lock")
         .save(&config.state_path)?;
-    config.upsert_device(&remote_device.identity, Some(device));
+    config.upsert_device(
+        &remote_device.identity,
+        Some(device),
+        remote_device.fingerprint.clone(),
+    );
     save_config(path, config)?;
     Ok(changed)
 }
@@ -1571,12 +1710,17 @@ mod tests {
     #[test]
     fn resolve_device_address_prefers_explicit_device() {
         let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 52345));
+        let identity = Identity::new("local-device", APP_ID_DEFAULT, "user");
+        let device_keys = DeviceKeysRecord::from_keys(
+            &DeviceKeys::generate(&identity).expect("device keys"),
+        );
         let config = Config {
             device_id: "local-device".to_string(),
             app_id: APP_ID_DEFAULT.to_string(),
             user_id: "user".to_string(),
             state_path: PathBuf::from("state.json"),
             data_path: None,
+            device_keys: Some(device_keys),
             devices: BTreeMap::new(),
         };
         let resolved = resolve_device_address_with_timeout(
@@ -1591,12 +1735,17 @@ mod tests {
 
     #[test]
     fn resolve_device_address_errors_when_none_found() {
+        let identity = Identity::new("local-device", APP_ID_DEFAULT, "user");
+        let device_keys = DeviceKeysRecord::from_keys(
+            &DeviceKeys::generate(&identity).expect("device keys"),
+        );
         let config = Config {
             device_id: "local-device".to_string(),
             app_id: APP_ID_DEFAULT.to_string(),
             user_id: "user".to_string(),
             state_path: PathBuf::from("state.json"),
             data_path: None,
+            device_keys: Some(device_keys),
             devices: BTreeMap::new(),
         };
         let error = resolve_device_address_with_timeout(
@@ -1615,18 +1764,23 @@ mod tests {
 
     #[test]
     fn upsert_device_sets_last_seen_fields() {
+        let identity = Identity::new("local", APP_ID_DEFAULT, "user");
+        let device_keys = DeviceKeysRecord::from_keys(
+            &DeviceKeys::generate(&identity).expect("device keys"),
+        );
         let mut config = Config {
             device_id: "local".to_string(),
             app_id: APP_ID_DEFAULT.to_string(),
             user_id: "user".to_string(),
             state_path: PathBuf::from("state.json"),
             data_path: None,
+            device_keys: Some(device_keys),
             devices: BTreeMap::new(),
         };
 
         let identity = Identity::new("remote", APP_ID_DEFAULT, "remote-user");
         let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 52345));
-        config.upsert_device(&identity, Some(addr));
+        config.upsert_device(&identity, Some(addr), None);
 
         let record = config.devices.get("remote").expect("record");
         assert_eq!(record.last_seen_addr.as_deref(), Some("127.0.0.1:52345"));
