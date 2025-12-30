@@ -1,18 +1,18 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- This repository currently contains project documentation only. Key files live at the root:
+- This repository contains a Rust workspace plus documentation. Key files live at the root:
   - `README.md` — high-level overview and values.
   - `RESEARCH.md` — design and architecture research notes.
+  - `PROGRESS.md` — ongoing implementation status; consult during early development.
   - `SECURITY.md`, `PRIVACY.md`, `LICENSE` — security, privacy, and licensing details.
+- `docs/` contains architecture and CLI documentation.
+- `crates/` contains the Rust crates (`libresync` core and `libresync-cli`).
 - `scripts/` contains local security utilities (pre-commit and audit helpers).
-- There is no `src/` or `tests/` directory yet; expect these to be added as the Rust core and platform bindings are implemented.
 
 ## Build, Test, and Development Commands
-- No build or test tooling is defined yet. When code lands, add a `Cargo.toml` and document commands such as:
-  - `cargo build` — compile the Rust core.
-  - `cargo test` — run unit and integration tests.
-- Until then, contributions focus on documentation updates.
+- Build: `cargo build`
+- Tests: `cargo test`
 
 ## Coding Style & Naming Conventions
 - Use consistent Markdown formatting with short paragraphs and bullet lists.
@@ -20,8 +20,7 @@
 - File names are uppercase for policy docs (e.g., `SECURITY.md`), and title-case headings within documents.
 
 ## Testing Guidelines
-- No test framework is present yet.
-- When tests are added, document the framework (e.g., `cargo test`, `criterion`) and naming conventions (e.g., `tests/*.rs`).
+- Use `cargo test` for unit and integration tests.
 
 ## Commit & Pull Request Guidelines
 - Git history is not available in this repo, so no commit convention is established.

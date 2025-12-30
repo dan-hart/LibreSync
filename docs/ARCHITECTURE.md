@@ -1,0 +1,63 @@
+# Architecture overview
+
+LibreSync is a device-to-device (D2D) sync engine. Every instance is a device, and devices connect directly on the LAN. There is no client/server role in the protocol; a device may accept inbound connections and also initiate outbound connections at any time.
+
+## Core principles
+- Devices are symmetric; any device can initiate a connection.
+- Trust is scoped per app ID, not per device globally.
+- Sync is deterministic: last-writer-wins with Lamport clocks.
+- The protocol is intentionally minimal and binary-agnostic (JSON lines in the MVP).
+
+## Identity model
+Each device announces a triple:
+- device ID: three random words joined by dashes (customizable).
+- app ID: bundle identifier (e.g., `com.codedbydan.libresync-cli`).
+- user ID: adjective + noun joined by a dash (customizable).
+
+The app ID is the scope boundary for trust and discovery. Devices will only pair and sync when app IDs match.
+
+## Discovery (LAN)
+- Devices advertise over mDNS with a service type of `_libresync._tcp.local.`
+- Advertisements include app ID, device ID, and user ID as TXT properties.
+- Discovery is used to find candidate devices, not to establish trust.
+ - The default listener port is `52345` unless overridden.
+
+## Pairing and consent
+Pairing is explicit consent on both devices:
+1. Device A sends a pairing request to device B.
+2. Device B checks the app ID and prompts the user (or auto-accepts).
+3. If accepted, device B stores device A in its allowlist.
+4. Device A then prompts locally and stores device B in its allowlist.
+
+Pairing is required before any sync. Devices that are not paired are rejected.
+
+## Trust scope (per app)
+Trust is stored per app ID. This prevents a trusted device in one app from automatically being trusted by another app.
+
+## Connection flow
+A device runs a listener to accept inbound connections. The actual sync uses two connections:
+- Push connection: device A sends its snapshot to device B.
+- Pull connection: device A requests device B's snapshot.
+
+Both devices merge incoming entries using the Lamport clock rules to ensure convergence.
+
+## Data model
+- The core state is a key/value store of bytes.
+- Each value has a Lamport clock (counter + device ID).
+- On merge, the entry with the higher clock wins. Ties resolve by device ID.
+
+## File sync (CLI)
+The CLI maps a single JSON file to a single key (`file`) in the state:
+- Before sync, the local file is loaded into the state.
+- After sync, the file is updated with the most recent value.
+
+## Security notes (MVP)
+- Current MVP uses identity strings and consent but does not yet bind identities to cryptographic keys.
+- mDNS discovery is unauthenticated and should be treated as a hint only.
+- Pairing is the trust gate; devices that are not paired are rejected.
+
+## Future hardening
+- Device keypairs and signed app attestations.
+- Encrypted transport (Noise or TLS).
+- Allowlist revocation and key rotation.
+- Trust delegation policies (auto-accept for pre-approved devices).

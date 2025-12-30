@@ -21,6 +21,30 @@
 
 ---
 
+## CLI (libresync)
+The CLI is a minimal device-to-device testing tool that uses LAN discovery, device pairing, and a single JSON file sync.
+
+### Quick start
+1. Initialize a config on each device:
+   - `libresync init --config ./libresync.json`
+2. Select the JSON file to keep in sync:
+   - `libresync select --config ./libresync.json --file ./data.json`
+3. Start the device listener (advertises via mDNS, default port 52345):
+   - `libresync listen --config ./libresync.json`
+4. Pair once between devices (consent required):
+   - `libresync pair --config ./libresync.json`
+5. Sync the selected JSON file:
+   - `libresync sync --config ./libresync.json`
+6. Check status (paired + discovered devices):
+   - `libresync status --config ./libresync.json`
+
+### Notes
+- Pairing is required before sync.
+- `pair`/`sync` will discover devices automatically; if multiple are found, you’ll be prompted to pick one.
+- You can also target a specific device: `--device <ip:port>` or `--device-id <device-id>`.
+- Discovery is unauthenticated and only used to find devices; trust is established at pairing.
+- `status` shows connected devices (discovered now), last seen addresses, and last seen timestamps for paired devices.
+
 ## Values
 - Privacy: a human right
 - Security: end-to-end encryption
