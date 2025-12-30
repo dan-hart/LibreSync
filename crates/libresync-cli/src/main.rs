@@ -13,15 +13,15 @@ use std::time::{Duration, Instant};
 use chrono::{Local, TimeZone};
 use clap::{Parser, Subcommand};
 use directories::ProjectDirs;
-use libresync::{DataAdapter, DeviceHandler, Engine, EngineConfig, Identity, JsonFileAdapter, State};
-use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use libresync::{
+    DataAdapter, DeviceHandler, DeviceInfo, Engine, EngineConfig, Identity, JsonFileAdapter, State,
+};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, System};
 
 const APP_ID_DEFAULT: &str = "com.codedbydan.libresync-cli";
-const SERVICE_TYPE: &str = "_libresync._tcp.local.";
 const FILE_KEY: &str = "file";
 const DEFAULT_LISTEN: &str = "0.0.0.0:52345";
 const CONFIG_FILE_NAME: &str = "libresync.json";
@@ -443,6 +443,18 @@ impl DeviceHandler for StaticHandler {
     }
 }
 
+fn engine_for_config(config: &Config) -> Engine {
+    let handler = Arc::new(StaticHandler {
+        app_id: config.app_id.clone(),
+        allowed: config.devices.keys().cloned().collect(),
+    });
+    Engine::new(
+        EngineConfig::new(config.identity()),
+        State::new(config.device_id.clone()),
+        handler,
+    )
+}
+
 fn main() {
     let cli = Cli::parse();
     let verbose = cli.verbose;
@@ -602,8 +614,8 @@ fn select_file(path: &Path, file: &Path) -> Result<(), Box<dyn std::error::Error
 
 fn discover_devices(path: &Path, timeout_secs: u64) -> Result<(), Box<dyn std::error::Error>> {
     let config = load_config(path)?;
-    let devices = browse_mdns(&config.app_id, Duration::from_secs(timeout_secs))?;
-    let devices = filter_out_local(devices, &config.device_id);
+    let engine = engine_for_config(&config);
+    let devices = engine.discover_devices_with_timeout(Duration::from_secs(timeout_secs))?;
 
     if devices.is_empty() {
         println!("No devices found for app {}", config.app_id);
@@ -613,7 +625,12 @@ fn discover_devices(path: &Path, timeout_secs: u64) -> Result<(), Box<dyn std::e
     for device in devices {
         println!(
             "{} ({}) at {}",
-            device.device_id, device.user_id, device.address
+            device.identity.device_id,
+            device.identity.user_id,
+            device
+                .address
+                .map(|addr| addr.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
         );
     }
 
@@ -627,41 +644,10 @@ fn pair_device(
     auto_accept: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = load_config(path)?;
-    let local_identity = config.identity();
-    let device = resolve_device_address(
-        &config.app_id,
-        &config.device_id,
-        device,
-        device_id.as_deref(),
-    )?;
-
-    let stream = std::net::TcpStream::connect_timeout(&device, Duration::from_secs(5))?;
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-
-    let mut reader = std::io::BufReader::new(stream.try_clone()?);
-    let mut writer = std::io::BufWriter::new(stream);
-
-    libresync::write_message(
-        &mut writer,
-        &libresync::Message::PairRequest {
-            identity: local_identity,
-        },
-    )?;
-
-    let response = libresync::read_message(&mut reader)?;
-    let (remote_identity, accepted) = match response {
-        libresync::Message::PairResponse { identity, accepted } => (identity, accepted),
-        _ => return Err("unexpected pairing response".into()),
-    };
-
-    if !accepted {
-        return Err(format!("pairing rejected by {}", remote_identity.device_id).into());
-    }
-
-    if remote_identity.app_id != config.app_id {
-        return Err("app id mismatch during pairing".into());
-    }
+    let device = resolve_device_address(&config, device, device_id.as_deref())?;
+    let engine = engine_for_config(&config);
+    let remote_device = engine.request_pair(device)?;
+    let remote_identity = remote_device.identity;
 
     let local_accept = if auto_accept {
         true
@@ -732,7 +718,7 @@ fn listen_device(
     let mdns = if no_discovery {
         None
     } else {
-        Some(register_mdns(&identity, listener_addr)?)
+        Some(libresync::register_mdns(&identity, listener_addr)?)
     };
 
     let running = Arc::new(AtomicBool::new(true));
@@ -742,12 +728,12 @@ fn listen_device(
         running_clone.store(false, Ordering::SeqCst);
     })?;
 
-    let file_writer = spawn_state_writer(
-        Arc::clone(&config),
-        Arc::clone(&state),
-        running.clone(),
-        adapter,
-    );
+    let adapter_watch = if adapter.is_some() {
+        let state_path = config.lock().expect("config lock").state_path.clone();
+        Some(engine.watch(FILE_KEY, state_path, Duration::from_millis(250))?)
+    } else {
+        None
+    };
 
     println!(
         "Listening on {} (device: {}, user: {})",
@@ -769,87 +755,15 @@ fn listen_device(
 
     let listener = engine.stop_listening();
     running.store(false, Ordering::SeqCst);
-    let _ = file_writer.join();
+    if let Some(watch) = adapter_watch {
+        let _ = watch.stop();
+    }
     let state = state.lock().expect("state poisoned");
     state.save(&config.lock().expect("config lock").state_path)?;
     drop(mdns);
     listener?;
 
     Ok(())
-}
-
-fn spawn_state_writer(
-    config: Arc<Mutex<Config>>,
-    state: Arc<Mutex<State>>,
-    running: Arc<AtomicBool>,
-    adapter: Option<Arc<JsonFileAdapter>>,
-) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        let mut last_bytes: Option<Vec<u8>> = None;
-        while running.load(Ordering::SeqCst) {
-            let state_path = {
-                let cfg = match config.lock() {
-                    Ok(cfg) => cfg,
-                    Err(_) => {
-                        thread::sleep(Duration::from_millis(250));
-                        continue;
-                    }
-                };
-                cfg.state_path.clone()
-            };
-
-            if let Some(adapter) = &adapter {
-                let data_path = adapter.path();
-                if let Err(error) = ensure_json_file(data_path) {
-                    eprintln!("Listener file update error: {error}");
-                } else {
-                    let bytes = {
-                        let state = match state.lock() {
-                            Ok(state) => state,
-                            Err(_) => {
-                                thread::sleep(Duration::from_millis(250));
-                                continue;
-                            }
-                        };
-                        state.get(adapter.key()).map(|data| data.to_vec())
-                    };
-
-                    if let Some(bytes) = bytes {
-                        if last_bytes.as_ref() != Some(&bytes) {
-                            if let Err(error) = fs::write(data_path, &bytes) {
-                                eprintln!(
-                                    "Listener file update error ({}): {error}",
-                                    data_path.display()
-                                );
-                            } else {
-                                last_bytes = Some(bytes);
-                                let _ = state.lock().map(|state| state.save(&state_path));
-                            }
-                        }
-                    }
-
-                    if let Ok(file_bytes) = fs::read(data_path) {
-                        let mut state = match state.lock() {
-                            Ok(state) => state,
-                            Err(_) => {
-                                thread::sleep(Duration::from_millis(250));
-                                continue;
-                            }
-                        };
-                        let current = state.get(adapter.key()).map(|data| data.to_vec());
-                        if current.as_deref() != Some(file_bytes.as_slice()) {
-                            state.set(adapter.key().to_string(), file_bytes);
-                            let _ = state.save(&state_path);
-                        }
-                    }
-                }
-            } else if let Ok(state) = state.lock() {
-                let _ = state.save(&state_path);
-            }
-
-            thread::sleep(Duration::from_millis(250));
-        }
-    })
 }
 
 fn spawn_background_listener(
@@ -960,12 +874,7 @@ fn refresh_file(
     device_id: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = load_config(path)?;
-    let device = resolve_device_address(
-        &config.app_id,
-        &config.device_id,
-        device,
-        device_id.as_deref(),
-    )?;
+    let device = resolve_device_address(&config, device, device_id.as_deref())?;
     let data_path = config
         .data_path
         .clone()
@@ -1015,16 +924,16 @@ fn status(
     }
     print_listener_status(path)?;
 
-    let mut discovered: Vec<DiscoveredDevice> = Vec::new();
+    let engine = engine_for_config(&config);
+    let mut discovered: Vec<DeviceInfo> = Vec::new();
     if discover {
-        discovered = browse_mdns(&config.app_id, Duration::from_secs(timeout_secs))?;
-        discovered = filter_out_local(discovered, &config.device_id);
+        discovered = engine.discover_devices_with_timeout(Duration::from_secs(timeout_secs))?;
     }
 
-    let discovered_map: HashMap<String, DiscoveredDevice> = discovered
+    let discovered_map: HashMap<String, DeviceInfo> = discovered
         .iter()
         .cloned()
-        .map(|device| (device.device_id.clone(), device))
+        .map(|device| (device.identity.device_id.clone(), device))
         .collect();
 
     if discover {
@@ -1033,11 +942,18 @@ fn status(
             println!("  (none)");
         } else {
             for device in discovered_map.values() {
-                let paired = config.devices.contains_key(&device.device_id);
+                let paired = config.devices.contains_key(&device.identity.device_id);
                 let status = if paired { "paired" } else { "unpaired" };
+                let address = device
+                    .address
+                    .map(|addr| addr.to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
                 println!(
                     "  {} ({}) at {} [{}]",
-                    device.device_id, device.user_id, device.address, status
+                    device.identity.device_id,
+                    device.identity.user_id,
+                    address,
+                    status
                 );
             }
         }
@@ -1051,8 +967,10 @@ fn status(
 
     for record in config.devices.values_mut() {
         if let Some(found) = discovered_map.get(&record.device_id) {
-            record.last_seen_addr = Some(found.address.to_string());
-            record.last_seen_unix_secs = Some(now_unix_secs());
+            if let Some(address) = found.address {
+                record.last_seen_addr = Some(address.to_string());
+                record.last_seen_unix_secs = Some(now_unix_secs());
+            }
         }
         let addr = record
             .last_seen_addr
@@ -1225,109 +1143,16 @@ fn prompt_yes_no(prompt: &str) -> Result<bool, io::Error> {
     Ok(matches!(response.as_str(), "y" | "yes"))
 }
 
-fn register_mdns(
-    identity: &Identity,
-    listen: SocketAddr,
-) -> Result<ServiceDaemon, Box<dyn std::error::Error>> {
-    let mdns = ServiceDaemon::new()?;
-    let mut properties = HashMap::new();
-    properties.insert("app_id".to_string(), identity.app_id.clone());
-    properties.insert("device_id".to_string(), identity.device_id.clone());
-    properties.insert("user_id".to_string(), identity.user_id.clone());
-
-    let ips = local_ips(listen.ip())?;
-    let host_name = format!("{}.local.", identity.device_id);
-    let service = ServiceInfo::new(
-        SERVICE_TYPE,
-        &identity.device_id,
-        &host_name,
-        ips.as_slice(),
-        listen.port(),
-        properties,
-    )?;
-
-    mdns.register(service)?;
-    Ok(mdns)
-}
-
-#[derive(Clone, Debug)]
-struct DiscoveredDevice {
-    device_id: String,
-    user_id: String,
-    address: SocketAddr,
-}
-
-fn filter_out_local(
-    devices: Vec<DiscoveredDevice>,
-    local_device_id: &str,
-) -> Vec<DiscoveredDevice> {
-    devices
-        .into_iter()
-        .filter(|device| device.device_id != local_device_id)
-        .collect()
-}
-
-fn browse_mdns(app_id: &str, timeout: Duration) -> Result<Vec<DiscoveredDevice>, Box<dyn std::error::Error>> {
-    let mdns = ServiceDaemon::new()?;
-    let receiver = mdns.browse(SERVICE_TYPE)?;
-    let start = Instant::now();
-    let mut devices: BTreeMap<String, DiscoveredDevice> = BTreeMap::new();
-
-    while start.elapsed() < timeout {
-        let remaining = timeout.saturating_sub(start.elapsed());
-        let event = receiver.recv_timeout(remaining.min(Duration::from_millis(200)));
-        let event = match event {
-            Ok(event) => event,
-            Err(flume::RecvTimeoutError::Timeout) => continue,
-            Err(error) => return Err(error.into()),
-        };
-
-        if let ServiceEvent::ServiceResolved(info) = event {
-            if let Some(device) = parse_service_info(&info, app_id) {
-                devices.insert(device.device_id.clone(), device);
-            }
-        }
-    }
-
-    mdns.shutdown()?;
-    Ok(devices.into_values().collect())
-}
-
-fn parse_service_info(info: &ServiceInfo, expected_app_id: &str) -> Option<DiscoveredDevice> {
-    let properties = info.get_properties();
-    let app_id = properties.get("app_id")?.val_str();
-    if app_id != expected_app_id {
-        return None;
-    }
-    let device_id = properties.get("device_id")?.val_str();
-    let user_id = properties.get("user_id")?.val_str();
-    let address = pick_address(info, info.get_port())?;
-
-    Some(DiscoveredDevice {
-        device_id: device_id.to_string(),
-        user_id: user_id.to_string(),
-        address,
-    })
-}
-
 fn resolve_device_address(
-    app_id: &str,
-    local_device_id: &str,
+    config: &Config,
     device: Option<SocketAddr>,
     device_id: Option<&str>,
 ) -> Result<SocketAddr, Box<dyn std::error::Error>> {
-    resolve_device_address_with_timeout(
-        app_id,
-        local_device_id,
-        device,
-        device_id,
-        Duration::from_secs(3),
-    )
+    resolve_device_address_with_timeout(config, device, device_id, Duration::from_secs(3))
 }
 
 fn resolve_device_address_with_timeout(
-    app_id: &str,
-    local_device_id: &str,
+    config: &Config,
     device: Option<SocketAddr>,
     device_id: Option<&str>,
     timeout: Duration,
@@ -1336,8 +1161,8 @@ fn resolve_device_address_with_timeout(
         return Ok(device);
     }
 
-    let devices = browse_mdns(app_id, timeout)?;
-    let devices = filter_out_local(devices, local_device_id);
+    let engine = engine_for_config(config);
+    let devices = engine.discover_devices_with_timeout(timeout)?;
     if devices.is_empty() {
         return Err("no devices found on the LAN".into());
     }
@@ -1345,28 +1170,38 @@ fn resolve_device_address_with_timeout(
     if let Some(device_id) = device_id {
         let matched = devices
             .into_iter()
-            .find(|device| device.device_id == device_id)
+            .find(|device| device.identity.device_id == device_id)
             .ok_or_else(|| format!("device not found: {device_id}"))?;
-        return Ok(matched.address);
+        return matched
+            .address
+            .ok_or_else(|| "device address unavailable".into());
     }
 
     if devices.len() == 1 {
-        return Ok(devices[0].address);
+        return devices[0]
+            .address
+            .ok_or_else(|| "device address unavailable".into());
     }
 
     let selection = prompt_select_device(&devices)?;
-    Ok(selection.address)
+    selection
+        .address
+        .ok_or_else(|| "device address unavailable".into())
 }
 
-fn prompt_select_device(devices: &[DiscoveredDevice]) -> Result<DiscoveredDevice, io::Error> {
+fn prompt_select_device(devices: &[DeviceInfo]) -> Result<DeviceInfo, io::Error> {
     println!("Select a device:");
     for (index, device) in devices.iter().enumerate() {
+        let address = device
+            .address
+            .map(|addr| addr.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
         println!(
             "  {}) {} ({}) at {}",
             index + 1,
-            device.device_id,
-            device.user_id,
-            device.address
+            device.identity.device_id,
+            device.identity.user_id,
+            address
         );
     }
 
@@ -1574,14 +1409,14 @@ fn refresh_all_devices(
     }
 
     let discovered = if discover {
-        browse_mdns(&config.app_id, Duration::from_secs(2))?
+        let engine = engine_for_config(config);
+        engine.discover_devices_with_timeout(Duration::from_secs(2))?
     } else {
         Vec::new()
     };
-    let discovered = filter_out_local(discovered, &config.device_id);
     let discovered_map: HashMap<String, SocketAddr> = discovered
         .into_iter()
-        .map(|device| (device.device_id, device.address))
+        .filter_map(|device| device.address.map(|addr| (device.identity.device_id, addr)))
         .collect();
 
     let mut any_changed = false;
@@ -1681,49 +1516,6 @@ fn refresh_with_address(
     Ok(changed)
 }
 
-fn pick_address(info: &ServiceInfo, port: u16) -> Option<SocketAddr> {
-    let addresses = info.get_addresses();
-    if let Some(ip) = addresses.iter().find_map(|addr| match addr {
-        IpAddr::V4(ip) => Some(IpAddr::V4(*ip)),
-        _ => None,
-    }) {
-        return Some(SocketAddr::new(ip, port));
-    }
-
-    if let Some(ip) = addresses.iter().find_map(|addr| match addr {
-        IpAddr::V6(ip) if !ip.is_unicast_link_local() => Some(IpAddr::V6(*ip)),
-        _ => None,
-    }) {
-        return Some(SocketAddr::new(ip, port));
-    }
-
-    let ip = addresses.iter().find_map(|addr| match addr {
-        IpAddr::V6(ip) => Some(IpAddr::V6(*ip)),
-        _ => None,
-    })?;
-    Some(SocketAddr::new(ip, port))
-}
-
-fn local_ips(listen_ip: IpAddr) -> Result<Vec<IpAddr>, Box<dyn std::error::Error>> {
-    if !listen_ip.is_unspecified() {
-        return Ok(vec![listen_ip]);
-    }
-
-    let mut ips = Vec::new();
-    for iface in if_addrs::get_if_addrs()? {
-        if iface.ip().is_loopback() {
-            continue;
-        }
-        ips.push(iface.ip());
-    }
-
-    if ips.is_empty() {
-        ips.push(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
-    }
-
-    Ok(ips)
-}
-
 fn generate_device_id() -> String {
     let mut rng = rand::thread_rng();
     let words = DEVICE_WORDS.choose_multiple(&mut rng, 3).cloned().collect::<Vec<_>>();
@@ -1762,7 +1554,6 @@ const NOUNS: &[&str] = &[
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
-    use std::net::Ipv6Addr;
     use std::net::SocketAddrV4;
 
     #[test]
@@ -1778,130 +1569,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_service_info_accepts_matching_app() {
-        let mut properties = HashMap::new();
-        properties.insert("app_id".to_string(), APP_ID_DEFAULT.to_string());
-        properties.insert("device_id".to_string(), "test-device".to_string());
-        properties.insert("user_id".to_string(), "test-user".to_string());
-
-        let service = ServiceInfo::new(
-            SERVICE_TYPE,
-            "test-device",
-            "test-device.local.",
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-            9000,
-            properties,
-        )
-        .expect("service");
-
-        let device = parse_service_info(&service, APP_ID_DEFAULT).expect("device");
-        assert_eq!(device.device_id, "test-device");
-    }
-
-    #[test]
-    fn pick_address_prefers_ipv4_over_ipv6() {
-        let mut properties = HashMap::new();
-        properties.insert("app_id".to_string(), APP_ID_DEFAULT.to_string());
-        properties.insert("device_id".to_string(), "test-device".to_string());
-        properties.insert("user_id".to_string(), "test-user".to_string());
-
-        let addresses = vec![
-            IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)),
-            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 22)),
-        ];
-
-        let service = ServiceInfo::new(
-            SERVICE_TYPE,
-            "test-device",
-            "test-device.local.",
-            addresses.as_slice(),
-            9000,
-            properties,
-        )
-        .expect("service");
-
-        let picked = pick_address(&service, 9000).expect("address");
-        assert_eq!(
-            picked,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 22)), 9000)
-        );
-    }
-
-    #[test]
-    fn pick_address_skips_link_local_ipv6_when_possible() {
-        let mut properties = HashMap::new();
-        properties.insert("app_id".to_string(), APP_ID_DEFAULT.to_string());
-        properties.insert("device_id".to_string(), "test-device".to_string());
-        properties.insert("user_id".to_string(), "test-user".to_string());
-
-        let addresses = vec![
-            IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2)),
-            IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 3)),
-        ];
-
-        let service = ServiceInfo::new(
-            SERVICE_TYPE,
-            "test-device",
-            "test-device.local.",
-            addresses.as_slice(),
-            9001,
-            properties,
-        )
-        .expect("service");
-
-        let picked = pick_address(&service, 9001).expect("address");
-        assert_eq!(
-            picked,
-            SocketAddr::new(
-                IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 3)),
-                9001
-            )
-        );
-    }
-
-    #[test]
-    fn pick_address_uses_link_local_ipv6_if_only_option() {
-        let mut properties = HashMap::new();
-        properties.insert("app_id".to_string(), APP_ID_DEFAULT.to_string());
-        properties.insert("device_id".to_string(), "test-device".to_string());
-        properties.insert("user_id".to_string(), "test-user".to_string());
-
-        let addresses = vec![IpAddr::V6(Ipv6Addr::new(
-            0xfe80, 0, 0, 0, 0, 0, 0, 5,
-        ))];
-
-        let service = ServiceInfo::new(
-            SERVICE_TYPE,
-            "test-device",
-            "test-device.local.",
-            addresses.as_slice(),
-            9002,
-            properties,
-        )
-        .expect("service");
-
-        let picked = pick_address(&service, 9002).expect("address");
-        assert_eq!(
-            picked,
-            SocketAddr::new(
-                IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 5)),
-                9002
-            )
-        );
-    }
-
-    #[test]
-    fn browse_mdns_returns_empty_for_short_timeout() {
-        let devices = browse_mdns(APP_ID_DEFAULT, Duration::from_millis(10)).expect("browse");
-        assert!(devices.is_empty() || devices.iter().all(|p| p.device_id.len() > 0));
-    }
-
-    #[test]
     fn resolve_device_address_prefers_explicit_device() {
         let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 52345));
+        let config = Config {
+            device_id: "local-device".to_string(),
+            app_id: APP_ID_DEFAULT.to_string(),
+            user_id: "user".to_string(),
+            state_path: PathBuf::from("state.json"),
+            data_path: None,
+            devices: BTreeMap::new(),
+        };
         let resolved = resolve_device_address_with_timeout(
-            APP_ID_DEFAULT,
-            "local-device",
+            &config,
             Some(addr),
             None,
             Duration::from_millis(1),
@@ -1912,9 +1591,16 @@ mod tests {
 
     #[test]
     fn resolve_device_address_errors_when_none_found() {
+        let config = Config {
+            device_id: "local-device".to_string(),
+            app_id: APP_ID_DEFAULT.to_string(),
+            user_id: "user".to_string(),
+            state_path: PathBuf::from("state.json"),
+            data_path: None,
+            devices: BTreeMap::new(),
+        };
         let error = resolve_device_address_with_timeout(
-            APP_ID_DEFAULT,
-            "local-device",
+            &config,
             None,
             Some("missing-device"),
             Duration::from_millis(5),
@@ -1947,10 +1633,4 @@ mod tests {
         assert!(record.last_seen_unix_secs.unwrap_or(0) > 0);
     }
 
-    #[test]
-    fn local_ips_returns_specific_address() {
-        let addr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50));
-        let ips = local_ips(addr).expect("ips");
-        assert_eq!(ips, vec![addr]);
-    }
 }

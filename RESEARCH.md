@@ -148,8 +148,8 @@ The CLI becomes a **first-class integration test** and example app that exercise
 
 - `Engine`: top-level runtime owning discovery, transport, and sync tasks.
 - `DeviceIdentity`: keypair + device metadata; app ID is the trust boundary.
-- `PeerStore`: allowlist and last-seen info; supports revoke and reset.
-- `SyncSession`: per-peer connection state and flow control.
+- `DeviceStore`: allowlist and last-seen info; supports revoke and reset.
+- `SyncSession`: per-device connection state and flow control.
 - `DataAdapter`: pluggable adapter for JSON or SQLite (see below).
 - `EventStream`: typed events (pairing requests, sync status, errors).
 
@@ -158,21 +158,21 @@ The CLI becomes a **first-class integration test** and example app that exercise
 - `Engine::new(config, adapters, event_sink)`  
   Creates a runtime with a background task executor.
 - `engine.start_listening()` / `engine.stop_listening()`
-- `engine.discover_peers()` / `engine.add_peer(address)`
-- `engine.request_pair(peer)` / `engine.accept_pair(peer, decision)`
-- `engine.sync_now(peer)` / `engine.watch(adapter_id)`
+- `engine.discover_devices()` / `engine.add_device(address)`
+- `engine.request_pair(device)` / `engine.accept_pair(device, decision)`
+- `engine.sync_now(device)` / `engine.watch(adapter_id)`
 
 ### Event model
 
 Expose events that app UIs can map to UX:
 
-- `PairingRequested { peer, metadata }`
-- `PairingDecisionRequired { peer, code }`
-- `SyncStarted { peer, adapter }`
-- `SyncProgress { peer, adapter, received, total }`
-- `SyncFinished { peer, adapter, result }`
-- `PeerSeen { peer, address, last_seen }`
-- `PeerOffline { peer }`
+- `PairingRequested { device, metadata }`
+- `PairingDecisionRequired { device, code }`
+- `SyncStarted { device, adapter }`
+- `SyncProgress { device, adapter, received, total }`
+- `SyncFinished { device, adapter, result }`
+- `DeviceSeen { device, address, last_seen }`
+- `DeviceOffline { device }`
 - `Error { scope, error }`
 
 For FFI, this becomes a **callback-based event stream** or **pollable queue**.

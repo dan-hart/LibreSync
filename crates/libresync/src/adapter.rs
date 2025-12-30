@@ -10,12 +10,23 @@ pub enum AdapterKind {
     Custom(String),
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct AdapterCache {
+    pub last_bytes: Option<Vec<u8>>,
+}
+
 pub trait DataAdapter: Send + Sync {
     fn id(&self) -> &str;
     fn kind(&self) -> AdapterKind;
 
     fn load_into_state(&self, state: &mut State) -> Result<()>;
     fn apply_from_state(&self, state: &State) -> Result<()>;
+    fn sync_tick(&self, state: &mut State, cache: &mut AdapterCache) -> Result<()> {
+        let _ = cache;
+        self.load_into_state(state)?;
+        self.apply_from_state(state)?;
+        Ok(())
+    }
 
     fn export_snapshot(&self, state: &State) -> Result<Vec<Entry>> {
         Ok(state.snapshot())
@@ -103,6 +114,25 @@ impl DataAdapter for JsonFileAdapter {
                 fs::write(&self.path, bytes)?;
             }
         }
+        Ok(())
+    }
+
+    fn sync_tick(&self, state: &mut State, cache: &mut AdapterCache) -> Result<()> {
+        self.ensure_file()?;
+        let bytes = state.get(&self.key).map(|data| data.to_vec());
+        if let Some(bytes) = bytes {
+            if cache.last_bytes.as_ref() != Some(&bytes) {
+                fs::write(&self.path, &bytes)?;
+                cache.last_bytes = Some(bytes);
+            }
+        }
+
+        let file_bytes = fs::read(&self.path)?;
+        let current = state.get(&self.key).map(|data| data.to_vec());
+        if current.as_deref() != Some(file_bytes.as_slice()) {
+            state.set(self.key.clone(), file_bytes);
+        }
+
         Ok(())
     }
 }

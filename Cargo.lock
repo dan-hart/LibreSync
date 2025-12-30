@@ -539,6 +539,9 @@ dependencies = [
 name = "libresync"
 version = "0.0.1"
 dependencies = [
+ "flume",
+ "if-addrs",
+ "mdns-sd",
  "serde",
  "serde_json",
  "tempfile",
@@ -553,10 +556,7 @@ dependencies = [
  "clap",
  "ctrlc",
  "directories",
- "flume",
- "if-addrs",
  "libresync",
- "mdns-sd",
  "notify",
  "predicates",
  "rand",

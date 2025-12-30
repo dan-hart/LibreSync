@@ -16,6 +16,8 @@ LibreSync has a working device-to-device MVP for two CLI instances on a LAN. Dev
 - Verbose error output available via `--verbose`.
 - Architecture and CLI docs in `docs/`.
 - Test suite covering core and CLI flows.
+- SDK-first `Engine` API with adapters and device discovery/pairing.
+- CLI dogfoods the `Engine` for listen, discover, pair, refresh, and watch.
 
 ## Current MVP behavior
 - Two devices on the same LAN can run `libresync`.
@@ -33,9 +35,7 @@ LibreSync has a working device-to-device MVP for two CLI instances on a LAN. Dev
 - Encrypt transport (Noise or TLS).
 - Expand to multi-file or structured adapters.
 - Add optional file watching for near-real-time refresh.
-- Define SDK-first `Engine` API and event stream.
 - Plan FFI boundary + Swift/Kotlin wrapper approach.
-- Turn CLI into a consumer of the SDK API for dogfooding.
 
 ## Tests
 - `cargo test` covers core and CLI behavior.

@@ -1,10 +1,16 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::io::{BufReader, BufWriter};
+use std::net::{SocketAddr, TcpStream};
+use std::path::PathBuf;
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
+use std::time::{Duration, SystemTime};
 
+use crate::discovery::browse_mdns;
+use crate::protocol::{read_message, write_message, Message};
 use crate::{
-    DataAdapter, DeviceHandler, Error, Identity, Result, State, SyncListener, sync_with_device,
+    AdapterCache, DataAdapter, DeviceHandler, Error, Identity, Result, State, SyncListener,
+    sync_with_device,
 };
 
 #[derive(Clone, Debug)]
@@ -70,6 +76,21 @@ pub enum Event {
 
 pub trait EventSink: Send + Sync {
     fn emit(&self, event: Event);
+}
+
+pub struct AdapterWatch {
+    shutdown: mpsc::Sender<()>,
+    handle: thread::JoinHandle<Result<()>>,
+}
+
+impl AdapterWatch {
+    pub fn stop(self) -> Result<()> {
+        let _ = self.shutdown.send(());
+        match self.handle.join() {
+            Ok(result) => result,
+            Err(_) => Err(Error::Protocol("adapter watch panicked".to_string())),
+        }
+    }
 }
 
 pub struct Engine {
@@ -161,15 +182,65 @@ impl Engine {
     }
 
     pub fn discover_devices(&self) -> Result<Vec<DeviceInfo>> {
-        not_implemented()
+        self.discover_devices_with_timeout(Duration::from_secs(3))
+    }
+
+    pub fn discover_devices_with_timeout(&self, timeout: Duration) -> Result<Vec<DeviceInfo>> {
+        let discovered = browse_mdns(&self.config.identity.app_id, timeout)?;
+        Ok(discovered
+            .into_iter()
+            .filter(|device| device.identity.device_id != self.config.identity.device_id)
+            .map(|device| DeviceInfo {
+                paired: self.device_handler.is_paired(&device.identity),
+                identity: device.identity,
+                address: Some(device.address),
+                last_seen: Some(SystemTime::now()),
+            })
+            .collect())
     }
 
     pub fn add_device(&self, _address: SocketAddr) -> Result<DeviceInfo> {
         not_implemented()
     }
 
-    pub fn request_pair(&self, _device: &DeviceInfo) -> Result<()> {
-        not_implemented()
+    pub fn request_pair(&self, address: SocketAddr) -> Result<DeviceInfo> {
+        let stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
+        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+
+        let mut reader = BufReader::new(stream.try_clone()?);
+        let mut writer = BufWriter::new(stream);
+
+        write_message(
+            &mut writer,
+            &Message::PairRequest {
+                identity: self.config.identity.clone(),
+            },
+        )?;
+
+        let response = read_message(&mut reader)?;
+        let (remote_identity, accepted) = match response {
+            Message::PairResponse { identity, accepted } => (identity, accepted),
+            _ => return Err(Error::Protocol("unexpected pairing response".to_string())),
+        };
+
+        if !accepted {
+            return Err(Error::Protocol(format!(
+                "pairing rejected by {}",
+                remote_identity.device_id
+            )));
+        }
+
+        if remote_identity.app_id != self.config.identity.app_id {
+            return Err(Error::Protocol("app id mismatch during pairing".to_string()));
+        }
+
+        Ok(DeviceInfo {
+            identity: remote_identity,
+            address: Some(address),
+            last_seen: Some(SystemTime::now()),
+            paired: true,
+        })
     }
 
     pub fn respond_to_pairing(
@@ -224,8 +295,53 @@ impl Engine {
         Ok(device)
     }
 
-    pub fn watch(&self, _adapter_id: &str) -> Result<()> {
-        not_implemented()
+    pub fn watch(
+        &self,
+        adapter_id: &str,
+        state_path: impl Into<PathBuf>,
+        interval: Duration,
+    ) -> Result<AdapterWatch> {
+        let adapter = self
+            .adapters
+            .get(adapter_id)
+            .ok_or_else(|| Error::Protocol(format!("missing adapter: {adapter_id}")))?
+            .clone();
+        let state = Arc::clone(&self.state);
+        let state_path = state_path.into();
+        let event_sink = self.event_sink.clone();
+
+        let (shutdown_sender, shutdown_receiver) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            let mut cache = AdapterCache::default();
+            loop {
+                match shutdown_receiver.recv_timeout(interval) {
+                    Ok(()) => break Ok(()),
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(_) => break Ok(()),
+                }
+
+                let mut state = match state.lock() {
+                    Ok(state) => state,
+                    Err(_) => {
+                        emit_error(&event_sink, "state lock poisoned");
+                        continue;
+                    }
+                };
+
+                if let Err(error) = adapter.sync_tick(&mut state, &mut cache) {
+                    emit_error(&event_sink, &format!("adapter sync error: {error}"));
+                }
+
+                if let Err(error) = state.save(&state_path) {
+                    emit_error(&event_sink, &format!("state save error: {error}"));
+                }
+            }
+        });
+
+        Ok(AdapterWatch {
+            shutdown: shutdown_sender,
+            handle,
+        })
     }
 
     fn lock_state(&self) -> Result<std::sync::MutexGuard<'_, State>> {
@@ -238,6 +354,14 @@ impl Engine {
         if let Some(sink) = &self.event_sink {
             sink.emit(event);
         }
+    }
+}
+
+fn emit_error(event_sink: &Option<Arc<dyn EventSink>>, message: &str) {
+    if let Some(sink) = event_sink {
+        sink.emit(Event::Error {
+            message: message.to_string(),
+        });
     }
 }
 
