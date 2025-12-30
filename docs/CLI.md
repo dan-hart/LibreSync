@@ -49,6 +49,7 @@ You can override the location with `--config` on any command.
 - Discovery only lists devices; it does not grant trust.
 - `listen` can be run with `--no-discovery` to avoid mDNS advertising.
 - `listen` writes logs to `libresync-listen.log` and a PID to `libresync-listen.pid` next to the config file.
+- `listen` updates the selected JSON file when incoming refreshes are received.
 - `stop` reads the PID file next to the config and terminates the listener process.
 - `pair` and `refresh` will prompt for a device if multiple are discovered and no device is specified.
 - `watch` refreshes all paired devices and uses discovery unless `--no-discover` is set.

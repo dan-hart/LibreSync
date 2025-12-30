@@ -49,6 +49,7 @@ The CLI is a minimal device-to-device testing tool that uses LAN discovery, devi
 - `status` shows the selected file, listener status, connected devices (discovered now), last seen addresses, and last seen timestamps for paired devices.
 - Config defaults to the OS config directory (override with `--config`).
 - `listen` runs in the background by default; use `--foreground` to keep it in the terminal.
+- `listen` updates the selected JSON file when incoming refreshes are received.
 - `stop` terminates the background listener for the current config.
 - Use `--verbose` to include debug details when errors occur.
 

@@ -705,6 +705,8 @@ fn listen_device(
         running_clone.store(false, Ordering::SeqCst);
     })?;
 
+    let file_writer = spawn_state_writer(Arc::clone(&config), Arc::clone(&state), running.clone());
+
     println!(
         "Listening on {} (device: {}, user: {})",
         listener.addr(),
@@ -724,12 +726,84 @@ fn listen_device(
     }
 
     let listener = listener.shutdown();
+    running.store(false, Ordering::SeqCst);
+    let _ = file_writer.join();
     let state = state.lock().expect("state poisoned");
     state.save(&config.lock().expect("config lock").state_path)?;
     drop(mdns);
     listener?;
 
     Ok(())
+}
+
+fn spawn_state_writer(
+    config: Arc<Mutex<Config>>,
+    state: Arc<Mutex<State>>,
+    running: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let mut last_bytes: Option<Vec<u8>> = None;
+        while running.load(Ordering::SeqCst) {
+            let (data_path, state_path) = {
+                let cfg = match config.lock() {
+                    Ok(cfg) => cfg,
+                    Err(_) => {
+                        thread::sleep(Duration::from_millis(250));
+                        continue;
+                    }
+                };
+                (cfg.data_path.clone(), cfg.state_path.clone())
+            };
+
+            if let Some(data_path) = data_path {
+                if let Err(error) = ensure_json_file(&data_path) {
+                    eprintln!("Listener file update error: {error}");
+                } else {
+                    let bytes = {
+                        let state = match state.lock() {
+                            Ok(state) => state,
+                            Err(_) => {
+                                thread::sleep(Duration::from_millis(250));
+                                continue;
+                            }
+                        };
+                        state.get(FILE_KEY).map(|data| data.to_vec())
+                    };
+
+                    if let Some(bytes) = bytes {
+                        if last_bytes.as_ref() != Some(&bytes) {
+                            if let Err(error) = fs::write(&data_path, &bytes) {
+                                eprintln!(
+                                    "Listener file update error ({}): {error}",
+                                    data_path.display()
+                                );
+                            } else {
+                                last_bytes = Some(bytes);
+                                let _ = state.lock().map(|state| state.save(&state_path));
+                            }
+                        }
+                    }
+
+                    if let Ok(file_bytes) = fs::read(&data_path) {
+                        let mut state = match state.lock() {
+                            Ok(state) => state,
+                            Err(_) => {
+                                thread::sleep(Duration::from_millis(250));
+                                continue;
+                            }
+                        };
+                        let current = state.get(FILE_KEY).map(|data| data.to_vec());
+                        if current.as_deref() != Some(file_bytes.as_slice()) {
+                            state.set(FILE_KEY.to_string(), file_bytes);
+                            let _ = state.save(&state_path);
+                        }
+                    }
+                }
+            }
+
+            thread::sleep(Duration::from_millis(250));
+        }
+    })
 }
 
 fn spawn_background_listener(
@@ -1399,12 +1473,17 @@ fn watch_file(
 
         let interval_due = last_refresh.elapsed() >= Duration::from_secs(interval_secs);
         if local_changed || interval_due {
+            if local_changed {
+                let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
+                println!("Change detected at {timestamp}; refreshing paired devices.");
+            }
             let refresh_result =
                 refresh_all_devices(path, &mut config, !no_discover);
             match refresh_result {
                 Ok(changed) => {
                     if changed {
-                        println!("Refreshed with paired devices.");
+                        let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
+                        println!("Remote change detected at {timestamp}; file updated.");
                     }
                 }
                 Err(error) => {
