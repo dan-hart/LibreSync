@@ -33,6 +33,9 @@ LibreSync has a working device-to-device MVP for two CLI instances on a LAN. Dev
 - Encrypt transport (Noise or TLS).
 - Expand to multi-file or structured adapters.
 - Add optional file watching for near-real-time refresh.
+- Define SDK-first `Engine` API and event stream.
+- Plan FFI boundary + Swift/Kotlin wrapper approach.
+- Turn CLI into a consumer of the SDK API for dogfooding.
 
 ## Tests
 - `cargo test` covers core and CLI behavior.

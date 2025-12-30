@@ -8,6 +8,12 @@ LibreSync is a device-to-device (D2D) sync engine. Every instance is a device, a
 - Sync is deterministic: last-writer-wins with Lamport clocks.
 - The protocol is intentionally minimal and binary-agnostic (JSON lines in the MVP).
 
+## SDK core (engine + adapters)
+The core library now exposes an SDK-first surface:
+- `Engine` owns the listener, sync flow, and shared state.
+- `DataAdapter` bridges app data to the sync state (JSON file adapter today).
+- The CLI is a consumer of the same Engine APIs for listen/refresh/watch.
+
 ## Identity model
 Each device announces a triple:
 - device ID: three random words joined by dashes (customizable).

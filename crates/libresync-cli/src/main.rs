@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use chrono::{Local, TimeZone};
 use clap::{Parser, Subcommand};
 use directories::ProjectDirs;
-use libresync::{sync_with_device, DeviceHandler, Identity, State, SyncListener};
+use libresync::{DataAdapter, DeviceHandler, Engine, EngineConfig, Identity, JsonFileAdapter, State};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use rand::seq::SliceRandom;
@@ -424,6 +424,25 @@ impl DeviceHandler for ConfigHandler {
     }
 }
 
+struct StaticHandler {
+    app_id: String,
+    allowed: HashSet<String>,
+}
+
+impl DeviceHandler for StaticHandler {
+    fn app_id(&self) -> &str {
+        &self.app_id
+    }
+
+    fn is_paired(&self, identity: &Identity) -> bool {
+        self.allowed.contains(&identity.device_id)
+    }
+
+    fn approve_pair(&self, _identity: &Identity) -> libresync::Result<bool> {
+        Ok(false)
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
     let verbose = cli.verbose;
@@ -681,7 +700,6 @@ fn listen_device(
     let config = Arc::new(Mutex::new(config));
 
     let state = load_or_init_state(&config.lock().expect("config lock"))?;
-    let state = Arc::new(Mutex::new(state));
 
     let handler = Arc::new(ConfigHandler {
         app_id: identity.app_id.clone(),
@@ -690,12 +708,31 @@ fn listen_device(
         auto_accept,
     });
 
-    let listener = SyncListener::start(listen, identity.clone(), Arc::clone(&state), handler)?;
+    let mut engine = Engine::new(
+        EngineConfig::new(identity.clone()).with_listen_addr(listen),
+        state,
+        handler,
+    );
+
+    let adapter = {
+        let cfg = config.lock().expect("config lock");
+        cfg.data_path
+            .clone()
+            .map(|path| Arc::new(JsonFileAdapter::new(FILE_KEY, path)))
+    };
+
+    if let Some(adapter) = &adapter {
+        let adapter_trait: Arc<dyn DataAdapter> = adapter.clone();
+        engine.register_adapter(adapter_trait)?;
+    }
+
+    let listener_addr = engine.start_listening()?;
+    let state = engine.state();
 
     let mdns = if no_discovery {
         None
     } else {
-        Some(register_mdns(&identity, listener.addr())?)
+        Some(register_mdns(&identity, listener_addr)?)
     };
 
     let running = Arc::new(AtomicBool::new(true));
@@ -705,11 +742,16 @@ fn listen_device(
         running_clone.store(false, Ordering::SeqCst);
     })?;
 
-    let file_writer = spawn_state_writer(Arc::clone(&config), Arc::clone(&state), running.clone());
+    let file_writer = spawn_state_writer(
+        Arc::clone(&config),
+        Arc::clone(&state),
+        running.clone(),
+        adapter,
+    );
 
     println!(
         "Listening on {} (device: {}, user: {})",
-        listener.addr(),
+        listener_addr,
         identity.device_id,
         identity.user_id
     );
@@ -725,7 +767,7 @@ fn listen_device(
         }
     }
 
-    let listener = listener.shutdown();
+    let listener = engine.stop_listening();
     running.store(false, Ordering::SeqCst);
     let _ = file_writer.join();
     let state = state.lock().expect("state poisoned");
@@ -740,11 +782,12 @@ fn spawn_state_writer(
     config: Arc<Mutex<Config>>,
     state: Arc<Mutex<State>>,
     running: Arc<AtomicBool>,
+    adapter: Option<Arc<JsonFileAdapter>>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let mut last_bytes: Option<Vec<u8>> = None;
         while running.load(Ordering::SeqCst) {
-            let (data_path, state_path) = {
+            let state_path = {
                 let cfg = match config.lock() {
                     Ok(cfg) => cfg,
                     Err(_) => {
@@ -752,11 +795,12 @@ fn spawn_state_writer(
                         continue;
                     }
                 };
-                (cfg.data_path.clone(), cfg.state_path.clone())
+                cfg.state_path.clone()
             };
 
-            if let Some(data_path) = data_path {
-                if let Err(error) = ensure_json_file(&data_path) {
+            if let Some(adapter) = &adapter {
+                let data_path = adapter.path();
+                if let Err(error) = ensure_json_file(data_path) {
                     eprintln!("Listener file update error: {error}");
                 } else {
                     let bytes = {
@@ -767,12 +811,12 @@ fn spawn_state_writer(
                                 continue;
                             }
                         };
-                        state.get(FILE_KEY).map(|data| data.to_vec())
+                        state.get(adapter.key()).map(|data| data.to_vec())
                     };
 
                     if let Some(bytes) = bytes {
                         if last_bytes.as_ref() != Some(&bytes) {
-                            if let Err(error) = fs::write(&data_path, &bytes) {
+                            if let Err(error) = fs::write(data_path, &bytes) {
                                 eprintln!(
                                     "Listener file update error ({}): {error}",
                                     data_path.display()
@@ -784,7 +828,7 @@ fn spawn_state_writer(
                         }
                     }
 
-                    if let Ok(file_bytes) = fs::read(&data_path) {
+                    if let Ok(file_bytes) = fs::read(data_path) {
                         let mut state = match state.lock() {
                             Ok(state) => state,
                             Err(_) => {
@@ -792,13 +836,15 @@ fn spawn_state_writer(
                                 continue;
                             }
                         };
-                        let current = state.get(FILE_KEY).map(|data| data.to_vec());
+                        let current = state.get(adapter.key()).map(|data| data.to_vec());
                         if current.as_deref() != Some(file_bytes.as_slice()) {
-                            state.set(FILE_KEY.to_string(), file_bytes);
+                            state.set(adapter.key().to_string(), file_bytes);
                             let _ = state.save(&state_path);
                         }
                     }
                 }
+            } else if let Ok(state) = state.lock() {
+                let _ = state.save(&state_path);
             }
 
             thread::sleep(Duration::from_millis(250));
@@ -925,44 +971,29 @@ fn refresh_file(
         .clone()
         .ok_or("no file selected; run libresync select")?;
 
-    ensure_json_file(&data_path)?;
+    let state = load_or_init_state(&config)?;
+    let handler = Arc::new(StaticHandler {
+        app_id: config.app_id.clone(),
+        allowed: config.devices.keys().cloned().collect(),
+    });
+    let mut engine = Engine::new(EngineConfig::new(config.identity()), state, handler);
+    let adapter = Arc::new(JsonFileAdapter::new(FILE_KEY, data_path));
+    let adapter_trait: Arc<dyn DataAdapter> = adapter;
+    engine.register_adapter(adapter_trait)?;
 
-    let mut state = load_or_init_state(&config)?;
+    let remote_device = engine.sync_now(device, FILE_KEY)?;
 
-    let local_bytes = fs::read(&data_path)?;
-    let should_update = match state.get(FILE_KEY) {
-        Some(existing) => existing != local_bytes.as_slice(),
-        None => true,
-    };
-    if should_update {
-        state.set(FILE_KEY.to_string(), local_bytes.clone());
-    }
-
-    let app_id = config.app_id.clone();
-    let allowed: HashSet<String> = config.devices.keys().cloned().collect();
-    let device_check = |identity: &Identity| -> libresync::Result<()> {
-        if identity.app_id != app_id {
-            return Err(libresync::Error::Protocol("app id mismatch".to_string()));
-        }
-        if !allowed.contains(&identity.device_id) {
-            return Err(libresync::Error::Protocol("device not paired".to_string()));
-        }
-        Ok(())
-    };
-
-    let remote_identity = sync_with_device(&config.identity(), &mut state, device, device_check)?;
-
-    if let Some(bytes) = state.get(FILE_KEY) {
-        fs::write(&data_path, bytes)?;
-    }
-
-    state.save(&config.state_path)?;
-    config.upsert_device(&remote_identity, Some(device));
+    let state = engine.state();
+    state
+        .lock()
+        .expect("state lock")
+        .save(&config.state_path)?;
+    config.upsert_device(&remote_device.identity, Some(device));
     save_config(path, &config)?;
 
     println!(
         "Refreshed with {} ({})",
-        remote_identity.device_id, remote_identity.user_id
+        remote_device.identity.device_id, remote_device.identity.user_id
     );
 
     Ok(())
@@ -1624,41 +1655,28 @@ fn refresh_with_address(
         .data_path
         .clone()
         .ok_or("no file selected; run libresync select")?;
-    ensure_json_file(&data_path)?;
 
-    let mut state = load_or_init_state(config)?;
-    let local_bytes = fs::read(&data_path)?;
-    let should_update = match state.get(FILE_KEY) {
-        Some(existing) => existing != local_bytes.as_slice(),
-        None => true,
-    };
-    if should_update {
-        state.set(FILE_KEY.to_string(), local_bytes.clone());
-    }
+    let before_bytes = fs::read(&data_path).unwrap_or_default();
+    let state = load_or_init_state(config)?;
+    let handler = Arc::new(StaticHandler {
+        app_id: config.app_id.clone(),
+        allowed: config.devices.keys().cloned().collect(),
+    });
+    let mut engine = Engine::new(EngineConfig::new(config.identity()), state, handler);
+    let adapter = Arc::new(JsonFileAdapter::new(FILE_KEY, data_path.clone()));
+    let adapter_trait: Arc<dyn DataAdapter> = adapter;
+    engine.register_adapter(adapter_trait)?;
 
-    let app_id = config.app_id.clone();
-    let allowed: HashSet<String> = config.devices.keys().cloned().collect();
-    let device_check = |identity: &Identity| -> libresync::Result<()> {
-        if identity.app_id != app_id {
-            return Err(libresync::Error::Protocol("app id mismatch".to_string()));
-        }
-        if !allowed.contains(&identity.device_id) {
-            return Err(libresync::Error::Protocol("device not paired".to_string()));
-        }
-        Ok(())
-    };
+    let remote_device = engine.sync_now(device, FILE_KEY)?;
+    let after_bytes = fs::read(&data_path).unwrap_or_default();
+    let changed = before_bytes != after_bytes;
 
-    let remote_identity = sync_with_device(&config.identity(), &mut state, device, device_check)?;
-    let mut changed = false;
-    if let Some(bytes) = state.get(FILE_KEY) {
-        if bytes != local_bytes.as_slice() {
-            fs::write(&data_path, bytes)?;
-            changed = true;
-        }
-    }
-
-    state.save(&config.state_path)?;
-    config.upsert_device(&remote_identity, Some(device));
+    let state = engine.state();
+    state
+        .lock()
+        .expect("state lock")
+        .save(&config.state_path)?;
+    config.upsert_device(&remote_device.identity, Some(device));
     save_config(path, config)?;
     Ok(changed)
 }

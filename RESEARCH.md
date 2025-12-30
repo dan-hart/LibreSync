@@ -119,6 +119,172 @@ This avoids duplicating the hardest logic (sync correctness) across Swift/Kotlin
 
 ---
 
+## From CLI POC to SDK-ready architecture
+
+The CLI proved the protocol works end-to-end. The next phase is to turn the core into a **stable, embeddable SDK** and make the CLI a consumer of that SDK. The goal is to let apps import the Rust library directly (Rust) or through thin native wrappers (Swift/Kotlin), while keeping platform-specific logic at the edges.
+
+### Layering model
+
+1) **Rust core (libresync)**  
+   - Owns protocol, sync engine, adapters, storage, crypto, networking, and discovery traits.
+   - Exposes a stable API for clients (Rust API and C ABI for wrappers).
+
+2) **Platform integration layer (Swift/Kotlin wrappers)**  
+   - Handles permissions, lifecycle, and UI/UX flows (pairing prompts).
+   - Bridges platform key storage (Keychain/Keystore).
+   - Provides idiomatic APIs and async model to the host language.
+
+3) **App SDK surface (high-level)**  
+   - Hides protocol details and provides “sync intent” APIs.
+   - Exposes events and sync state in a friendly, reactive style.
+
+The CLI becomes a **first-class integration test** and example app that exercises the same SDK APIs a native app would use.
+
+---
+
+## SDK API shape (high-level)
+
+### Core runtime objects
+
+- `Engine`: top-level runtime owning discovery, transport, and sync tasks.
+- `DeviceIdentity`: keypair + device metadata; app ID is the trust boundary.
+- `PeerStore`: allowlist and last-seen info; supports revoke and reset.
+- `SyncSession`: per-peer connection state and flow control.
+- `DataAdapter`: pluggable adapter for JSON or SQLite (see below).
+- `EventStream`: typed events (pairing requests, sync status, errors).
+
+### Suggested Rust API (conceptual)
+
+- `Engine::new(config, adapters, event_sink)`  
+  Creates a runtime with a background task executor.
+- `engine.start_listening()` / `engine.stop_listening()`
+- `engine.discover_peers()` / `engine.add_peer(address)`
+- `engine.request_pair(peer)` / `engine.accept_pair(peer, decision)`
+- `engine.sync_now(peer)` / `engine.watch(adapter_id)`
+
+### Event model
+
+Expose events that app UIs can map to UX:
+
+- `PairingRequested { peer, metadata }`
+- `PairingDecisionRequired { peer, code }`
+- `SyncStarted { peer, adapter }`
+- `SyncProgress { peer, adapter, received, total }`
+- `SyncFinished { peer, adapter, result }`
+- `PeerSeen { peer, address, last_seen }`
+- `PeerOffline { peer }`
+- `Error { scope, error }`
+
+For FFI, this becomes a **callback-based event stream** or **pollable queue**.
+
+---
+
+## FFI and native wrapper strategy
+
+### Recommendation
+
+Use a **C ABI boundary** with **thin language wrappers**, and keep the Rust core as the single source of truth.
+
+Two viable tooling paths:
+
+1) **UniFFI-based bindings**  
+   - Rust: define an interface layer using UniFFI-compatible types.
+   - Swift/Kotlin: generate idiomatic bindings with minimal manual glue.
+   - Pros: faster iteration, less boilerplate, consistent APIs.
+   - Cons: some constraints on types and async surfaces.
+
+2) **Manual C ABI + custom wrappers**  
+   - C-exported functions with explicit handles and memory management.
+   - Swift: wrap in an XCFramework + Swift module map + helper types.
+   - Kotlin: JNI/NDK bridge packaged in an AAR.
+   - Pros: full control and stability guarantees.
+   - Cons: more boilerplate; higher maintenance.
+
+Start with UniFFI unless it blocks a required API. If it does, fall back to a manual C ABI.
+
+### FFI design principles
+
+- **Opaque handles** for long-lived objects (engine, adapter, peer).
+- **Explicit ownership**: caller frees strings and buffers.
+- **Stable enums** for event types and error codes.
+- **Async surfaced as callbacks** or **pollable queues** (no cross-thread FFI calls from Rust).
+- **Versioned ABI**: include a `libresync_abi_version()` function.
+
+---
+
+## Data adapters and app-facing abstractions
+
+### Adapter interfaces (v1)
+
+1) **Document adapter** (JSON-like CRDT)  
+   - Primary adapter for app state, preferences, and structured lists.
+   - Exposes `get_document()` / `apply_patch()` / `subscribe_changes()`.
+
+2) **SQLite adapter** (scoped)  
+   - Start with primary-keyed tables and deterministic per-column merge.
+   - Expose `register_table()`, `export_changes()`, `apply_changes()`.
+
+### App-level API (intent focused)
+
+Rather than exposing protocol primitives, the SDK should provide:
+
+- `sync.enable("notes")` / `sync.disable("notes")`
+- `sync.syncNow("notes")`
+- `sync.observeStatus() -> stream`
+- `sync.observeChanges("notes") -> stream`
+
+Adapters should hide the op-log and merge semantics from app code.
+
+---
+
+## Packaging and distribution
+
+### Rust consumers
+
+- Publish `libresync` as a crate with a stable semver API.
+- Provide a `libresync-sdk` facade crate if needed to stabilize high-level API.
+
+### Swift (iOS/macOS)
+
+- Build a **static or dynamic XCFramework** containing the Rust core + wrapper.
+- Use a Swift Package Manager manifest to distribute the XCFramework.
+- Include a small Swift helper layer for permissions and lifecycle.
+
+### Kotlin (Android)
+
+- Build a **JNI bridge** + `.so` via `cargo-ndk`.
+- Package as an **AAR** with Kotlin wrapper types.
+
+---
+
+## Migration plan (CLI POC → SDK)
+
+### Phase 1: Core refactor
+
+- Split CLI-only glue into `libresync-cli`.
+- Introduce a stable `Engine` API in `libresync`.
+- Add an event system and adapter registry.
+
+### Phase 2: C ABI / bindings
+
+- Define FFI-safe types and functions.
+- Generate Swift/Kotlin bindings (UniFFI or manual).
+- Build minimal demo apps that pair + sync a document.
+
+### Phase 3: Platform hardening
+
+- Key storage integration (Keychain/Keystore).
+- Permission flows (local network prompts).
+- Background/lifecycle behaviors (suspend/resume).
+
+### Phase 4: Higher-level APIs and SDK polish
+
+- Idiomatic SDK surfaces for “sync intents.”
+- Better error typing and diagnostics.
+- Developer docs and sample apps.
+
+---
+
 ## Core components
 
 ### 1) Discovery layer (Zero config + manual)
