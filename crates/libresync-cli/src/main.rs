@@ -10,10 +10,12 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use chrono::{Local, TimeZone};
 use clap::{Parser, Subcommand};
 use directories::ProjectDirs;
 use libresync::{sync_with_device, DeviceHandler, Identity, State, SyncListener};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, System};
@@ -57,8 +59,8 @@ fn pid_path_for_config(config_path: &Path) -> PathBuf {
 #[command(
     name = "libresync",
     version,
-    about = "Local-only device-to-device sync CLI for LibreSync.",
-    long_about = "A minimal CLI for exercising the LibreSync core. Use it to discover devices on LAN,\npair devices, and sync a selected JSON file over direct connections."
+    about = "Local-only device-to-device refresh CLI for LibreSync.",
+    long_about = "A minimal CLI for exercising the LibreSync core. Use it to discover devices on LAN,\npair devices, and refresh a selected JSON file over direct connections."
 )]
 struct Cli {
     #[arg(
@@ -77,7 +79,7 @@ struct Cli {
 enum Commands {
     #[command(
         about = "Create a new LibreSync config with device/app/user identity.",
-        long_about = "Creates a config file that stores the device ID, user ID, app ID, allowlisted devices, and internal state paths. This is required before discovery, pairing, or sync. Use --force to overwrite an existing config."
+        long_about = "Creates a config file that stores the device ID, user ID, app ID, allowlisted devices, and internal state paths. This is required before discovery, pairing, or refresh. Use --force to overwrite an existing config."
     )]
     Init {
         #[arg(
@@ -90,7 +92,7 @@ enum Commands {
             long,
             default_value = APP_ID_DEFAULT,
             help = "App bundle identifier used to scope discovery and trust.",
-            long_help = "App bundle identifier used to scope discovery and trust. Devices only pair and sync when app IDs match."
+            long_help = "App bundle identifier used to scope discovery and trust. Devices only pair and refresh when app IDs match."
         )]
         app_id: String,
         #[arg(
@@ -113,8 +115,8 @@ enum Commands {
         force: bool,
     },
     #[command(
-        about = "Select the JSON file to keep in sync.",
-        long_about = "Sets the JSON file path that LibreSync will synchronize. The file is created if it does not exist."
+        about = "Select the JSON file to keep refreshed.",
+        long_about = "Sets the JSON file path that LibreSync will refresh. The file is created if it does not exist."
     )]
     Select {
         #[arg(
@@ -125,8 +127,8 @@ enum Commands {
         config: Option<PathBuf>,
         #[arg(
             long,
-            help = "Path to the JSON file to sync.",
-            long_help = "Path to the JSON file that will be synchronized between devices. The file is created if missing."
+            help = "Path to the JSON file to refresh.",
+            long_help = "Path to the JSON file that will be refreshed between devices. The file is created if missing."
         )]
         file: PathBuf,
     },
@@ -151,7 +153,7 @@ enum Commands {
     },
     #[command(
         about = "Pair with a device by address (requires device consent).",
-        long_about = "Pair establishes trust only. It does not sync any data. The remote device must accept the pairing request, and you must confirm locally unless --yes is set."
+        long_about = "Pair establishes trust only. It does not refresh any data. The remote device must accept the pairing request, and you must confirm locally unless --yes is set."
     )]
     Pair {
         #[arg(
@@ -220,10 +222,12 @@ enum Commands {
         duration_secs: Option<u64>,
     },
     #[command(
-        about = "Sync the selected JSON file with a paired device.",
-        long_about = "Sync exchanges data only after trust is established. It requires prior pairing. The file is loaded into the local state before sync and written back after sync."
+        name = "refresh",
+        alias = "sync",
+        about = "Refresh the selected JSON file with a paired device.",
+        long_about = "Refresh exchanges data only after trust is established. It requires prior pairing. The file is loaded into the local state before refresh and written back after refresh."
     )]
-    Sync {
+    Refresh {
         #[arg(
             long,
             help = "Path to the config JSON file (defaults to the OS config directory).",
@@ -233,16 +237,48 @@ enum Commands {
         #[arg(
             long,
             help = "Device address to connect to (e.g. 192.168.1.10:52345).",
-            long_help = "Socket address for the device listener you want to sync with. If omitted, LibreSync will try to discover devices on the LAN."
+            long_help = "Socket address for the device listener you want to refresh with. If omitted, LibreSync will try to discover devices on the LAN."
         )]
         device: Option<SocketAddr>,
         #[arg(
             long,
             conflicts_with = "device",
-            help = "Device ID to sync with (uses discovery).",
-            long_help = "Device ID to sync with. LibreSync will discover devices on the LAN and connect to the matching device ID."
+            help = "Device ID to refresh with (uses discovery).",
+            long_help = "Device ID to refresh with. LibreSync will discover devices on the LAN and connect to the matching device ID."
         )]
         device_id: Option<String>,
+    },
+    #[command(
+        about = "Watch the selected JSON file and refresh all paired devices.",
+        long_about = "Watch the selected JSON file for local changes and refresh with all paired devices. Refresh pulls and pushes data, providing best-effort bidirectional updates."
+    )]
+    Watch {
+        #[arg(
+            long,
+            help = "Path to the config JSON file (defaults to the OS config directory).",
+            long_help = "Config file that includes the selected JSON file path and device allowlist. Defaults to the OS config directory when omitted."
+        )]
+        config: Option<PathBuf>,
+        #[arg(
+            long,
+            default_value_t = 1,
+            help = "Seconds between background refresh cycles.",
+            long_help = "Interval in seconds to refresh with paired devices even if no local change is detected."
+        )]
+        interval_secs: u64,
+        #[arg(
+            long,
+            default_value_t = 200,
+            help = "Debounce window in milliseconds for local file events.",
+            long_help = "Debounce window in milliseconds for local file events to avoid repeated refresh bursts."
+        )]
+        debounce_ms: u64,
+        #[arg(
+            long,
+            help = "Disable LAN discovery when resolving paired devices.",
+            long_help = "Skip LAN discovery and only use the last seen addresses stored in the config."
+        )]
+        no_discover: bool,
     },
     #[command(
         about = "Stop the background listener for this config.",
@@ -431,13 +467,22 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 spawn_background_listener(&config, listen, auto_accept, no_discovery, duration_secs)?;
             }
         }
-        Commands::Sync {
+        Commands::Refresh {
             config,
             device,
             device_id,
         } => {
             let config = resolve_config_path(config);
-            sync_file(&config, device, device_id)?;
+            refresh_file(&config, device, device_id)?;
+        }
+        Commands::Watch {
+            config,
+            interval_secs,
+            debounce_ms,
+            no_discover,
+        } => {
+            let config = resolve_config_path(config);
+            watch_file(&config, interval_secs, debounce_ms, no_discover)?;
         }
         Commands::Stop { config } => {
             let config = resolve_config_path(config);
@@ -774,7 +819,7 @@ fn stop_listener(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn sync_file(
+fn refresh_file(
     path: &Path,
     device: Option<SocketAddr>,
     device_id: Option<String>,
@@ -801,7 +846,7 @@ fn sync_file(
         None => true,
     };
     if should_update {
-        state.set(FILE_KEY.to_string(), local_bytes);
+        state.set(FILE_KEY.to_string(), local_bytes.clone());
     }
 
     let app_id = config.app_id.clone();
@@ -827,7 +872,7 @@ fn sync_file(
     save_config(path, &config)?;
 
     println!(
-        "Synced with {} ({})",
+        "Refreshed with {} ({})",
         remote_identity.device_id, remote_identity.user_id
     );
 
@@ -848,6 +893,7 @@ fn status(
         Some(path) => println!("Selected file: {}", path.display()),
         None => println!("Selected file: (none)"),
     }
+    print_listener_status(path)?;
 
     let mut discovered: Vec<DiscoveredDevice> = Vec::new();
     if discover {
@@ -899,7 +945,7 @@ fn status(
         };
         let last_seen = record
             .last_seen_unix_secs
-            .map(|ts| format!("last seen: {ts} (unix)"))
+            .map(format_last_seen)
             .unwrap_or_else(|| "last seen: unknown".to_string());
         println!(
             "  {} ({}) at {} [{}] {}",
@@ -911,6 +957,60 @@ fn status(
         save_config(path, &config)?;
     }
 
+    Ok(())
+}
+
+fn print_listener_status(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let pid_path = pid_path_for_config(path);
+    let log_path = log_path_for_config(path);
+
+    let pid_raw = match fs::read_to_string(&pid_path) {
+        Ok(pid) => pid,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            println!("Listener: stopped (no PID file)");
+            println!("Listener log: {}", log_path.display());
+            return Ok(());
+        }
+        Err(error) => {
+            println!(
+                "Listener: unknown (failed to read PID file: {})",
+                error
+            );
+            println!("Listener log: {}", log_path.display());
+            return Ok(());
+        }
+    };
+
+    let pid_value = match pid_raw.trim().parse::<u32>() {
+        Ok(pid) => pid,
+        Err(_) => {
+            println!("Listener: invalid PID file (value: {})", pid_raw.trim());
+            println!("Listener log: {}", log_path.display());
+            return Ok(());
+        }
+    };
+
+    let mut system = System::new();
+    system.refresh_processes();
+    let pid = Pid::from_u32(pid_value);
+
+    if let Some(process) = system.process(pid) {
+        let name = process.name().to_lowercase();
+        if name.contains("libresync") {
+            println!("Listener: running (pid {pid_value})");
+            println!("Listener log: {}", log_path.display());
+            return Ok(());
+        }
+        println!(
+            "Listener: stale PID (pid {pid_value} belongs to {})",
+            process.name()
+        );
+        println!("Listener log: {}", log_path.display());
+        return Ok(());
+    }
+
+    println!("Listener: stale PID (pid {pid_value} not running)");
+    println!("Listener log: {}", log_path.display());
     Ok(())
 }
 
@@ -1170,6 +1270,233 @@ fn now_unix_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn format_last_seen(ts: u64) -> String {
+    let now = now_unix_secs() as i64;
+    let ts_i64 = ts as i64;
+    let delta = now.saturating_sub(ts_i64);
+    let relative = format_relative(delta);
+
+    match Local.timestamp_opt(ts_i64, 0).single() {
+        Some(local) => format!(
+            "last seen: {} ({})",
+            local.format("%Y-%m-%d %H:%M:%S"),
+            relative
+        ),
+        None => format!("last seen: {ts} ({relative})"),
+    }
+}
+
+fn format_relative(delta_secs: i64) -> String {
+    if delta_secs <= 0 {
+        let future = delta_secs.unsigned_abs();
+        return format_relative_inner(future, true);
+    }
+    format_relative_inner(delta_secs as u64, false)
+}
+
+fn format_relative_inner(secs: u64, future: bool) -> String {
+    let (value, unit) = if secs < 10 {
+        return "just now".to_string();
+    } else if secs < 60 {
+        (secs, "s")
+    } else if secs < 60 * 60 {
+        (secs / 60, "m")
+    } else if secs < 60 * 60 * 24 {
+        (secs / (60 * 60), "h")
+    } else if secs < 60 * 60 * 24 * 7 {
+        (secs / (60 * 60 * 24), "d")
+    } else {
+        (secs / (60 * 60 * 24 * 7), "w")
+    };
+
+    if future {
+        format!("in {value}{unit}")
+    } else {
+        format!("{value}{unit} ago")
+    }
+}
+
+fn watch_file(
+    path: &Path,
+    interval_secs: u64,
+    debounce_ms: u64,
+    no_discover: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut config = load_config(path)?;
+    let data_path = config
+        .data_path
+        .clone()
+        .ok_or("no file selected; run libresync select")?;
+    ensure_json_file(&data_path)?;
+
+    println!("Watching {}", data_path.display());
+    println!(
+        "Paired devices: {}",
+        if config.devices.is_empty() {
+            "none".to_string()
+        } else {
+            config.devices.len().to_string()
+        }
+    );
+    println!(
+        "Refresh interval: {}s (debounce: {}ms)",
+        interval_secs, debounce_ms
+    );
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut watcher = RecommendedWatcher::new(tx, notify::Config::default())?;
+    watcher.watch(&data_path, RecursiveMode::NonRecursive)?;
+
+    let running = Arc::new(AtomicBool::new(true));
+    let running_clone = running.clone();
+    ctrlc::set_handler(move || {
+        running_clone.store(false, Ordering::SeqCst);
+    })?;
+
+    let mut last_event = None::<Instant>;
+    let mut last_refresh = Instant::now()
+        .checked_sub(Duration::from_secs(interval_secs))
+        .unwrap_or_else(Instant::now);
+
+    while running.load(Ordering::SeqCst) {
+        let timeout = Duration::from_millis(200);
+        let event = rx.recv_timeout(timeout);
+        let mut local_changed = false;
+
+        if let Ok(_event) = event {
+            let now = Instant::now();
+            let debounce = Duration::from_millis(debounce_ms);
+            if last_event
+                .map(|last| now.duration_since(last) >= debounce)
+                .unwrap_or(true)
+            {
+                local_changed = true;
+                last_event = Some(now);
+            }
+        }
+
+        let interval_due = last_refresh.elapsed() >= Duration::from_secs(interval_secs);
+        if local_changed || interval_due {
+            let refresh_result =
+                refresh_all_devices(path, &mut config, !no_discover);
+            match refresh_result {
+                Ok(changed) => {
+                    if changed {
+                        println!("Refreshed with paired devices.");
+                    }
+                }
+                Err(error) => {
+                    eprintln!("Refresh error: {error}");
+                }
+            }
+            last_refresh = Instant::now();
+        }
+    }
+
+    Ok(())
+}
+
+fn refresh_all_devices(
+    path: &Path,
+    config: &mut Config,
+    discover: bool,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    if config.devices.is_empty() {
+        return Ok(false);
+    }
+
+    let mut any_changed = false;
+    let device_ids: Vec<String> = config.devices.keys().cloned().collect();
+    for device_id in device_ids {
+        let addr = resolve_device_for_watch(config, &device_id, discover)?;
+        let Some(addr) = addr else {
+            continue;
+        };
+        let refreshed = refresh_with_address(path, config, addr)?;
+        if refreshed {
+            any_changed = true;
+        }
+    }
+
+    Ok(any_changed)
+}
+
+fn resolve_device_for_watch(
+    config: &Config,
+    device_id: &str,
+    discover: bool,
+) -> Result<Option<SocketAddr>, Box<dyn std::error::Error>> {
+    if let Some(record) = config.devices.get(device_id) {
+        if let Some(addr) = record.last_seen_addr.as_deref() {
+            if let Ok(parsed) = addr.parse::<SocketAddr>() {
+                return Ok(Some(parsed));
+            }
+        }
+    }
+
+    if !discover {
+        return Ok(None);
+    }
+
+    let addr = resolve_device_address_with_timeout(
+        &config.app_id,
+        &config.device_id,
+        None,
+        Some(device_id),
+        Duration::from_secs(2),
+    )
+    .ok();
+    Ok(addr)
+}
+
+fn refresh_with_address(
+    path: &Path,
+    config: &mut Config,
+    device: SocketAddr,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let data_path = config
+        .data_path
+        .clone()
+        .ok_or("no file selected; run libresync select")?;
+    ensure_json_file(&data_path)?;
+
+    let mut state = load_or_init_state(config)?;
+    let local_bytes = fs::read(&data_path)?;
+    let should_update = match state.get(FILE_KEY) {
+        Some(existing) => existing != local_bytes.as_slice(),
+        None => true,
+    };
+    if should_update {
+        state.set(FILE_KEY.to_string(), local_bytes.clone());
+    }
+
+    let app_id = config.app_id.clone();
+    let allowed: HashSet<String> = config.devices.keys().cloned().collect();
+    let device_check = |identity: &Identity| -> libresync::Result<()> {
+        if identity.app_id != app_id {
+            return Err(libresync::Error::Protocol("app id mismatch".to_string()));
+        }
+        if !allowed.contains(&identity.device_id) {
+            return Err(libresync::Error::Protocol("device not paired".to_string()));
+        }
+        Ok(())
+    };
+
+    let remote_identity = sync_with_device(&config.identity(), &mut state, device, device_check)?;
+    let mut changed = false;
+    if let Some(bytes) = state.get(FILE_KEY) {
+        if bytes != local_bytes.as_slice() {
+            fs::write(&data_path, bytes)?;
+            changed = true;
+        }
+    }
+
+    state.save(&config.state_path)?;
+    config.upsert_device(&remote_identity, Some(device));
+    save_config(path, config)?;
+    Ok(changed)
 }
 
 fn pick_address(info: &ServiceInfo, port: u16) -> Option<SocketAddr> {

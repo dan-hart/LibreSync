@@ -81,7 +81,7 @@ fn cli_init_and_select_sets_paths() {
 }
 
 #[test]
-fn cli_pair_and_sync_updates_file() {
+fn cli_pair_and_refresh_updates_file() {
     let handler = Arc::new(TestHandler::new(APP_ID));
     let listener_state = Arc::new(Mutex::new(State::new("listener-device")));
     {
@@ -143,7 +143,7 @@ fn cli_pair_and_sync_updates_file() {
 
     cargo_bin_cmd!("libresync")
         .args([
-            "sync",
+            "refresh",
             "--config",
             config_path.to_str().unwrap(),
             "--device",
@@ -171,9 +171,10 @@ fn cli_help_mentions_commands() {
         .stdout(contains("discover"))
         .stdout(contains("pair"))
         .stdout(contains("listen"))
+        .stdout(contains("watch"))
         .stdout(contains("stop"))
         .stdout(contains("status"))
-        .stdout(contains("sync"));
+        .stdout(contains("refresh"));
 }
 
 #[test]

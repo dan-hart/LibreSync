@@ -22,7 +22,7 @@
 ---
 
 ## CLI (libresync)
-The CLI is a minimal device-to-device testing tool that uses LAN discovery, device pairing, and a single JSON file sync.
+The CLI is a minimal device-to-device testing tool that uses LAN discovery, device pairing, and a single JSON file refresh.
 
 ### Quick start
 1. Initialize a config on each device:
@@ -33,17 +33,20 @@ The CLI is a minimal device-to-device testing tool that uses LAN discovery, devi
    - `libresync listen`
 4. Pair once between devices (consent required):
    - `libresync pair`
-5. Sync the selected JSON file:
-   - `libresync sync`
-6. Check status (paired + discovered devices):
+5. Refresh the selected JSON file:
+   - `libresync refresh`
+6. For continuous updates, run:
+   - `libresync watch`
+7. Check status (paired + discovered devices):
    - `libresync status`
 
 ### Notes
-- Pairing is required before sync.
-- `pair`/`sync` will discover devices automatically; if multiple are found, you’ll be prompted to pick one.
+- Pairing is required before refresh.
+- `pair`/`refresh` will discover devices automatically; if multiple are found, you’ll be prompted to pick one.
+- `watch` refreshes all paired devices on local changes and on a periodic interval.
 - You can also target a specific device: `--device <ip:port>` or `--device-id <device-id>`.
 - Discovery is unauthenticated and only used to find devices; trust is established at pairing.
-- `status` shows connected devices (discovered now), last seen addresses, and last seen timestamps for paired devices.
+- `status` shows the selected file, listener status, connected devices (discovered now), last seen addresses, and last seen timestamps for paired devices.
 - Config defaults to the OS config directory (override with `--config`).
 - `listen` runs in the background by default; use `--foreground` to keep it in the terminal.
 - `stop` terminates the background listener for the current config.

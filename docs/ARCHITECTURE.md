@@ -46,10 +46,10 @@ Both devices merge incoming entries using the Lamport clock rules to ensure conv
 - Each value has a Lamport clock (counter + device ID).
 - On merge, the entry with the higher clock wins. Ties resolve by device ID.
 
-## File sync (CLI)
+## File refresh (CLI)
 The CLI maps a single JSON file to a single key (`file`) in the state:
-- Before sync, the local file is loaded into the state.
-- After sync, the file is updated with the most recent value.
+- Before refresh, the local file is loaded into the state.
+- After refresh, the file is updated with the most recent value.
 
 ## Security notes (MVP)
 - Current MVP uses identity strings and consent but does not yet bind identities to cryptographic keys.

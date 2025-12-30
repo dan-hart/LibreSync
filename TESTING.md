@@ -29,7 +29,7 @@ Optional: provide explicit IDs for consistent testing:
 libresync init --device-id amber-river-summit --user-id calm-forest
 ```
 
-## 2) Select the JSON file to sync
+## 2) Select the JSON file to refresh
 On both devices:
 ```
 libresync select --file ~/libresync-data.json
@@ -78,25 +78,31 @@ On **Device B** (optional, if you want to initiate pairing from the other side):
 libresync pair
 ```
 
-Pairing establishes trust only; it does **not** sync data.
+Pairing establishes trust only; it does **not** refresh data.
 
-## 6) Sync the JSON file
+## 6) Refresh the JSON file
 On either device:
 ```
-libresync sync
+libresync refresh
 ```
 
-You’ll be prompted to select a device if more than one is discovered. Sync exchanges the JSON file and applies last‑writer‑wins logic.
+You’ll be prompted to select a device if more than one is discovered. Refresh exchanges the JSON file and applies last‑writer‑wins logic.
 
-## 7) Verify sync
+## 7) (Optional) Run watch for real-time updates
+On each device:
+```
+libresync watch
+```
+
+## 8) Verify refresh
 Edit the JSON file on **Device A**:
 ```
 echo '{"from":"device-a"}' > ~/libresync-data.json
 ```
 
-Run sync from **Device A**:
+Run refresh from **Device A**:
 ```
-libresync sync
+libresync refresh
 ```
 
 Check **Device B**:
@@ -104,9 +110,9 @@ Check **Device B**:
 cat ~/libresync-data.json
 ```
 
-Then reverse the direction and repeat to confirm two‑way sync.
+Then reverse the direction and repeat to confirm two‑way refresh.
 
-## 8) Check status
+## 9) Check status
 Use `status` to verify paired devices and last seen info:
 ```
 libresync status
@@ -119,6 +125,6 @@ libresync status
 
 ## Notes
 - Discovery is unauthenticated and only used to find devices.
-- Pairing is required before sync.
+- Pairing is required before refresh.
 - The current MVP uses identity strings only; crypto/auth will be added later.
 - Config defaults to the OS config directory; pass `--config` to override.
