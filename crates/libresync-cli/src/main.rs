@@ -33,6 +33,9 @@ const CONFIG_FILE_NAME: &str = "libresync.json";
 const CONFIG_QUALIFIER: &str = "com";
 const CONFIG_ORG: &str = "codedbydan";
 const CONFIG_APP: &str = "libresync-cli";
+const AUTO_APPROVE_INTERVAL_SECS: u64 = 5;
+const AUTO_APPROVE_RETRY_SECS: u64 = 300;
+const AUTO_APPROVE_DISCOVER_TIMEOUT_SECS: u64 = 2;
 
 fn default_config_path() -> PathBuf {
     ProjectDirs::from(CONFIG_QUALIFIER, CONFIG_ORG, CONFIG_APP)
@@ -247,7 +250,7 @@ enum Commands {
     #[command(
         about = "Run a device listener and advertise on LAN.",
         long_about = "Start a device listener that accepts inbound connections and (by default) advertises via mDNS. The listener runs in the background by default; use --foreground to keep it attached to your terminal.",
-        after_help = "Examples:\n  libresync listen\n  libresync listen --listen 0.0.0.0:52345 --foreground\n  libresync listen --no-discovery\n\nOutput:\n  - prints the listen address\n  - background mode prints PID and log path"
+        after_help = "Examples:\n  libresync listen\n  libresync listen --listen 0.0.0.0:52345 --foreground\n  libresync listen --no-discovery\n  libresync listen --auto-approve\n\nOutput:\n  - prints the listen address\n  - background mode prints PID and log path"
     )]
     Listen {
         #[arg(
@@ -269,6 +272,18 @@ enum Commands {
             long_help = "Automatically approve linking requests from devices with the same app ID."
         )]
         auto_accept: bool,
+        #[arg(
+            long,
+            help = "Auto-approve linking with discovered devices on private LANs.",
+            long_help = "Automatically discover and link devices running the same app ID on private or link-local networks. Implies auto-accept for inbound links."
+        )]
+        auto_approve: bool,
+        #[arg(
+            long,
+            default_value_t = 15,
+            help = "Auto-approve duration in minutes (only with --auto-approve)."
+        )]
+        auto_approve_minutes: u64,
         #[arg(
             long,
             help = "Hide the mDNS advertisement (no LAN discovery).",
@@ -622,6 +637,61 @@ enum DeviceCommands {
         )]
         address: SocketAddr,
     },
+    #[command(
+        about = "Toggle auto-approve linking for this device.",
+        long_about = "When enabled, the listener will automatically link devices on the LAN running the same app ID. Auto-approve is opt-in and limited to private/link-local addresses.",
+        after_help = "Examples:\n  libresync device auto-approve --enable\n  libresync device auto-approve --disable\n  libresync device auto-approve\n\nOutput:\n  - prints whether auto-approve is enabled"
+    )]
+    AutoApprove {
+        #[arg(
+            long,
+            help = "Path to the config JSON file (defaults to the OS config directory)."
+        )]
+        config: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Enable auto-approve linking."
+        )]
+        enable: bool,
+        #[arg(
+            long,
+            help = "Disable auto-approve linking."
+        )]
+        disable: bool,
+        #[arg(
+            long,
+            default_value_t = 15,
+            help = "Minutes to keep auto-approve enabled (ignored with --persist)."
+        )]
+        minutes: u64,
+        #[arg(
+            long,
+            help = "Keep auto-approve enabled until manually disabled."
+        )]
+        persist: bool,
+    },
+    #[command(
+        about = "Set or clear the pairing secret used for auto-approve linking.",
+        long_about = "When set, linking requests must include the pairing secret to be accepted. Use this to harden auto-approve linking on LAN.",
+        after_help = "Examples:\n  libresync device pairing-secret --set \"shared-secret\"\n  libresync device pairing-secret --clear\n\nOutput:\n  - prints whether the pairing secret is set"
+    )]
+    PairingSecret {
+        #[arg(
+            long,
+            help = "Path to the config JSON file (defaults to the OS config directory)."
+        )]
+        config: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Set the pairing secret value."
+        )]
+        set: Option<String>,
+        #[arg(
+            long,
+            help = "Clear the pairing secret."
+        )]
+        clear: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -808,6 +878,12 @@ struct Config {
     backup_allow_restore: bool,
     #[serde(default)]
     backup_dir: Option<PathBuf>,
+    #[serde(default)]
+    auto_approve: bool,
+    #[serde(default)]
+    auto_approve_until: Option<u64>,
+    #[serde(default)]
+    pairing_secret: Option<String>,
     #[serde(default)]
     devices: BTreeMap<String, DeviceRecord>,
 }
@@ -1046,6 +1122,20 @@ impl Config {
             entry.fingerprint = Some(fingerprint);
         }
     }
+
+    fn auto_approve_state(&mut self) -> (bool, bool) {
+        if !self.auto_approve {
+            return (false, false);
+        }
+        if let Some(until) = self.auto_approve_until {
+            if now_unix_secs() > until {
+                self.auto_approve = false;
+                self.auto_approve_until = None;
+                return (false, true);
+            }
+        }
+        (true, false)
+    }
 }
 
 struct ConfigHandler {
@@ -1118,7 +1208,17 @@ impl DeviceHandler for ConfigHandler {
         if identity.app_id != self.app_id {
             return Ok(false);
         }
-        let accepted = if self.auto_accept {
+        let (auto_accept, expired) = {
+            let mut config = self.config.lock().expect("config lock");
+            let (auto_approve, expired) = config.auto_approve_state();
+            (self.auto_accept || auto_approve, expired)
+        };
+        if expired {
+            if let Ok(config) = self.config.lock() {
+                let _ = save_config(&self.config_path, &config);
+            }
+        }
+        let accepted = if auto_accept {
             true
         } else {
             prompt_yes_no(&format!(
@@ -1141,6 +1241,13 @@ impl DeviceHandler for ConfigHandler {
         }
 
         Ok(accepted)
+    }
+
+    fn pairing_secret(&self) -> Option<String> {
+        self.config
+            .lock()
+            .ok()
+            .and_then(|config| config.pairing_secret.clone())
     }
 }
 
@@ -1268,6 +1375,20 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 let config = resolve_config_path(config);
                 set_device_address(&config, &device_id, address)?;
             }
+            DeviceCommands::AutoApprove {
+                config,
+                enable,
+                disable,
+                minutes,
+                persist,
+            } => {
+                let config = resolve_config_path(config);
+                set_auto_approve(&config, enable, disable, minutes, persist)?;
+            }
+            DeviceCommands::PairingSecret { config, set, clear } => {
+                let config = resolve_config_path(config);
+                set_pairing_secret(&config, set, clear)?;
+            }
         },
         Commands::Unlink {
             config,
@@ -1281,15 +1402,33 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             config,
             listen,
             auto_accept,
+            auto_approve,
+            auto_approve_minutes,
             no_discovery,
             foreground,
             duration_secs,
         } => {
             let config = resolve_config_path(config);
             if foreground {
-                listen_device(&config, listen, auto_accept, no_discovery, duration_secs)?;
+                listen_device(
+                    &config,
+                    listen,
+                    auto_accept,
+                    auto_approve,
+                    auto_approve_minutes,
+                    no_discovery,
+                    duration_secs,
+                )?;
             } else {
-                spawn_background_listener(&config, listen, auto_accept, no_discovery, duration_secs)?;
+                spawn_background_listener(
+                    &config,
+                    listen,
+                    auto_accept,
+                    auto_approve,
+                    auto_approve_minutes,
+                    no_discovery,
+                    duration_secs,
+                )?;
             }
         }
         Commands::Refresh {
@@ -1503,6 +1642,9 @@ fn init_config(
         backup_enabled: false,
         backup_allow_restore: false,
         backup_dir: None,
+        auto_approve: false,
+        auto_approve_until: None,
+        pairing_secret: None,
         devices: BTreeMap::new(),
     };
 
@@ -2155,10 +2297,105 @@ fn set_device_address(
     Ok(())
 }
 
+fn set_auto_approve(
+    path: &Path,
+    enable: bool,
+    disable: bool,
+    minutes: u64,
+    persist: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if enable && disable {
+        return Err("choose either --enable or --disable".into());
+    }
+
+    let mut config = load_config(path)?;
+    if enable {
+        config.auto_approve = true;
+        if persist {
+            config.auto_approve_until = None;
+        } else {
+            let duration = minutes.max(1);
+            config.auto_approve_until = Some(now_unix_secs() + duration * 60);
+        }
+        save_config(path, &config)?;
+        if persist {
+            println!("Auto-approve linking: enabled (no expiry, private/link-local only).");
+        } else {
+            println!(
+                "Auto-approve linking: enabled for {minutes} minutes (private/link-local only)."
+            );
+        }
+        return Ok(());
+    }
+    if disable {
+        config.auto_approve = false;
+        config.auto_approve_until = None;
+        save_config(path, &config)?;
+        println!("Auto-approve linking: disabled.");
+        return Ok(());
+    }
+
+    let (active, expired) = config.auto_approve_state();
+    if expired {
+        save_config(path, &config)?;
+    }
+    let status = if active { "enabled" } else { "disabled" };
+    if active {
+        if let Some(until) = config.auto_approve_until {
+            println!(
+                "Auto-approve linking: {status} ({})",
+                format_time_label("expires", until)
+            );
+        } else {
+            println!("Auto-approve linking: {status} (no expiry).");
+        }
+    } else {
+        println!("Auto-approve linking: {status}.");
+    }
+    Ok(())
+}
+
+fn set_pairing_secret(
+    path: &Path,
+    set: Option<String>,
+    clear: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if clear && set.is_some() {
+        return Err("choose either --set or --clear".into());
+    }
+
+    let mut config = load_config(path)?;
+    if let Some(value) = set {
+        if value.trim().is_empty() {
+            return Err("pairing secret cannot be empty".into());
+        }
+        config.pairing_secret = Some(value);
+        save_config(path, &config)?;
+        println!("Pairing secret: set.");
+        return Ok(());
+    }
+    if clear {
+        config.pairing_secret = None;
+        save_config(path, &config)?;
+        println!("Pairing secret: cleared.");
+        return Ok(());
+    }
+
+    let status = if config.pairing_secret.is_some() {
+        "set"
+    } else {
+        "not set"
+    };
+    println!("Pairing secret: {status}.");
+    Ok(())
+}
+
 fn listen_device(
     path: &Path,
     listen: SocketAddr,
     auto_accept: bool,
+    auto_approve: bool,
+    auto_approve_minutes: u64,
     no_discovery: bool,
     duration_secs: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -2172,7 +2409,14 @@ fn listen_device(
         app_id: identity.app_id.clone(),
         config_path: path.to_path_buf(),
         config: Arc::clone(&config),
-        auto_accept,
+        auto_accept: {
+            let mut cfg = config.lock().expect("config lock");
+            let (active, expired) = cfg.auto_approve_state();
+            if expired {
+                let _ = save_config(path, &cfg);
+            }
+            auto_accept || auto_approve || active
+        },
     });
 
     let mut engine = Engine::new(
@@ -2227,9 +2471,43 @@ fn listen_device(
     );
 
     let deadline = duration_secs.map(|secs| Instant::now() + Duration::from_secs(secs));
+    let session_auto_approve_until = if auto_approve {
+        Some(now_unix_secs() + auto_approve_minutes.saturating_mul(60))
+    } else {
+        None
+    };
+    let mut auto_approve_last = Instant::now()
+        .checked_sub(Duration::from_secs(AUTO_APPROVE_INTERVAL_SECS))
+        .unwrap_or_else(Instant::now);
+    let mut auto_approve_attempts: HashMap<String, Instant> = HashMap::new();
 
     while running.load(Ordering::SeqCst) {
         thread::sleep(Duration::from_millis(500));
+        let auto_approve_enabled = {
+            let mut cfg = config.lock().expect("config lock");
+            let (active, expired) = cfg.auto_approve_state();
+            if expired {
+                let _ = save_config(path, &cfg);
+            }
+            let session_active = session_auto_approve_until
+                .map(|until| now_unix_secs() <= until)
+                .unwrap_or(false);
+            active || session_active
+        };
+        if auto_approve_enabled
+            && !no_discovery
+            && auto_approve_last.elapsed() >= Duration::from_secs(AUTO_APPROVE_INTERVAL_SECS)
+        {
+            if let Err(error) = auto_approve_devices(
+                &engine,
+                &config,
+                path,
+                &mut auto_approve_attempts,
+            ) {
+                eprintln!("Auto-approve error: {error}");
+            }
+            auto_approve_last = Instant::now();
+        }
         if let Some(deadline) = deadline {
             if Instant::now() >= deadline {
                 break;
@@ -2255,6 +2533,8 @@ fn spawn_background_listener(
     path: &Path,
     listen: SocketAddr,
     auto_accept: bool,
+    auto_approve: bool,
+    auto_approve_minutes: u64,
     no_discovery: bool,
     duration_secs: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -2285,6 +2565,10 @@ fn spawn_background_listener(
 
     if auto_accept {
         cmd.arg("--auto-accept");
+    }
+    if auto_approve {
+        cmd.arg("--auto-approve");
+        cmd.arg("--auto-approve-minutes").arg(auto_approve_minutes.to_string());
     }
 
     if no_discovery {
@@ -2437,9 +2721,29 @@ fn status(
     println!("Device ID: {}", config.device_id);
     println!("User ID:   {}", config.user_id);
     println!("App ID:    {}", config.app_id);
+    let (auto_active, auto_expired) = config.auto_approve_state();
+    if auto_expired {
+        save_config(path, &config)?;
+    }
+    if auto_active {
+        if let Some(until) = config.auto_approve_until {
+            println!(
+                "Auto-approve: enabled ({})",
+                format_time_label("expires", until)
+            );
+        } else {
+            println!("Auto-approve: enabled (no expiry)");
+        }
+    } else {
+        println!("Auto-approve: disabled");
+    }
     if let Some(keys) = config.device_keys.as_ref() {
         println!("Fingerprint: {}", keys.fingerprint);
     }
+    println!(
+        "Pairing secret: {}",
+        if config.pairing_secret.is_some() { "set" } else { "not set" }
+    );
     let adapter_ids = config.adapter_ids();
     if adapter_ids.is_empty() {
         println!("Selected adapters: (none)");
@@ -2810,6 +3114,13 @@ fn load_config(path: &Path) -> Result<Config, Box<dyn std::error::Error>> {
             changed = true;
         } else if let Some(first) = config.data_paths.keys().next().cloned() {
             config.default_adapter = Some(first);
+            changed = true;
+        }
+    }
+
+    if config.auto_approve {
+        let (_active, expired) = config.auto_approve_state();
+        if expired {
             changed = true;
         }
     }
@@ -3355,7 +3666,9 @@ fn ensure_listener_running(
         return Ok(());
     }
 
-    match spawn_background_listener(path, listen, false, false, None) {
+    let config = load_config(path)?;
+    let auto_approve = config.auto_approve;
+    match spawn_background_listener(path, listen, false, auto_approve, 15, false, None) {
         Ok(()) => Ok(()),
         Err(error) => {
             if let Some(io_error) = error.downcast_ref::<io::Error>() {
@@ -3380,6 +3693,71 @@ fn is_port_listening(addr: SocketAddr) -> Result<bool, Box<dyn std::error::Error
         Err(error) if error.kind() == io::ErrorKind::TimedOut => Ok(false),
         Err(error) => Err(error.into()),
     }
+}
+
+fn is_auto_approve_address(addr: SocketAddr) -> bool {
+    match addr.ip() {
+        IpAddr::V4(ip) => ip.is_private() || ip.is_link_local(),
+        IpAddr::V6(ip) => ip.is_unique_local() || ip.is_unicast_link_local(),
+    }
+}
+
+fn auto_approve_devices(
+    engine: &Engine,
+    config: &Arc<Mutex<Config>>,
+    path: &Path,
+    attempts: &mut HashMap<String, Instant>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let devices = engine.discover_devices_with_timeout(Duration::from_secs(
+        AUTO_APPROVE_DISCOVER_TIMEOUT_SECS,
+    ))?;
+    if devices.is_empty() {
+        return Ok(());
+    }
+
+    let now = Instant::now();
+    for device in devices {
+        let addr = match device.address {
+            Some(addr) => addr,
+            None => continue,
+        };
+        if !is_auto_approve_address(addr) {
+            continue;
+        }
+
+        let device_id = device.identity.device_id.clone();
+        let already_linked = {
+            let cfg = config.lock().expect("config lock");
+            cfg.is_linked(&device_id)
+        };
+        if already_linked {
+            continue;
+        }
+        if let Some(last) = attempts.get(&device_id) {
+            if now.duration_since(*last) < Duration::from_secs(AUTO_APPROVE_RETRY_SECS) {
+                continue;
+            }
+        }
+
+        match engine.request_link(addr) {
+            Ok(remote) => {
+                let mut cfg = config.lock().expect("config lock");
+                cfg.upsert_device(&remote.identity, Some(addr), remote.fingerprint.clone());
+                save_config(path, &cfg)?;
+                println!(
+                    "Auto-approved link with {} ({})",
+                    remote.identity.device_id, remote.identity.user_id
+                );
+                attempts.remove(&device_id);
+            }
+            Err(error) => {
+                attempts.insert(device_id, now);
+                eprintln!("Auto-approve link failed: {error}");
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn refresh_all_devices(
@@ -3600,6 +3978,9 @@ mod tests {
             backup_enabled: false,
             backup_allow_restore: false,
             backup_dir: None,
+            auto_approve: false,
+            auto_approve_until: None,
+            pairing_secret: None,
             devices: BTreeMap::new(),
         };
         let resolved = resolve_device_address_with_timeout(
@@ -3633,6 +4014,9 @@ mod tests {
             backup_enabled: false,
             backup_allow_restore: false,
             backup_dir: None,
+            auto_approve: false,
+            auto_approve_until: None,
+            pairing_secret: None,
             devices: BTreeMap::new(),
         };
         let error = resolve_device_address_with_timeout(
@@ -3670,6 +4054,9 @@ mod tests {
             backup_enabled: false,
             backup_allow_restore: false,
             backup_dir: None,
+            auto_approve: false,
+            auto_approve_until: None,
+            pairing_secret: None,
             devices: BTreeMap::new(),
         };
         let remote_identity = Identity::new("remote-device", APP_ID_DEFAULT, "remote-user");
@@ -3727,6 +4114,9 @@ mod tests {
             backup_enabled: false,
             backup_allow_restore: false,
             backup_dir: None,
+            auto_approve: false,
+            auto_approve_until: None,
+            pairing_secret: None,
             devices: BTreeMap::new(),
         };
 
@@ -4104,6 +4494,9 @@ mod tests {
             backup_enabled: false,
             backup_allow_restore: false,
             backup_dir: None,
+            auto_approve: false,
+            auto_approve_until: None,
+            pairing_secret: None,
             devices: BTreeMap::new(),
         };
         save_config(&config_path, &config).expect("save");
@@ -4129,6 +4522,9 @@ mod tests {
             backup_enabled: false,
             backup_allow_restore: false,
             backup_dir: None,
+            auto_approve: false,
+            auto_approve_until: None,
+            pairing_secret: None,
             devices: BTreeMap::new(),
         };
         assert!(config.app_key().is_err());
@@ -4150,6 +4546,9 @@ mod tests {
             backup_enabled: false,
             backup_allow_restore: false,
             backup_dir: None,
+            auto_approve: false,
+            auto_approve_until: None,
+            pairing_secret: None,
             devices: BTreeMap::new(),
         };
         assert!(config.device_keys().is_err());
@@ -4241,6 +4640,9 @@ mod tests {
             backup_enabled: false,
             backup_allow_restore: false,
             backup_dir: None,
+            auto_approve: false,
+            auto_approve_until: None,
+            pairing_secret: None,
             devices: BTreeMap::new(),
         };
         config.devices.insert(
@@ -4485,6 +4887,9 @@ mod tests {
             backup_enabled: false,
             backup_allow_restore: false,
             backup_dir: None,
+            auto_approve: false,
+            auto_approve_until: None,
+            pairing_secret: None,
             devices: BTreeMap::new(),
         };
         config.devices.insert(
@@ -4591,6 +4996,9 @@ mod tests {
             backup_enabled: false,
             backup_allow_restore: false,
             backup_dir: None,
+            auto_approve: false,
+            auto_approve_until: None,
+            pairing_secret: None,
             devices: BTreeMap::new(),
         };
 

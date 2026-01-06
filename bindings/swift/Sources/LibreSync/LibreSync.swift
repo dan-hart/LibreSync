@@ -66,6 +66,12 @@ public final class LibreSyncEngine {
         }
     }
 
+    public func registerSqliteLogicalAdapter(id: String, namespace: String, path: String, mappingJson: String) throws {
+        guard libresync_engine_register_sqlite_logical_adapter(handle, id, namespace, path, mappingJson) else {
+            throw LibreSyncError.message(Self.lastError())
+        }
+    }
+
     public func discover(timeoutMs: UInt64 = 3000) throws -> [LibreSyncDeviceInfo] {
         guard let jsonPtr = libresync_engine_discover(handle, timeoutMs) else {
             throw LibreSyncError.message(Self.lastError())

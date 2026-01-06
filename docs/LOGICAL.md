@@ -13,6 +13,8 @@ The SQLite logical adapter can map an existing table into records using a sideca
 - LibreSync stores clocks and tombstones in a `*_libresync_meta` table by default.
 - The mapping is best for a single-table entity with a stable primary key and deterministic columns.
 - Use `with_bool_field` or `SqliteLogicalEncoding::Bool` for boolean columns.
+- Use `SqliteLogicalEncoding::JsonValue` for JSON columns storing arrays/objects or primitive values.
+- Merge policies can be set per field (or as a default on the mapping) to match your schema’s semantics.
 
 ## Record shape
 Each record is a JSON object with a stable identity and a Lamport clock:
@@ -65,3 +67,4 @@ Logical adapters implement `LogicalAdapter`:
 - Use one namespace per app to avoid accidental key collisions.
 - For long-lived datasets, prune tombstones with `RecordState::compact` using a `RecordCompactionPolicy` (e.g., max age or max count).
 - `RecordCompactionSummary` can be used to report how many tombstones were removed in a maintenance pass.
+- `SqliteLogicalEncoding::JsonValue` serializes fields as standard JSON (not the tagged `FieldValue` JSON used by `Json`).

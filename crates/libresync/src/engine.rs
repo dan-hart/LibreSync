@@ -330,8 +330,15 @@ impl Engine {
     pub fn request_link(&self, address: SocketAddr) -> Result<DeviceInfo> {
         let device_keys = self.device_handler.device_keys()?;
         let app_key = self.device_handler.app_key()?;
+        let pairing_secret = self.device_handler.pairing_secret();
         let (remote_identity, fingerprint, remote_app_key) =
-            link_with_device(&self.config.identity, &device_keys, &app_key, address)?;
+            link_with_device(
+                &self.config.identity,
+                &device_keys,
+                &app_key,
+                address,
+                pairing_secret,
+            )?;
         if remote_app_key != app_key {
             self.device_handler.set_app_key(&remote_app_key)?;
         }

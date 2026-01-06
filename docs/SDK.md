@@ -31,6 +31,7 @@
 - Logical adapter: record-level sync with merge policies.
 - Adapter registration is per engine instance; adapters are identified by `adapter_id`.
 - SQLite logical mappings can target existing tables with a sidecar metadata table for clocks/tombstones.
+- Swift/Kotlin wrappers can map SwiftData/Room tables through SQLite logical mappings to keep record-level semantics.
 
 ## Events
 - Event stream is exposed as a pollable queue.
@@ -64,6 +65,7 @@
 ## Secure key storage
 - SDK wrappers should store app keys and device keys in Keychain (Apple) or Keystore (Android).
 - This repo includes Swift Keychain helpers and an Android Keystore storage sample to build on.
+- The C ABI now exposes key generation helpers to seed secure storage and build config JSON on-device.
 - File-based key storage is acceptable only for development and the CLI.
 
 ## FFI boundary plan
@@ -71,11 +73,14 @@ The FFI layer should be small, versioned, and handle-based so wrappers stay thin
 
 **Surface area (minimum viable)**
 - `libresync_abi_version()` -> integer ABI version.
+- `libresync_generate_app_key()` -> base64 app key.
+- `libresync_generate_device_keys(device_id, app_id, user_id)` -> JSON with base64 device cert/key + fingerprint.
 - `engine_create(config_json, state_path)` -> handle.
 - `engine_free(handle)`.
 - `engine_register_file_adapter(handle, adapter_id, path)`.
 - `engine_register_logical_adapter(handle, adapter_id, namespace)`.
 - `engine_start_listening(handle, listen_addr)` / `engine_stop_listening(handle)`.
+- `engine_register_sqlite_logical_adapter(handle, adapter_id, namespace, path, mapping_json)` -> map existing SQLite tables.
 - `engine_discover(handle, timeout_ms)` -> list of devices.
 - `engine_request_link(handle, address)` / `engine_accept_link(handle, device_id, decision)`.
 - `engine_sync_now(handle, address, adapter_id)`.
@@ -96,7 +101,7 @@ The FFI layer should be small, versioned, and handle-based so wrappers stay thin
 - SDKs should validate ABI version at startup and return a clear error if mismatched.
 
 ## FFI config (current)
-The C ABI expects a JSON config with device keys and app key encoded in base64:
+The C ABI expects a JSON config with device keys and app key encoded in base64. Optional fields can be omitted:
 
 ```
 {
@@ -109,9 +114,15 @@ The C ABI expects a JSON config with device keys and app key encoded in base64:
   "device_key_der": "<base64>",
   "allowlist": [
     { "device_id": "device-b", "fingerprint": "..." }
-  ]
+  ],
+  "auto_accept": false,
+  "pairing_secret": "optional-shared-secret"
 }
 ```
+
+Notes:
+- `auto_accept` enables automatic link approval; keep it off on untrusted networks.
+- `pairing_secret` (optional) requires link requests to include the same shared secret.
 
 ## Packaging
 - Swift: package as an XCFramework + Swift Package.

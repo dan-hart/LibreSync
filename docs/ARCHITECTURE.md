@@ -44,6 +44,7 @@ Linking is explicit consent on both devices:
 4. Device A then prompts locally and stores device B in its allowlist.
 
 Linking is required before any sync. Devices that are not linked are rejected.
+Auto-approve linking (when enabled) will automatically discover and link devices on private or link-local networks; it is disabled by default.
 
 ## Trust scope (per app)
 Trust is stored per app ID. This prevents a trusted device in one app from automatically being trusted by another app.
@@ -102,7 +103,7 @@ The CLI maps one or more file-backed adapters (JSON or SQLite) into the state:
 - Snapshot preview and restore controls (restore gated by allow-restore).
 - Stored last-seen addresses allow refresh even when discovery is unavailable.
 - System tray controls and trust UI (linking, fingerprints, auto-accept toggle).
-- Still needs OS-level background/auto-start behavior and retention defaults per app.
+- Headless daemon mode now provides OS-level background behavior; service templates live under `alwaysOn/service/`.
 
 ## Future hardening
 - Device keysets and signed app attestations.

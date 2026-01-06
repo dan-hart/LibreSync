@@ -12,3 +12,4 @@ These bindings are intentionally minimal and intended to evolve alongside the st
 - Apple platforms must declare Local Network permissions in Info.plist for discovery.
 - Android requires multicast permissions and a `MulticastLock` for mDNS.
 - Store app keys and device keys in platform secure storage (Keychain/Keystore).
+- Use the included key manager helpers to generate and persist key material on device.

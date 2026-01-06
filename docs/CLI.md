@@ -8,6 +8,8 @@ The CLI is a thin wrapper around the core library. It covers the full flow to co
 - `discover`: list devices on the LAN for the same app ID.
 - `link`: request linking with a device (mutual consent).
 - `device set-address`: store a manual address for a linked device.
+- `device auto-approve`: toggle time-boxed automatic linking for devices on the LAN (private/link-local only).
+- `device pairing-secret`: set or clear a shared secret required for auto-approve linking.
 - `unlink`: revoke linking with a device (removes from allowlist).
 - `listen`: run the device listener and advertise on LAN.
 - `refresh`: refresh a selected adapter with a linked device (use `--all` to refresh all linked devices, `--all-adapters` to refresh all selected adapters).
@@ -53,6 +55,9 @@ The config is a JSON file that stores identity and trust state:
 - `backup_enabled`: whether encrypted backups are enabled.
 - `backup_allow_restore`: whether restores are allowed for this app.
 - `backup_dir`: optional backup directory override.
+- `auto_approve`: whether the listener should auto-link devices on private/link-local LANs.
+- `auto_approve_until`: epoch seconds when auto-approve expires (set by `device auto-approve`).
+- `pairing_secret`: optional shared secret required for auto-approve linking.
 - `devices`: map of linked devices keyed by device ID (includes last seen address and fingerprint).
 
 ### Default location
@@ -93,11 +98,15 @@ libresync select --id records --kind logical-file --file ./records.json
 - Discovery only lists devices; it does not grant trust.
 - `link` prints the local and remote fingerprints so you can verify trust out of band.
 - `listen` can be run with `--no-discovery` to avoid mDNS advertising.
+- `listen --auto-approve` enables automatic LAN linking (private/link-local addresses only) with a default 15-minute window; override with `--auto-approve-minutes`.
 - `listen` writes logs to `libresync-listen.log` and a PID to `libresync-listen.pid` next to the config file.
 - `listen` updates selected adapter files when incoming refreshes are received.
 - `stop` reads the PID file next to the config and terminates the listener process.
 - `link` and `refresh` will prompt for a device if multiple are discovered and no device is specified.
 - `device set-address` lets you store a manual address to use when discovery fails.
+- `device auto-approve` accepts `--minutes` (default 15) and `--persist` to avoid expiry.
+- `device pairing-secret` lets you require a shared secret for auto-approve linking.
+- `auto-approve` only runs when the listener is active and discovery is enabled; it ignores public IPs.
 - `refresh --all` refreshes all linked devices; add `--no-discover` to use only stored addresses.
 - `watch` refreshes all linked devices and uses discovery unless `--no-discover` is set.
 - `watch` will start a local listener unless `--no-listen` is set.

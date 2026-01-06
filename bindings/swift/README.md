@@ -21,6 +21,8 @@ See `Samples/QuickstartApp/main.swift` for a minimal usage example.
 - The Swift wrapper expects a JSON config that includes device keys and app key.
 - Use `LibreSyncEngine.lastError()` for details if a call fails.
 - Logical record adapters (`registerLogicalFileAdapter`) are the recommended integration path for structured data.
+- `LibreSyncKeyManager` can generate and store keys in the Keychain and return a `LibreSyncConfig` you can encode to JSON.
+- `registerSqliteLogicalAdapter` supports mapping existing SQLite tables (via `LibreSyncSqliteLogicalMapping`).
 - iOS/macOS require Local Network permission for discovery and inbound connections:
   - `NSLocalNetworkUsageDescription`
   - `NSBonjourServices` with `_libresync._tcp`

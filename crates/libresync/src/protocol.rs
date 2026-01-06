@@ -12,6 +12,8 @@ pub enum Message {
         identity: Identity,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         app_key: Option<Vec<u8>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pairing_secret: Option<String>,
     },
     LinkResponse {
         identity: Identity,

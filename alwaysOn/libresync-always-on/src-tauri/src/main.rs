@@ -1,12 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
@@ -25,6 +25,9 @@ use uuid::Uuid;
 
 const FILE_KEY: &str = "file";
 const DEFAULT_LISTEN: &str = "0.0.0.0:52345";
+const AUTO_APPROVE_INTERVAL_SECS: u64 = 5;
+const AUTO_APPROVE_RETRY_SECS: u64 = 300;
+const AUTO_APPROVE_DISCOVER_TIMEOUT_SECS: u64 = 2;
 
 fn main() {
     let show_item = CustomMenuItem::new("show".to_string(), "Show");
@@ -122,8 +125,15 @@ fn main() {
             let stream = engine.attach_event_channel();
             spawn_status_listener(stream, Arc::clone(&status));
 
+            let engine = Arc::new(Mutex::new(engine));
+            spawn_auto_approve_loop(
+                Arc::clone(&engine),
+                Arc::clone(&config_arc),
+                paths.config.clone(),
+            );
+
             app.manage(AlwaysOnRuntime {
-                engine: Mutex::new(engine),
+                engine,
                 config: config_arc,
                 config_path: paths.config,
                 status,
@@ -171,6 +181,8 @@ fn main() {
             link_device,
             unlink_device,
             set_auto_accept_linking,
+            set_auto_approve_linking,
+            set_pairing_secret,
             set_backup_policy,
             create_snapshot,
             list_snapshots,
@@ -184,7 +196,7 @@ fn main() {
 
 #[derive(Clone)]
 struct AlwaysOnRuntime {
-    engine: Mutex<Engine>,
+    engine: Arc<Mutex<Engine>>,
     config: Arc<Mutex<AlwaysOnConfig>>,
     config_path: PathBuf,
     status: Arc<Mutex<AlwaysOnStatus>>,
@@ -203,6 +215,9 @@ struct AlwaysOnStatus {
     linked_devices: Vec<DeviceRecord>,
     local_fingerprint: String,
     auto_accept_linking: bool,
+    auto_approve_linking: bool,
+    auto_approve_until: Option<u64>,
+    pairing_secret_set: bool,
     last_sync_unix_secs: Option<u64>,
     last_error: Option<String>,
     backup: BTreeMap<String, BackupPolicy>,
@@ -220,6 +235,9 @@ impl AlwaysOnStatus {
             linked_devices: config.devices.values().cloned().collect(),
             local_fingerprint: config.device_keys.fingerprint.clone(),
             auto_accept_linking: config.auto_accept_linking,
+            auto_approve_linking: config.auto_approve_linking,
+            auto_approve_until: config.auto_approve_until,
+            pairing_secret_set: config.pairing_secret.is_some(),
             last_sync_unix_secs: None,
             last_error: None,
             backup: config.backup.clone(),
@@ -237,6 +255,9 @@ fn sync_status_with_config(status: &mut AlwaysOnStatus, config: &AlwaysOnConfig)
     status.linked_count = status.linked_devices.len();
     status.local_fingerprint = config.device_keys.fingerprint.clone();
     status.auto_accept_linking = config.auto_accept_linking;
+    status.auto_approve_linking = config.auto_approve_linking;
+    status.auto_approve_until = config.auto_approve_until;
+    status.pairing_secret_set = config.pairing_secret.is_some();
     status.backup = config.backup.clone();
     status.data_path = config.data_path.clone();
 }
@@ -382,6 +403,46 @@ fn set_auto_accept_linking(
 ) -> Result<AlwaysOnStatus, String> {
     let mut config = state.config.lock().map_err(|_| "config lock".to_string())?;
     config.auto_accept_linking = enabled;
+    if !enabled {
+        config.auto_approve_linking = false;
+        config.auto_approve_until = None;
+    }
+    save_config(&state.config_path, &config)?;
+
+    let mut status = state.status.lock().map_err(|_| "status lock".to_string())?;
+    sync_status_with_config(&mut status, &config);
+    Ok(status.clone())
+}
+
+#[tauri::command]
+fn set_auto_approve_linking(
+    state: TauriState<AlwaysOnRuntime>,
+    enabled: bool,
+    duration_mins: Option<u64>,
+) -> Result<AlwaysOnStatus, String> {
+    let mut config = state.config.lock().map_err(|_| "config lock".to_string())?;
+    config.auto_approve_linking = enabled;
+    if enabled {
+        config.auto_accept_linking = true;
+        let minutes = duration_mins.unwrap_or(15).max(1);
+        config.auto_approve_until = Some(now_unix_secs() + minutes.saturating_mul(60));
+    } else {
+        config.auto_approve_until = None;
+    }
+    save_config(&state.config_path, &config)?;
+
+    let mut status = state.status.lock().map_err(|_| "status lock".to_string())?;
+    sync_status_with_config(&mut status, &config);
+    Ok(status.clone())
+}
+
+#[tauri::command]
+fn set_pairing_secret(
+    state: TauriState<AlwaysOnRuntime>,
+    secret: Option<String>,
+) -> Result<AlwaysOnStatus, String> {
+    let mut config = state.config.lock().map_err(|_| "config lock".to_string())?;
+    config.pairing_secret = secret.filter(|value| !value.trim().is_empty());
     save_config(&state.config_path, &config)?;
 
     let mut status = state.status.lock().map_err(|_| "status lock".to_string())?;
@@ -596,6 +657,116 @@ fn spawn_status_listener(stream: EventStream, status: Arc<Mutex<AlwaysOnStatus>>
     });
 }
 
+fn spawn_auto_approve_loop(
+    engine: Arc<Mutex<Engine>>,
+    config: Arc<Mutex<AlwaysOnConfig>>,
+    config_path: PathBuf,
+) {
+    thread::spawn(move || {
+        let mut attempts: HashMap<String, Instant> = HashMap::new();
+        let mut last_run = Instant::now()
+            .checked_sub(Duration::from_secs(AUTO_APPROVE_INTERVAL_SECS))
+            .unwrap_or_else(Instant::now);
+
+        loop {
+            thread::sleep(Duration::from_millis(500));
+            if last_run.elapsed() < Duration::from_secs(AUTO_APPROVE_INTERVAL_SECS) {
+                continue;
+            }
+
+            let enabled = match config.lock() {
+                Ok(mut config) => {
+                    let (active, expired) = config.auto_approve_state();
+                    if expired {
+                        let _ = save_config(&config_path, &config);
+                    }
+                    active
+                }
+                Err(_) => false,
+            };
+            if !enabled {
+                last_run = Instant::now();
+                continue;
+            }
+
+            let devices = {
+                let engine = match engine.lock() {
+                    Ok(engine) => engine,
+                    Err(_) => {
+                        last_run = Instant::now();
+                        continue;
+                    }
+                };
+                match engine.discover_devices_with_timeout(Duration::from_secs(
+                    AUTO_APPROVE_DISCOVER_TIMEOUT_SECS,
+                )) {
+                    Ok(devices) => devices,
+                    Err(error) => {
+                        eprintln!("Auto-approve discovery error: {error}");
+                        last_run = Instant::now();
+                        continue;
+                    }
+                }
+            };
+
+            let now = Instant::now();
+            for device in devices {
+                let addr = match device.address {
+                    Some(addr) => addr,
+                    None => continue,
+                };
+                if !is_auto_approve_address(addr) {
+                    continue;
+                }
+                let device_id = device.identity.device_id.clone();
+                let already_linked = match config.lock() {
+                    Ok(config) => config.devices.contains_key(&device_id),
+                    Err(_) => true,
+                };
+                if already_linked {
+                    continue;
+                }
+                if let Some(last) = attempts.get(&device_id) {
+                    if now.duration_since(*last) < Duration::from_secs(AUTO_APPROVE_RETRY_SECS) {
+                        continue;
+                    }
+                }
+
+                let result = {
+                    let engine = match engine.lock() {
+                        Ok(engine) => engine,
+                        Err(_) => {
+                            attempts.insert(device_id, now);
+                            continue;
+                        }
+                    };
+                    engine.request_link(addr)
+                };
+
+                match result {
+                    Ok(remote) => {
+                        if let Ok(mut config) = config.lock() {
+                            config.upsert_device(&remote.identity, Some(addr), remote.fingerprint);
+                            let _ = save_config(&config_path, &config);
+                        }
+                        attempts.remove(&device_id);
+                        println!(
+                            "Auto-approved link with {} ({})",
+                            remote.identity.device_id, remote.identity.user_id
+                        );
+                    }
+                    Err(error) => {
+                        attempts.insert(device_id, now);
+                        eprintln!("Auto-approve link failed: {error}");
+                    }
+                }
+            }
+
+            last_run = Instant::now();
+        }
+    });
+}
+
 struct AlwaysOnHandler {
     app_id: String,
     keys: DeviceKeys,
@@ -647,6 +818,13 @@ impl libresync::DeviceHandler for AlwaysOnHandler {
             .and_then(|record| record.fingerprint.as_deref())
             .map(|stored| stored == fingerprint)
             .unwrap_or(false)
+    }
+
+    fn pairing_secret(&self) -> Option<String> {
+        self.config
+            .lock()
+            .ok()
+            .and_then(|config| config.pairing_secret.clone())
     }
 }
 
@@ -740,6 +918,12 @@ struct AlwaysOnConfig {
     #[serde(default)]
     auto_accept_linking: bool,
     #[serde(default)]
+    auto_approve_linking: bool,
+    #[serde(default)]
+    auto_approve_until: Option<u64>,
+    #[serde(default)]
+    pairing_secret: Option<String>,
+    #[serde(default)]
     backup: BTreeMap<String, BackupPolicy>,
 }
 
@@ -796,6 +980,20 @@ impl AlwaysOnConfig {
             entry.fingerprint = Some(fingerprint);
         }
     }
+
+    fn auto_approve_state(&mut self) -> (bool, bool) {
+        if !self.auto_approve_linking {
+            return (false, false);
+        }
+        if let Some(until) = self.auto_approve_until {
+            if now_unix_secs() > until {
+                self.auto_approve_linking = false;
+                self.auto_approve_until = None;
+                return (false, true);
+            }
+        }
+        (true, false)
+    }
 }
 
 struct AlwaysOnPaths {
@@ -846,6 +1044,9 @@ fn load_or_init_config(path: &Path, data_path: &Path) -> Result<(AlwaysOnConfig,
         app_key: BASE64.encode(app_key.as_bytes()),
         devices: BTreeMap::new(),
         auto_accept_linking: false,
+        auto_approve_linking: false,
+        auto_approve_until: None,
+        pairing_secret: None,
         backup: BTreeMap::new(),
     };
 
@@ -901,4 +1102,11 @@ fn now_unix_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn is_auto_approve_address(addr: SocketAddr) -> bool {
+    match addr.ip() {
+        IpAddr::V4(ip) => ip.is_private() || ip.is_link_local(),
+        IpAddr::V6(ip) => ip.is_unique_local() || ip.is_unicast_link_local(),
+    }
 }

@@ -10,8 +10,9 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use libresync::{
     AppKey, BackupManager, DataAdapterBackup, DeviceHandler, DeviceKeys, Engine, EngineConfig,
-    FileLogicalAdapter, FileSnapshotStore, Identity, JsonFileAdapter, RetentionPolicy,
-    SqliteFileAdapter, State,
+    FileLogicalAdapter, FileSnapshotStore, Identity, JsonFileAdapter, MergePolicy,
+    RetentionPolicy, SqliteFileAdapter, SqliteLogicalAdapter, SqliteLogicalEncoding,
+    SqliteLogicalField, SqliteLogicalMapping, State,
 };
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +37,66 @@ struct FfiConfig {
     allowlist: Vec<FfiAllowlistEntry>,
     #[serde(default)]
     auto_accept: bool,
+    #[serde(default)]
+    pairing_secret: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct FfiDeviceKeys {
+    device_cert_der: String,
+    device_key_der: String,
+    fingerprint: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct FfiSqliteLogicalField {
+    column: String,
+    field: String,
+    #[serde(default)]
+    encoding: Option<SqliteLogicalEncoding>,
+    #[serde(default)]
+    merge_policy: Option<MergePolicy>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct FfiSqliteLogicalMapping {
+    data_table: String,
+    id_column: String,
+    schema: String,
+    entity: String,
+    fields: Vec<FfiSqliteLogicalField>,
+    #[serde(default)]
+    meta_table: Option<String>,
+    #[serde(default)]
+    default_merge_policy: Option<MergePolicy>,
+}
+
+impl FfiSqliteLogicalMapping {
+    fn to_mapping(self) -> SqliteLogicalMapping {
+        let mut mapping = SqliteLogicalMapping::new(
+            self.data_table,
+            self.id_column,
+            self.schema,
+            self.entity,
+        );
+        if let Some(table) = self.meta_table {
+            mapping = mapping.with_meta_table(table);
+        }
+        if let Some(policy) = self.default_merge_policy {
+            mapping = mapping.with_default_merge_policy(policy);
+        }
+        for field in self.fields {
+            let mut mapped = SqliteLogicalField::new(field.column, field.field);
+            if let Some(encoding) = field.encoding {
+                mapped = mapped.with_encoding(encoding);
+            }
+            if let Some(policy) = field.merge_policy {
+                mapped = mapped.with_merge_policy(policy);
+            }
+            mapping = mapping.with_field_def(mapped);
+        }
+        mapping
+    }
 }
 
 #[derive(Debug)]
@@ -45,6 +106,7 @@ struct FfiHandler {
     device_keys: DeviceKeys,
     allowlist: Mutex<HashMap<String, String>>,
     auto_accept: AtomicBool,
+    pairing_secret: Option<String>,
 }
 
 impl DeviceHandler for FfiHandler {
@@ -99,6 +161,10 @@ impl DeviceHandler for FfiHandler {
         _fingerprint: &str,
     ) -> libresync::Result<bool> {
         Ok(self.auto_accept.load(Ordering::SeqCst))
+    }
+
+    fn pairing_secret(&self) -> Option<String> {
+        self.pairing_secret.clone()
     }
 }
 
@@ -187,12 +253,22 @@ fn build_engine(config: FfiConfig, state_path: PathBuf) -> Result<EngineHandle, 
         .map(|entry| (entry.device_id, entry.fingerprint))
         .collect::<HashMap<_, _>>();
 
+    let pairing_secret = config.pairing_secret.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+
     let handler = Arc::new(FfiHandler {
         app_id: config.app_id.clone(),
         app_key: Mutex::new(app_key.clone()),
         device_keys,
         allowlist: Mutex::new(allowlist),
         auto_accept: AtomicBool::new(config.auto_accept),
+        pairing_secret,
     });
 
     let identity = Identity::new(&config.device_id, &config.app_id, &config.user_id);
@@ -240,6 +316,75 @@ where
 #[no_mangle]
 pub extern "C" fn libresync_abi_version() -> u32 {
     ABI_VERSION
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_generate_app_key() -> *mut c_char {
+    clear_last_error();
+    let key = match AppKey::generate() {
+        Ok(key) => key,
+        Err(error) => {
+            set_last_error(error.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    let encoded = BASE64.encode(key.as_bytes());
+    CString::new(encoded)
+        .map(|value| value.into_raw())
+        .unwrap_or_else(|_| std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_generate_device_keys(
+    device_id: *const c_char,
+    app_id: *const c_char,
+    user_id: *const c_char,
+) -> *mut c_char {
+    clear_last_error();
+    let device_id = match cstr_to_string(device_id) {
+        Ok(value) => value,
+        Err(error) => {
+            set_last_error(error);
+            return std::ptr::null_mut();
+        }
+    };
+    let app_id = match cstr_to_string(app_id) {
+        Ok(value) => value,
+        Err(error) => {
+            set_last_error(error);
+            return std::ptr::null_mut();
+        }
+    };
+    let user_id = match cstr_to_string(user_id) {
+        Ok(value) => value,
+        Err(error) => {
+            set_last_error(error);
+            return std::ptr::null_mut();
+        }
+    };
+    let identity = Identity::new(&device_id, &app_id, &user_id);
+    let keys = match DeviceKeys::generate(&identity) {
+        Ok(keys) => keys,
+        Err(error) => {
+            set_last_error(error.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    let payload = FfiDeviceKeys {
+        device_cert_der: BASE64.encode(keys.cert_der()),
+        device_key_der: BASE64.encode(keys.key_der()),
+        fingerprint: keys.fingerprint().to_string(),
+    };
+    let json = match serde_json::to_string(&payload) {
+        Ok(json) => json,
+        Err(error) => {
+            set_last_error(error.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    CString::new(json)
+        .map(|value| value.into_raw())
+        .unwrap_or_else(|_| std::ptr::null_mut())
 }
 
 #[no_mangle]
@@ -379,6 +524,32 @@ pub extern "C" fn libresync_engine_register_sqlite_adapter(
         let mut engine = handle.engine.lock().map_err(|_| "engine lock".to_string())?;
         engine
             .register_adapter(Arc::new(adapter))
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_engine_register_sqlite_logical_adapter(
+    handle: *mut EngineHandle,
+    adapter_id: *const c_char,
+    namespace: *const c_char,
+    path: *const c_char,
+    mapping_json: *const c_char,
+) -> bool {
+    with_engine(handle, |handle| {
+        let adapter_id = cstr_to_string(adapter_id)?;
+        let namespace = cstr_to_string(namespace)?;
+        let path = cstr_to_string(path)?;
+        let mapping_json = cstr_to_string(mapping_json)?;
+        let mapping: FfiSqliteLogicalMapping = serde_json::from_str(&mapping_json)
+            .map_err(|error| format!("invalid mapping JSON: {error}"))?;
+        let mapping = mapping.to_mapping();
+        let adapter = SqliteLogicalAdapter::new(adapter_id, namespace, path, "records")
+            .with_mapping(mapping);
+        let mut engine = handle.engine.lock().map_err(|_| "engine lock".to_string())?;
+        engine
+            .register_logical_adapter(Arc::new(adapter))
             .map_err(|error| error.to_string())?;
         Ok(())
     })

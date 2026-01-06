@@ -19,6 +19,8 @@ See `sample/Main.kt` for a minimal usage example.
 - The Kotlin wrapper uses JNI-style `external` functions.
 - Convert JSON strings into your own data classes as needed.
 - Logical record adapters (`registerLogicalFileAdapter`) are the recommended integration path for structured data.
+- `LibreSyncKeyManager` can generate and store keys via `LibreSyncKeyStorage` and produce a JSON config.
+- `registerSqliteLogicalAdapter` supports mapping existing SQLite tables (via `LibreSyncSqliteLogicalMapping`).
 - Android requires Local Network permissions for discovery:
   - `android.permission.INTERNET`
   - `android.permission.CHANGE_WIFI_MULTICAST_STATE` (mDNS)

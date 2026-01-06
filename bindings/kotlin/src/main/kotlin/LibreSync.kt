@@ -6,12 +6,15 @@ object LibreSyncNative {
     }
 
     external fun libresync_abi_version(): Int
+    external fun libresync_generate_app_key(): String?
+    external fun libresync_generate_device_keys(deviceId: String, appId: String, userId: String): String?
     external fun libresync_engine_create(configJson: String, statePath: String): Long
     external fun libresync_engine_free(handle: Long)
 
     external fun libresync_engine_register_json_adapter(handle: Long, adapterId: String, path: String): Boolean
     external fun libresync_engine_register_logical_file_adapter(handle: Long, adapterId: String, namespaceName: String, path: String): Boolean
     external fun libresync_engine_register_sqlite_adapter(handle: Long, adapterId: String, path: String, pageDelta: Long): Boolean
+    external fun libresync_engine_register_sqlite_logical_adapter(handle: Long, adapterId: String, namespaceName: String, path: String, mappingJson: String): Boolean
 
     external fun libresync_engine_start_listening(handle: Long): Boolean
     external fun libresync_engine_stop_listening(handle: Long): Boolean
@@ -55,6 +58,20 @@ class LibreSyncEngine(configJson: String, statePath: String) {
     fun registerSqliteAdapter(id: String, path: String, pageDelta: Long = 0) {
         require(LibreSyncNative.libresync_engine_register_sqlite_adapter(handle, id, path, pageDelta)) {
             LibreSyncNative.libresync_last_error() ?: "register sqlite adapter failed"
+        }
+    }
+
+    fun registerSqliteLogicalAdapter(id: String, namespace: String, path: String, mappingJson: String) {
+        require(
+            LibreSyncNative.libresync_engine_register_sqlite_logical_adapter(
+                handle,
+                id,
+                namespace,
+                path,
+                mappingJson
+            )
+        ) {
+            LibreSyncNative.libresync_last_error() ?: "register sqlite logical adapter failed"
         }
     }
 

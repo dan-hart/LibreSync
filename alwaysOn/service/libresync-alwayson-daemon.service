@@ -1,0 +1,11 @@
+[Unit]
+Description=LibreSyncAlwaysOn daemon
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/libresync-alwayson-daemon --auto-approve
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

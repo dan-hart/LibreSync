@@ -47,6 +47,9 @@ LibreSync is designed for **local-only, device-to-device synchronization** with 
 - The app key is exchanged during linking inside the TLS channel.
 - If devices disagree on the app key, the newest linking wins and the local device adopts the remote app key.
 - Linking always requires explicit consent (or explicit auto-accept configuration).
+- Auto-approve linking (when enabled) will automatically link devices on private or link-local networks; do not enable on untrusted or public LANs.
+- Auto-approve is time-boxed by default; long-lived auto-approve requires explicit persistence.
+- Optional pairing secrets can be required for auto-approve linking; mismatched secrets reject linking.
 
 ## App-key lifecycle (current + planned)
 **Current behavior**

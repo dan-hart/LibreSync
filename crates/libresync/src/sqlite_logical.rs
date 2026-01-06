@@ -1,5 +1,5 @@
 #[cfg(feature = "sqlite-logical")]
-use rusqlite::{params, Connection, params_from_iter};
+use rusqlite::{params, params_from_iter, Connection};
 #[cfg(feature = "sqlite-logical")]
 use rusqlite::types::Value as SqlValue;
 
@@ -8,22 +8,28 @@ use std::collections::BTreeMap;
 use std::collections::HashSet;
 
 use crate::{
-    logical::apply_snapshot_with_policy, LogicalAdapter, MergePolicy, RecordState, RecordView,
-    Result, SyncRecord, LamportClock, Error, FieldValue,
+    logical::apply_snapshot_with_policy, Error, FieldValue, LamportClock, LogicalAdapter,
+    MergePolicy, RecordState, RecordView, Result, SyncRecord,
 };
 
-#[derive(Clone, Debug)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum SqliteLogicalEncoding {
     Plain,
     Bool,
     Json,
+    JsonValue,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SqliteLogicalField {
     column: String,
     field: String,
     encoding: SqliteLogicalEncoding,
+    #[serde(default)]
+    merge_policy: Option<MergePolicy>,
 }
 
 impl SqliteLogicalField {
@@ -32,6 +38,7 @@ impl SqliteLogicalField {
             column: column.into(),
             field: field.into(),
             encoding: SqliteLogicalEncoding::Plain,
+            merge_policy: None,
         }
     }
 
@@ -40,6 +47,7 @@ impl SqliteLogicalField {
             column: column.into(),
             field: field.into(),
             encoding: SqliteLogicalEncoding::Json,
+            merge_policy: None,
         }
     }
 
@@ -48,11 +56,31 @@ impl SqliteLogicalField {
             column: column.into(),
             field: field.into(),
             encoding: SqliteLogicalEncoding::Bool,
+            merge_policy: None,
         }
+    }
+
+    pub fn json_value(column: impl Into<String>, field: impl Into<String>) -> Self {
+        Self {
+            column: column.into(),
+            field: field.into(),
+            encoding: SqliteLogicalEncoding::JsonValue,
+            merge_policy: None,
+        }
+    }
+
+    pub fn with_merge_policy(mut self, policy: MergePolicy) -> Self {
+        self.merge_policy = Some(policy);
+        self
+    }
+
+    pub fn with_encoding(mut self, encoding: SqliteLogicalEncoding) -> Self {
+        self.encoding = encoding;
+        self
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SqliteLogicalMapping {
     data_table: String,
     id_column: String,
@@ -60,6 +88,8 @@ pub struct SqliteLogicalMapping {
     entity: String,
     fields: Vec<SqliteLogicalField>,
     meta_table: String,
+    #[serde(default)]
+    default_merge_policy: Option<MergePolicy>,
 }
 
 impl SqliteLogicalMapping {
@@ -77,6 +107,7 @@ impl SqliteLogicalMapping {
             schema: schema.into(),
             entity: entity.into(),
             fields: Vec::new(),
+            default_merge_policy: None,
         }
     }
 
@@ -95,9 +126,32 @@ impl SqliteLogicalMapping {
         self
     }
 
+    pub fn with_json_value_field(mut self, column: impl Into<String>, field: impl Into<String>) -> Self {
+        self.fields.push(SqliteLogicalField::json_value(column, field));
+        self
+    }
+
+    pub fn with_field_def(mut self, field: SqliteLogicalField) -> Self {
+        self.fields.push(field);
+        self
+    }
+
     pub fn with_meta_table(mut self, table: impl Into<String>) -> Self {
         self.meta_table = table.into();
         self
+    }
+
+    pub fn with_default_merge_policy(mut self, policy: MergePolicy) -> Self {
+        self.default_merge_policy = Some(policy);
+        self
+    }
+
+    fn policy_for(&self, field: &str) -> Option<MergePolicy> {
+        self.fields
+            .iter()
+            .find(|entry| entry.field == field)
+            .and_then(|entry| entry.merge_policy.clone())
+            .or_else(|| self.default_merge_policy.clone())
     }
 }
 
@@ -414,6 +468,11 @@ impl LogicalAdapter for SqliteLogicalAdapter {
         self.merge_policies
             .get(field)
             .cloned()
+            .or_else(|| {
+                self.mapping
+                    .as_ref()
+                    .and_then(|mapping| mapping.policy_for(field))
+            })
             .unwrap_or(MergePolicy::LastWriterWins)
     }
 
@@ -549,6 +608,19 @@ fn sqlite_value_to_field(value: SqlValue, encoding: &SqliteLogicalEncoding) -> F
                 .unwrap_or_else(|_| FieldValue::Bytes(value)),
             other => sqlite_value_to_field(other, &SqliteLogicalEncoding::Plain),
         },
+        SqliteLogicalEncoding::JsonValue => match value {
+            SqlValue::Null => FieldValue::Null,
+            SqlValue::Integer(value) => FieldValue::I64(value),
+            SqlValue::Real(value) => FieldValue::F64(value),
+            SqlValue::Text(value) => match serde_json::from_str::<serde_json::Value>(&value) {
+                Ok(value) => json_value_to_field(value),
+                Err(_) => FieldValue::String(value),
+            },
+            SqlValue::Blob(value) => match serde_json::from_slice::<serde_json::Value>(&value) {
+                Ok(value) => json_value_to_field(value),
+                Err(_) => FieldValue::Bytes(value),
+            },
+        },
     }
 }
 
@@ -589,12 +661,72 @@ fn field_to_sql_value(value: &FieldValue, encoding: &SqliteLogicalEncoding) -> S
                 SqlValue::Text(json)
             }
         },
+        SqliteLogicalEncoding::JsonValue => match value {
+            FieldValue::Null => SqlValue::Null,
+            _ => {
+                let json_value = field_to_json_value(value);
+                let json = serde_json::to_string(&json_value).unwrap_or_else(|_| "null".to_string());
+                SqlValue::Text(json)
+            }
+        },
+    }
+}
+
+fn json_value_to_field(value: serde_json::Value) -> FieldValue {
+    match value {
+        serde_json::Value::Null => FieldValue::Null,
+        serde_json::Value::Bool(value) => FieldValue::Bool(value),
+        serde_json::Value::Number(value) => {
+            if let Some(int) = value.as_i64() {
+                FieldValue::I64(int)
+            } else if let Some(float) = value.as_f64() {
+                FieldValue::F64(float)
+            } else {
+                FieldValue::Null
+            }
+        }
+        serde_json::Value::String(value) => FieldValue::String(value),
+        serde_json::Value::Array(items) => {
+            FieldValue::List(items.into_iter().map(json_value_to_field).collect())
+        }
+        serde_json::Value::Object(map) => FieldValue::Map(
+            map.into_iter()
+                .map(|(key, value)| (key, json_value_to_field(value)))
+                .collect(),
+        ),
+    }
+}
+
+fn field_to_json_value(value: &FieldValue) -> serde_json::Value {
+    match value {
+        FieldValue::Null => serde_json::Value::Null,
+        FieldValue::Bool(value) => serde_json::Value::Bool(*value),
+        FieldValue::I64(value) => serde_json::Value::Number((*value).into()),
+        FieldValue::F64(value) => serde_json::Number::from_f64(*value)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        FieldValue::String(value) => serde_json::Value::String(value.clone()),
+        FieldValue::Bytes(value) => {
+            let items = value
+                .iter()
+                .map(|byte| serde_json::Value::Number((*byte as i64).into()))
+                .collect::<Vec<_>>();
+            serde_json::Value::Array(items)
+        }
+        FieldValue::List(items) => {
+            serde_json::Value::Array(items.iter().map(field_to_json_value).collect())
+        }
+        FieldValue::Map(map) => serde_json::Value::Object(
+            map.iter()
+                .map(|(key, value)| (key.clone(), field_to_json_value(value)))
+                .collect(),
+        ),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{SqliteLogicalAdapter, SqliteLogicalMapping};
+    use super::{SqliteLogicalAdapter, SqliteLogicalEncoding, SqliteLogicalField, SqliteLogicalMapping};
     use crate::{FieldValue, LogicalAdapter, MergePolicy, RecordState, RecordView, State, SyncRecord, LamportClock};
     use rusqlite::Connection;
     use std::collections::BTreeMap;
@@ -640,6 +772,40 @@ mod tests {
             .snapshot()
             .expect("snapshot");
         assert_eq!(snapshot.len(), 1);
+    }
+
+    #[test]
+    fn sqlite_logical_mapping_merge_policy_precedence() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("records.sqlite");
+
+        let mapping = SqliteLogicalMapping::new("notes", "id", "schema", "Note")
+            .with_field_def(
+                SqliteLogicalField::new("tags", "tags")
+                    .with_merge_policy(MergePolicy::SetUnion),
+            );
+
+        let adapter = SqliteLogicalAdapter::new("logical", "app", &path, "records")
+            .with_mapping(mapping);
+
+        assert_eq!(adapter.merge_policy("tags"), MergePolicy::SetUnion);
+        assert_eq!(adapter.merge_policy("title"), MergePolicy::LastWriterWins);
+    }
+
+    #[test]
+    fn sqlite_logical_json_value_encoding_round_trip() {
+        let value = FieldValue::List(vec![
+            FieldValue::String("alpha".to_string()),
+            FieldValue::I64(42),
+            FieldValue::Map(BTreeMap::from([(
+                "flag".to_string(),
+                FieldValue::Bool(true),
+            )])),
+        ]);
+
+        let stored = super::field_to_sql_value(&value, &SqliteLogicalEncoding::JsonValue);
+        let restored = super::sqlite_value_to_field(stored, &SqliteLogicalEncoding::JsonValue);
+        assert_eq!(restored, value);
     }
 
     #[test]

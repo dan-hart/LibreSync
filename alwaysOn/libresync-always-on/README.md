@@ -10,7 +10,7 @@ LibreSyncAlwaysOn is an always-on desktop device that keeps LibreSync data synce
 - Basic UI for device list, last sync, and storage footprint.
 
 ## Status
-- Engine wiring is active with a status dashboard, manual refresh button, per-app backup toggles, snapshot create/preview/restore controls, retention pruning, and a trust panel (linking + fingerprints).
+- Engine wiring is active with a status dashboard, manual refresh button, per-app backup toggles, snapshot create/preview/restore controls, retention pruning, and a trust panel (linking + fingerprints + auto-accept/auto-approve toggles).
 - System tray menu supports show/hide, manual refresh, and quit.
 
 ## Next steps

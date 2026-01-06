@@ -3,5 +3,6 @@ members = [
   "crates/libresync",
   "crates/libresync-cli",
   "crates/libresync-ffi",
+  "crates/libresync-alwayson-daemon",
 ]
 resolver = "2"

@@ -29,3 +29,30 @@
 - Storage limits and retention policy for encrypted state.
 - Background service vs. foreground tray behavior on each OS.
 - Always-on trust UX (linking prompts, fingerprint visibility, and re-link flows).
+
+## Daemon/service mode
+The `libresync-alwayson-daemon` binary provides headless, OS-level background behavior for LibreSyncAlwaysOn. It uses the same config/state layout as the UI and keeps a JSON adapter synced on a timer.
+
+Auto-approve linking is opt-in and intended only for trusted private networks.
+
+### Build and run
+From the repo root:
+```
+cargo run -p libresync-alwayson-daemon -- --auto-accept
+```
+
+Common options:
+- `--config <path>`: override config path.
+- `--data <path>`: JSON file to sync.
+- `--state <path>`: encrypted state file path.
+- `--listen <addr>`: override listen address.
+- `--auto-accept`: automatically accept linking requests.
+- `--auto-approve`: automatically discover and link devices on private LANs (implies auto-accept).
+
+### Install as a service
+Templates live in `alwaysOn/service/`:
+- `libresync-alwayson-daemon.service` (systemd user service)
+- `com.codedbydan.libresync.alwayson.plist` (launchd)
+- `libresync-alwayson-daemon.xml` (Windows Task Scheduler)
+
+Edit the ExecStart/Command paths to the installed daemon binary and adjust arguments as needed.

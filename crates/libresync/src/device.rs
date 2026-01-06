@@ -28,6 +28,9 @@ pub trait DeviceHandler: Send + Sync {
         let _ = fingerprint;
         self.approve_link(identity)
     }
+    fn pairing_secret(&self) -> Option<String> {
+        None
+    }
 }
 
 #[cfg(test)]

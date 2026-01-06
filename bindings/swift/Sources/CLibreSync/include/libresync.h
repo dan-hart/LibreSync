@@ -10,6 +10,9 @@ extern "C" {
 
 uint32_t libresync_abi_version(void);
 
+char *libresync_generate_app_key(void);
+char *libresync_generate_device_keys(const char *device_id, const char *app_id, const char *user_id);
+
 void *libresync_engine_create(const char *config_json, const char *state_path);
 void libresync_engine_free(void *handle);
 
@@ -18,6 +21,7 @@ bool libresync_engine_set_auto_accept(void *handle, bool enabled);
 bool libresync_engine_register_json_adapter(void *handle, const char *adapter_id, const char *path);
 bool libresync_engine_register_logical_file_adapter(void *handle, const char *adapter_id, const char *namespace_name, const char *path);
 bool libresync_engine_register_sqlite_adapter(void *handle, const char *adapter_id, const char *path, size_t page_delta);
+bool libresync_engine_register_sqlite_logical_adapter(void *handle, const char *adapter_id, const char *namespace_name, const char *path, const char *mapping_json);
 
 bool libresync_engine_start_listening(void *handle);
 bool libresync_engine_stop_listening(void *handle);

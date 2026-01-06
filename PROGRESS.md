@@ -59,10 +59,15 @@ LibreSync has a working device-to-device MVP for two CLI instances on a LAN. Dev
 - API stability, quickstart, and debugging docs added.
 - FFI crate added with Swift/Kotlin starter bindings and samples.
 - SQLite logical mapping added with sidecar metadata for existing tables.
+- SQLite logical mapping now supports JSON-value encoding and per-field merge policies.
 - Swift/Kotlin binding docs now cover Local Network permissions and secure key storage.
 - LibreSyncAlwaysOn now supports system tray show/hide and trust UI (linking + fingerprints).
 - Swift/Kotlin samples now default to logical record adapters.
 - FFI tests added to meet the coverage gate.
+- FFI now exposes key generation helpers for SDK key storage.
+- Swift/Kotlin SDKs include key manager + config builders and SQLite logical mapping registration.
+- Headless LibreSyncAlwaysOn daemon added with service templates for OS-level background runs.
+- Auto-approve linking mode added (opt-in, private/link-local LAN only).
 
 ## Current MVP behavior
 - Two devices on the same LAN can run `libresync`.
@@ -80,10 +85,8 @@ LibreSync has a working device-to-device MVP for two CLI instances on a LAN. Dev
 - Coverage gate is met but additional tests would improve confidence across the SDK/FFI surface.
 
 ## Next steps
-- Extend SQLite logical mapping with richer type/merge policy configs.
-- Finalize platform key storage integration and UX in SDK wrappers.
-- Implement true OS-level daemon/service behavior for LibreSyncAlwaysOn.
-- Add DB-backed logical adapters (SwiftData/Kotlin storage).
+- Expand logical adapters for multi-table schemas and custom merge policies.
+- Ship native SDK samples for SwiftData/Room with real schemas.
 
 ## Tests
 - `cargo test` covers core and CLI behavior.

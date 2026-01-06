@@ -105,6 +105,7 @@ pub fn link_with_device(
     device_keys: &DeviceKeys,
     app_key: &AppKey,
     device: SocketAddr,
+    pairing_secret: Option<String>,
 ) -> Result<(Identity, String, AppKey)> {
     let stream = TcpStream::connect_timeout(&device, Duration::from_secs(5))?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -118,6 +119,7 @@ pub fn link_with_device(
         &Message::LinkRequest {
             identity: identity.clone(),
             app_key: Some(app_key.as_bytes().to_vec()),
+            pairing_secret,
         },
     )?;
 
@@ -173,6 +175,7 @@ fn handle_connection(
         Message::LinkRequest {
             identity: device_identity,
             app_key: remote_app_key,
+            pairing_secret,
         } => {
             if !device_identity.matches_app(handler.app_id()) {
                 write_message(reader.get_mut(), &Message::LinkResponse {
@@ -181,6 +184,17 @@ fn handle_connection(
                     app_key: None,
                 })?;
                 return Ok(());
+            }
+            if let Some(expected) = handler.pairing_secret() {
+                let provided = pairing_secret.unwrap_or_default();
+                if provided != expected {
+                    write_message(reader.get_mut(), &Message::LinkResponse {
+                        identity: identity.clone(),
+                        accepted: false,
+                        app_key: None,
+                    })?;
+                    return Ok(());
+                }
             }
             let incoming_key = remote_app_key.ok_or_else(|| {
                 Error::Protocol("linking request missing app key".to_string())
@@ -694,6 +708,7 @@ mod tests {
             &Message::LinkRequest {
                 identity: device_identity.clone(),
                 app_key: Some(app_key.as_bytes().to_vec()),
+                pairing_secret: None,
             },
         )
         .expect("link request");

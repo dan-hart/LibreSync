@@ -222,6 +222,21 @@
           <input type="checkbox" id="auto-accept" />
           <label for="auto-accept">Auto-accept linking</label>
         </div>
+        <div class="toggle">
+          <input type="checkbox" id="auto-approve" />
+          <label for="auto-approve">Auto-approve linking (private LAN only)</label>
+        </div>
+        <div class="toggle">
+          <label for="auto-approve-mins">Auto-approve duration (mins)</label>
+          <input type="number" id="auto-approve-mins" min="1" value="15" />
+        </div>
+        <p class="muted" id="auto-approve-until">Auto-approve expires: —</p>
+        <div class="link-controls">
+          <input type="text" id="pairing-secret" placeholder="Pairing secret (optional)" />
+          <button class="secondary" id="save-pairing-secret">Save pairing secret</button>
+          <button class="secondary" id="clear-pairing-secret">Clear pairing secret</button>
+        </div>
+        <p class="muted" id="pairing-secret-status">Pairing secret: —</p>
         <div class="link-controls">
           <input type="text" id="link-address" placeholder="Device address (ip:port)" />
           <button class="secondary" id="link-device">Link device</button>
@@ -265,6 +280,13 @@
       const statusBanner = document.getElementById("status-banner");
       const localFingerprint = document.getElementById("local-fingerprint");
       const autoAccept = document.getElementById("auto-accept");
+      const autoApprove = document.getElementById("auto-approve");
+      const autoApproveMins = document.getElementById("auto-approve-mins");
+      const autoApproveUntil = document.getElementById("auto-approve-until");
+      const pairingSecretInput = document.getElementById("pairing-secret");
+      const savePairingSecretButton = document.getElementById("save-pairing-secret");
+      const clearPairingSecretButton = document.getElementById("clear-pairing-secret");
+      const pairingSecretStatus = document.getElementById("pairing-secret-status");
       const linkAddressInput = document.getElementById("link-address");
       const linkDeviceButton = document.getElementById("link-device");
       const linkedList = document.getElementById("linked-list");
@@ -364,6 +386,13 @@
         currentAppId = status.app_id;
         localFingerprint.textContent = `Local fingerprint: ${status.local_fingerprint || "—"}`;
         autoAccept.checked = Boolean(status.auto_accept_linking);
+        autoApprove.checked = Boolean(status.auto_approve_linking);
+        autoApproveUntil.textContent = status.auto_approve_until
+          ? `Auto-approve expires: ${new Date(status.auto_approve_until * 1000).toLocaleString()}`
+          : "Auto-approve expires: —";
+        pairingSecretStatus.textContent = `Pairing secret: ${
+          status.pairing_secret_set ? "set" : "not set"
+        }`;
         renderLinkedDevices(status.linked_devices || []);
         backupApp.textContent = `App: ${status.app_id}`;
         const policy = status.backup?.[status.app_id] || { enabled: false, allow_restore: false };
@@ -477,6 +506,33 @@
           .then(renderStatus)
           .catch((error) => {
             statusBanner.textContent = `Auto-accept error: ${error}`;
+          });
+      });
+      autoApprove.addEventListener("change", () => {
+        statusBanner.textContent = "Updating auto-approve...";
+        const minutes = Math.max(Number(autoApproveMins.value) || 15, 1);
+        invoke("set_auto_approve_linking", { enabled: autoApprove.checked, duration_mins: minutes })
+          .then(renderStatus)
+          .catch((error) => {
+            statusBanner.textContent = `Auto-approve error: ${error}`;
+          });
+      });
+
+      savePairingSecretButton.addEventListener("click", () => {
+        const value = pairingSecretInput.value.trim();
+        statusBanner.textContent = "Saving pairing secret...";
+        invoke("set_pairing_secret", { secret: value.length ? value : null })
+          .then(renderStatus)
+          .catch((error) => {
+            statusBanner.textContent = `Pairing secret error: ${error}`;
+          });
+      });
+      clearPairingSecretButton.addEventListener("click", () => {
+        statusBanner.textContent = "Clearing pairing secret...";
+        invoke("set_pairing_secret", { secret: null })
+          .then(renderStatus)
+          .catch((error) => {
+            statusBanner.textContent = `Pairing secret error: ${error}`;
           });
       });
       linkDeviceButton.addEventListener("click", () => {
