@@ -9,10 +9,10 @@ The CLI is a thin wrapper around the core library. It exposes the minimal flow n
 - `pair`: request pairing with a device (mutual consent).
 - `unpair`: revoke pairing with a device (removes from allowlist).
 - `listen`: run the device listener and advertise on LAN.
-- `refresh`: refresh the selected JSON file with a paired device.
+- `refresh`: refresh the selected JSON file with a paired device (use `--all` to refresh all paired devices).
 - `watch`: watch the selected JSON file and refresh all paired devices (auto-starts a listener by default).
 - `stop`: stop the background listener for this config.
-- `status`: show identity, selected file, listener status, paired devices, and discovered devices (with last seen time).
+- `status`: show identity, selected file, backup settings, listener status, paired devices, and discovered devices (with last seen time).
 - `backup configure`: opt in to encrypted backups (and optionally allow restores).
 - `backup snapshot`: create an encrypted snapshot.
 - `backup list`: list encrypted snapshots.
@@ -50,7 +50,7 @@ You can override the location with `--config` on any command.
    - pass a device ID with `--device-id`, or
    - omit both and select from the discovery list.
 6. Use `unpair --device-id <device-id>` to revoke trust and require re-pairing.
-7. Run `refresh` whenever you want to refresh the file. The same address/device-ID selection rules apply.
+7. Run `refresh` whenever you want to refresh the file. The same address/device-ID selection rules apply. Use `refresh --all` to refresh every paired device.
 8. Run `watch` to refresh all paired devices on local changes and on a periodic interval.
 9. Run `status` to see connected devices and last seen addresses.
 
@@ -64,7 +64,9 @@ You can override the location with `--config` on any command.
 - `listen` updates the selected JSON file when incoming refreshes are received.
 - `stop` reads the PID file next to the config and terminates the listener process.
 - `pair` and `refresh` will prompt for a device if multiple are discovered and no device is specified.
+- `refresh --all` refreshes all paired devices; add `--no-discover` to use only stored addresses.
 - `watch` refreshes all paired devices and uses discovery unless `--no-discover` is set.
 - `watch` will start a local listener unless `--no-listen` is set.
+- `status` includes backup settings and local storage sizes for the state and selected file.
 - `backup restore` requires two steps: `backup configure --allow-restore` plus `backup restore --confirm --confirm-id <snapshot-id>`.
 - Use `--verbose` to include debug details when errors occur.

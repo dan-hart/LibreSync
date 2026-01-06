@@ -64,7 +64,8 @@ fn pid_path_for_config(config_path: &Path) -> PathBuf {
     name = "libresync",
     version,
     about = "Local-only device-to-device refresh CLI for LibreSync.",
-    long_about = "A minimal CLI for exercising the LibreSync core. Use it to discover devices on LAN,\npair devices, and refresh a selected JSON file over direct connections."
+    long_about = "A practical CLI for exercising the LibreSync core. Use it to discover devices on LAN,\npair devices, refresh JSON files, and manage encrypted backups from the terminal.",
+    after_help = "Examples:\n  libresync init --app-id com.example.notes\n  libresync select --file ./data.json\n  libresync listen\n  libresync pair\n  libresync refresh --all\n  libresync watch --interval-secs 5\n  libresync backup configure --enable\n  libresync backup snapshot --note \"before import\"\n  libresync backup list\n  libresync backup restore --snapshot-id <id> --confirm --confirm-id <id>\n  libresync status"
 )]
 struct Cli {
     #[arg(
@@ -249,7 +250,8 @@ enum Commands {
         name = "refresh",
         alias = "sync",
         about = "Refresh the selected JSON file with a paired device.",
-        long_about = "Refresh exchanges data only after trust is established. It requires prior pairing. The file is loaded into the local state before refresh and written back after refresh."
+        long_about = "Refresh exchanges data only after trust is established. It requires prior pairing. The file is loaded into the local state before refresh and written back after refresh.",
+        after_help = "Examples:\n  libresync refresh --device 192.168.1.10:52345\n  libresync refresh --device-id amber-river-summit\n  libresync refresh --all\n  libresync refresh --all --no-discover"
     )]
     Refresh {
         #[arg(
@@ -258,6 +260,20 @@ enum Commands {
             long_help = "Config file that includes the selected JSON file path and device allowlist. Defaults to the OS config directory when omitted."
         )]
         config: Option<PathBuf>,
+        #[arg(
+            long,
+            conflicts_with_all = ["device", "device_id"],
+            help = "Refresh all paired devices (uses discovery by default).",
+            long_help = "Refresh all paired devices instead of a single device. Uses LAN discovery by default; add --no-discover to only use stored addresses."
+        )]
+        all: bool,
+        #[arg(
+            long,
+            requires = "all",
+            help = "Skip LAN discovery when using --all.",
+            long_help = "Skip LAN discovery for refresh-all and only use stored addresses from the config."
+        )]
+        no_discover: bool,
         #[arg(
             long,
             help = "Device address to connect to (e.g. 192.168.1.10:52345).",
@@ -331,7 +347,8 @@ enum Commands {
     },
     #[command(
         about = "Manage encrypted backups and restore points for the selected data.",
-        long_about = "Create, list, and restore encrypted snapshots. Backups are opt-in per app, and restores require an explicit config flag plus --confirm."
+        long_about = "Create, list, and restore encrypted snapshots. Backups are opt-in per app, and restores require an explicit config flag plus --confirm.",
+        after_help = "Examples:\n  libresync backup configure --enable\n  libresync backup snapshot --note \"before import\"\n  libresync backup list\n  libresync backup preview --snapshot-id <id>\n  libresync backup restore --snapshot-id <id> --confirm --confirm-id <id>"
     )]
     Backup {
         #[command(subcommand)]
@@ -339,7 +356,8 @@ enum Commands {
     },
     #[command(
         about = "Show device status, paired devices, and recent discovery info.",
-        long_about = "Show local identity, selected file, paired devices, and (by default) devices discovered on the LAN. Discovered devices are treated as connected now. Use --no-discover to skip LAN discovery."
+        long_about = "Show local identity, selected file, backup settings, listener status, paired devices, and (by default) devices discovered on the LAN. Discovered devices are treated as connected now. Use --no-discover to skip LAN discovery.",
+        after_help = "Examples:\n  libresync status\n  libresync status --no-discover"
     )]
     Status {
         #[arg(
@@ -840,9 +858,15 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             config,
             device,
             device_id,
+            all,
+            no_discover,
         } => {
             let config = resolve_config_path(config);
-            refresh_file(&config, device, device_id)?;
+            if all {
+                refresh_all(&config, !no_discover)?;
+            } else {
+                refresh_file(&config, device, device_id)?;
+            }
         }
         Commands::Watch {
             config,
@@ -1571,6 +1595,22 @@ fn refresh_file(
     Ok(())
 }
 
+fn refresh_all(path: &Path, discover: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut config = load_config(path)?;
+    if config.devices.is_empty() {
+        println!("No paired devices to refresh.");
+        return Ok(());
+    }
+
+    let changed = refresh_all_devices(path, &mut config, discover)?;
+    if changed {
+        println!("Refresh complete; local file updated.");
+    } else {
+        println!("Refresh complete; no local changes applied.");
+    }
+    Ok(())
+}
+
 fn status(
     path: &Path,
     discover: bool,
@@ -1589,6 +1629,8 @@ fn status(
         None => println!("Selected file: (none)"),
     }
     print_listener_status(path)?;
+    print_backup_status(&config, path)?;
+    print_storage_status(&config)?;
 
     let engine = engine_for_config(&config);
     let mut discovered: Vec<DeviceInfo> = Vec::new();
@@ -1664,6 +1706,53 @@ fn status(
         save_config(path, &config)?;
     }
 
+    Ok(())
+}
+
+fn print_backup_status(
+    config: &Config,
+    config_path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Backups enabled: {}", config.backup_enabled);
+    println!("Restore allowed: {}", config.backup_allow_restore);
+    if config.backup_enabled || config.backup_dir.is_some() {
+        let backup_dir = config.backup_dir(config_path);
+        println!("Backup dir: {}", backup_dir.display());
+        match dir_size(&backup_dir) {
+            Ok(size) => println!("Backup size: {}", format_bytes(size)),
+            Err(_) => println!("Backup size: unknown"),
+        }
+    }
+    Ok(())
+}
+
+fn print_storage_status(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+    let state_path = &config.state_path;
+    match file_size(state_path) {
+        Some(size) => println!(
+            "State file: {} ({})",
+            state_path.display(),
+            format_bytes(size)
+        ),
+        None => println!("State file: {} (missing)", state_path.display()),
+    }
+    if let Some(updated) = file_modified_unix_secs(state_path) {
+        println!("{}", format_time_label("State updated", updated));
+    }
+
+    if let Some(data_path) = config.data_path.as_ref() {
+        match file_size(data_path) {
+            Some(size) => println!(
+                "Selected file size: {} ({})",
+                data_path.display(),
+                format_bytes(size)
+            ),
+            None => println!("Selected file size: {} (missing)", data_path.display()),
+        }
+        if let Some(updated) = file_modified_unix_secs(data_path) {
+            println!("{}", format_time_label("Selected file updated", updated));
+        }
+    }
     Ok(())
 }
 
@@ -1921,7 +2010,57 @@ fn now_unix_secs() -> u64 {
         .as_secs()
 }
 
-fn format_last_seen(ts: u64) -> String {
+fn file_size(path: &Path) -> Option<u64> {
+    fs::metadata(path).ok().map(|metadata| metadata.len())
+}
+
+fn file_modified_unix_secs(path: &Path) -> Option<u64> {
+    let metadata = fs::metadata(path).ok()?;
+    let modified = metadata.modified().ok()?;
+    let duration = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some(duration.as_secs())
+}
+
+fn dir_size(path: &Path) -> io::Result<u64> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    if !path.is_dir() {
+        return Ok(fs::metadata(path)?.len());
+    }
+
+    let mut total = 0u64;
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let entry_path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            total = total.saturating_add(dir_size(&entry_path)?);
+        } else if file_type.is_file() {
+            total = total.saturating_add(entry.metadata()?.len());
+        }
+    }
+    Ok(total)
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+
+    let value = bytes as f64;
+    if value >= GB {
+        format!("{:.1} GB", value / GB)
+    } else if value >= MB {
+        format!("{:.1} MB", value / MB)
+    } else if value >= KB {
+        format!("{:.1} KB", value / KB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+fn format_time_label(label: &str, ts: u64) -> String {
     let now = now_unix_secs() as i64;
     let ts_i64 = ts as i64;
     let delta = now.saturating_sub(ts_i64);
@@ -1929,12 +2068,16 @@ fn format_last_seen(ts: u64) -> String {
 
     match Local.timestamp_opt(ts_i64, 0).single() {
         Some(local) => format!(
-            "last seen: {} ({})",
+            "{label}: {} ({})",
             local.format("%Y-%m-%d %H:%M:%S"),
             relative
         ),
-        None => format!("last seen: {ts} ({relative})"),
+        None => format!("{label}: {ts} ({relative})"),
     }
+}
+
+fn format_last_seen(ts: u64) -> String {
+    format_time_label("last seen", ts)
 }
 
 fn format_relative(delta_secs: i64) -> String {
