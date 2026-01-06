@@ -6,12 +6,19 @@ LibreSync is designed for **local-only, device-to-device synchronization** with 
 - **No cloud dependency**: connections are direct between trusted devices on LAN or a private overlay.
 - **Mutual authentication**: devices must explicitly approve each other before syncing.
 - **Encrypted transport**: all data in transit must be encrypted.
+- **End-to-end encryption (E2EE) by default**: payloads are encrypted by the engine and not optional for consumers.
 - **Least leakage**: discovery payloads should be minimal; metadata should be reduced where possible.
 
 ## Threat Model (Baseline)
 - An attacker on the same local network attempting to eavesdrop or spoof peers.
 - A malicious device attempting to join a trusted cluster.
 - Replay attacks and message tampering.
+
+## E2EE status and threat-model impact
+- Sync payloads are now encrypted by the engine with a shared app-level key.
+- E2EE is mandatory for consumers; there is no opt-out path.
+- Engine state files and backups are encrypted at rest using the same app-level key.
+- Key rotation and re-keying flows are still pending.
 
 ## Repository Security Controls
 - **.gitignore hardening**: sensitive files and build caches are excluded by default.

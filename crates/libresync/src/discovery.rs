@@ -148,12 +148,65 @@ fn local_ips(listen_ip: IpAddr) -> Result<Vec<IpAddr>> {
 
 #[cfg(test)]
 mod tests {
-    use super::browse_mdns;
+    use super::{browse_mdns, local_ips, parse_service_info, pick_address};
+    use mdns_sd::ServiceInfo;
+    use std::collections::HashMap;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
     use std::time::Duration;
 
     #[test]
     fn browse_mdns_returns_empty_for_short_timeout() {
         let devices = browse_mdns("com.example.app", Duration::from_millis(10)).expect("browse");
         assert!(devices.is_empty());
+    }
+
+    #[test]
+    fn parse_service_info_filters_by_app_id() {
+        let mut props = HashMap::new();
+        props.insert("app_id".to_string(), "com.example.app".to_string());
+        props.insert("device_id".to_string(), "device-a".to_string());
+        props.insert("user_id".to_string(), "user-a".to_string());
+        let addresses = vec![IpAddr::V4(Ipv4Addr::LOCALHOST)];
+        let info = ServiceInfo::new(
+            "_libresync._tcp.local.",
+            "device-a",
+            "device-a.local.",
+            addresses.as_slice(),
+            1234,
+            props,
+        )
+        .expect("service info");
+
+        assert!(parse_service_info(&info, "com.other.app").is_none());
+        let parsed = parse_service_info(&info, "com.example.app").expect("parsed");
+        assert_eq!(parsed.identity.device_id, "device-a");
+        assert_eq!(parsed.address, SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1234));
+    }
+
+    #[test]
+    fn pick_address_prefers_ipv4_then_ipv6() {
+        let mut props = HashMap::new();
+        props.insert("app_id".to_string(), "com.example.app".to_string());
+        props.insert("device_id".to_string(), "device-a".to_string());
+        props.insert("user_id".to_string(), "user-a".to_string());
+        let addresses = vec![IpAddr::V6(Ipv6Addr::LOCALHOST), IpAddr::V4(Ipv4Addr::LOCALHOST)];
+        let info = ServiceInfo::new(
+            "_libresync._tcp.local.",
+            "device-a",
+            "device-a.local.",
+            addresses.as_slice(),
+            4321,
+            props,
+        )
+        .expect("service info");
+
+        let addr = pick_address(&info, 4321).expect("addr");
+        assert_eq!(addr, SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4321));
+    }
+
+    #[test]
+    fn local_ips_returns_listen_ip_when_specified() {
+        let ips = local_ips(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))).expect("ips");
+        assert_eq!(ips, vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))]);
     }
 }

@@ -7,18 +7,20 @@ LibreSync is a device-to-device (D2D) sync engine. Every instance is a device, a
 - Trust is scoped per app ID, not per device globally.
 - Sync is deterministic: last-writer-wins with Lamport clocks.
 - The protocol is intentionally minimal and binary-agnostic (JSON lines in the MVP).
+- Transport is encrypted (TLS with self-signed device keys in the MVP).
 
 ## SDK core (engine + adapters)
 The core library now exposes an SDK-first surface:
 - `Engine` owns the listener, sync flow, and shared state.
 - `DataAdapter` bridges app data to the sync state (JSON file adapter today).
 - The CLI is a consumer of the same Engine APIs for listen/refresh/watch.
+- `EventSink` and `EventStream` provide sync status callbacks for UIs.
 
 ## Identity model
 Each device announces a triple:
-- device ID: three random words joined by dashes (customizable).
+- device ID: stable identifier (CLI uses three words; apps can provide their own).
 - app ID: bundle identifier (e.g., `com.codedbydan.libresync-cli`).
-- user ID: adjective + noun joined by a dash (customizable).
+- user ID: human-friendly string (CLI uses adjective + noun).
 
 The app ID is the scope boundary for trust and discovery. Devices will only pair and sync when app IDs match.
 
@@ -52,18 +54,38 @@ Both devices merge incoming entries using the Lamport clock rules to ensure conv
 - Each value has a Lamport clock (counter + device ID).
 - On merge, the entry with the higher clock wins. Ties resolve by device ID.
 
+## Logical record sync (planned primary path)
+- Logical adapters map app data into records (`schema`, `entity`, `id`, `fields`, `tombstone`).
+- Records are merged with field-level policies (LWW, set-union, counters, list append).
+- File adapters remain supported as a fallback for arbitrary files or whole-store snapshots.
+
+## File adapters
+- `JsonFileAdapter` and `SqliteFileAdapter` map files into the state.
+- `WatchedFileAdapter` uses filesystem events for near-real-time local changes.
+- SQLite adapter syncs the main database file plus WAL/SHM sidecars for day-one delta support.
+
 ## File refresh (CLI)
 The CLI maps a single JSON file to a single key (`file`) in the state:
 - Before refresh, the local file is loaded into the state.
 - After refresh, the file is updated with the most recent value.
 
 ## Security notes (MVP)
-- Current MVP uses identity strings and consent but does not yet bind identities to cryptographic keys.
+- Current MVP uses self-signed device keys with TOFU fingerprints for pairing.
+- Identities are not derived from keys yet (device IDs are user-defined).
 - mDNS discovery is unauthenticated and should be treated as a hint only.
 - Pairing is the trust gate; devices that are not paired are rejected.
+- Sync payloads are encrypted by the engine using a shared app-level key (E2EE on the wire).
+- Pairing exchanges the app-level key inside the TLS channel.
+- Engine state files and backups are encrypted at rest with the app-level key.
+
+## LibreSyncAlwaysOn (planned)
+- Always-on desktop device that keeps app data synced while primary apps are closed.
+- LAN-only, written in Rust + Tauri, targeting macOS, Windows, and Linux.
+- Optional per-app backups via encrypted snapshots, with explicit restore confirmation.
 
 ## Future hardening
 - Device keypairs and signed app attestations.
 - Encrypted transport (Noise or TLS).
 - Allowlist revocation and key rotation.
 - Trust delegation policies (auto-accept for pre-approved devices).
+- Engine-owned E2EE with key rotation and re-keying flows.

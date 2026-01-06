@@ -21,6 +21,11 @@ function getInvoke() {
   throw new Error("Tauri API not available. Enable withGlobalTauri in tauri.conf.json");
 }
 
+function getEventApi() {
+  const tauri = window.__TAURI__;
+  return tauri?.event || tauri?.tauri?.event;
+}
+
 const invoke = (cmd, args = {}) => getInvoke()(cmd, args);
 
 function setStatus(message, tone = "info") {
@@ -47,6 +52,7 @@ async function loadStatus() {
     statusEl.innerHTML = `
       <div class="status-line">Device: <strong>${status.device_id}</strong></div>
       <div class="status-line">User: ${status.user_id}</div>
+      <div class="status-line">Fingerprint: ${status.fingerprint}</div>
       <div class="status-line">Listener: ${status.listener_addr ?? "—"}</div>
       <div class="status-line">Linked devices: ${status.linked_devices}</div>
     `;
@@ -136,14 +142,30 @@ async function refreshDevices() {
   try {
     const discovered = await invoke("discover_devices", { timeout_secs: 3 });
     const linked = await invoke("list_devices");
-    renderDeviceList(discoveredListEl, discovered, true);
-    renderDeviceList(linkedListEl, linked, false);
+    renderDeviceList(discoveredListEl, discovered, "discover");
+    renderDeviceList(linkedListEl, linked, "linked");
   } catch (error) {
     setStatus(error.toString(), "error");
   }
 }
 
-function renderDeviceList(container, devices, showActions) {
+async function setupSyncEvents() {
+  const eventApi = getEventApi();
+  if (!eventApi?.listen) return;
+  await eventApi.listen("sync_event", async (event) => {
+    const payload = event?.payload;
+    if (!payload) return;
+    if (payload.kind === "finished") {
+      await loadTodos();
+      await loadStatus();
+    }
+    if (payload.kind === "error" && payload.message) {
+      setStatus(payload.message, "error");
+    }
+  });
+}
+
+function renderDeviceList(container, devices, mode) {
   container.innerHTML = "";
 
   if (!devices.length) {
@@ -181,7 +203,7 @@ function renderDeviceList(container, devices, showActions) {
     const actions = document.createElement("div");
     actions.className = "device-actions-row";
 
-    if (showActions && device.address) {
+    if (mode === "discover" && device.address) {
       const linkBtn = document.createElement("button");
       linkBtn.textContent = "Link";
       linkBtn.addEventListener("click", async () => {
@@ -203,9 +225,21 @@ function renderDeviceList(container, devices, showActions) {
       actions.appendChild(syncBtn);
     }
 
+    if (mode === "linked") {
+      const revokeBtn = document.createElement("button");
+      revokeBtn.textContent = "Revoke";
+      revokeBtn.className = "ghost";
+      revokeBtn.addEventListener("click", async () => {
+        await invoke("revoke_device", { device_id: device.device_id });
+        await refreshDevices();
+        await loadStatus();
+      });
+      actions.appendChild(revokeBtn);
+    }
+
     card.appendChild(header);
     card.appendChild(meta);
-    if (showActions) {
+    if (mode !== "none") {
       card.appendChild(actions);
     }
     container.appendChild(card);
@@ -245,4 +279,5 @@ manualSyncBtn.addEventListener("click", async () => {
   await loadStatus();
   await loadTodos();
   await refreshDevices();
+  await setupSyncEvents();
 })();

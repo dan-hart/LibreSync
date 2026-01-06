@@ -4,7 +4,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Entry, LamportClock, Result};
+use crate::{AppKey, Entry, LamportClock, Result, decrypt_blob, encrypt_blob};
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct State {
@@ -79,12 +79,34 @@ impl State {
         let state = serde_json::from_slice(&data)?;
         Ok(state)
     }
+
+    pub fn save_encrypted(&self, app_key: &AppKey, path: impl AsRef<Path>) -> Result<()> {
+        let serialized = serde_json::to_vec(self)?;
+        let encrypted = encrypt_blob(app_key, &serialized, b"libresync-state")?;
+        fs::write(path, encrypted)?;
+        Ok(())
+    }
+
+    pub fn load_encrypted(app_key: &AppKey, path: impl AsRef<Path>) -> Result<Self> {
+        let data = fs::read(path)?;
+        let decrypted = decrypt_blob(app_key, &data, b"libresync-state")?;
+        let state = serde_json::from_slice(&decrypted)?;
+        Ok(state)
+    }
+
+    pub fn load_maybe_encrypted(app_key: &AppKey, path: impl AsRef<Path>) -> Result<Self> {
+        let data = fs::read(&path)?;
+        match decrypt_blob(app_key, &data, b"libresync-state") {
+            Ok(decrypted) => Ok(serde_json::from_slice(&decrypted)?),
+            Err(_) => Ok(serde_json::from_slice(&data)?),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::State;
-    use crate::LamportClock;
+    use crate::{AppKey, LamportClock};
     use std::path::PathBuf;
 
     #[test]
@@ -191,6 +213,52 @@ mod tests {
         state.save(&path).expect("save state");
 
         let loaded = State::load(&path).expect("load state");
+        assert_eq!(loaded, state);
+    }
+
+    #[test]
+    fn state_save_and_load_encrypted_round_trip() {
+        let mut state = State::new("device-a");
+        state.set("alpha", b"one".to_vec());
+        let app_key = AppKey::generate().expect("app key");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path: PathBuf = dir.path().join("state.enc");
+        state
+            .save_encrypted(&app_key, &path)
+            .expect("save encrypted state");
+
+        let loaded = State::load_encrypted(&app_key, &path).expect("load encrypted state");
+        assert_eq!(loaded, state);
+    }
+
+    #[test]
+    fn state_load_maybe_encrypted_accepts_plaintext() {
+        let mut state = State::new("device-a");
+        state.set("alpha", b"one".to_vec());
+        let app_key = AppKey::generate().expect("app key");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path: PathBuf = dir.path().join("state.json");
+        state.save(&path).expect("save plaintext state");
+
+        let loaded = State::load_maybe_encrypted(&app_key, &path).expect("load maybe");
+        assert_eq!(loaded, state);
+    }
+
+    #[test]
+    fn state_load_maybe_encrypted_accepts_ciphertext() {
+        let mut state = State::new("device-a");
+        state.set("alpha", b"one".to_vec());
+        let app_key = AppKey::generate().expect("app key");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path: PathBuf = dir.path().join("state.enc");
+        state
+            .save_encrypted(&app_key, &path)
+            .expect("save encrypted state");
+
+        let loaded = State::load_maybe_encrypted(&app_key, &path).expect("load maybe");
         assert_eq!(loaded, state);
     }
 }

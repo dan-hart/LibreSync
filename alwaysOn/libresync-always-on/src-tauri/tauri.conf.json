@@ -1,0 +1,22 @@
+{
+  "build": {
+    "beforeBuildCommand": "",
+    "beforeDevCommand": "",
+    "devPath": "../src",
+    "distDir": "../src"
+  },
+  "package": {
+    "productName": "LibreSyncAlwaysOn",
+    "version": "0.0.1"
+  },
+  "tauri": {
+    "allowlist": {},
+    "windows": [
+      {
+        "title": "LibreSyncAlwaysOn",
+        "width": 900,
+        "height": 600
+      }
+    ]
+  }
+}

@@ -8,8 +8,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use libresync::{
-    register_mdns, AdapterWatch, DeviceHandler, DeviceInfo, DeviceKeys, Engine, EngineConfig,
-    Identity, MdnsAdvertiser, SqliteFileAdapter, State,
+    AppKey, register_mdns, AutoRefresh, DeviceHandler, DeviceInfo, DeviceKeys, Engine,
+    EngineConfig, Event, EventStream, Identity, MdnsAdvertiser, SqliteFileAdapter, State,
 };
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -71,6 +71,8 @@ struct FranklyConfig {
     user_id: String,
     device_keys: DeviceKeysRecord,
     #[serde(default)]
+    app_key: Option<String>,
+    #[serde(default)]
     devices: BTreeMap<String, DeviceRecord>,
 }
 
@@ -81,6 +83,21 @@ impl FranklyConfig {
 
     fn device_keys(&self) -> Result<DeviceKeys, String> {
         self.device_keys.to_keys()
+    }
+
+    fn app_key(&self) -> Result<AppKey, String> {
+        let encoded = self
+            .app_key
+            .as_ref()
+            .ok_or_else(|| "app key missing".to_string())?;
+        let bytes = BASE64
+            .decode(encoded.as_bytes())
+            .map_err(|error| error.to_string())?;
+        AppKey::from_slice(&bytes).map_err(|error| error.to_string())
+    }
+
+    fn set_app_key(&mut self, app_key: &AppKey) {
+        self.app_key = Some(BASE64.encode(app_key.as_bytes()));
     }
 
     fn upsert_device(
@@ -158,6 +175,25 @@ impl DeviceHandler for FranklyHandler {
         Ok(self.keys.clone())
     }
 
+    fn app_key(&self) -> libresync::Result<AppKey> {
+        self.config
+            .lock()
+            .map_err(|_| libresync::Error::Protocol("config lock poisoned".to_string()))?
+            .app_key()
+            .map_err(|error| libresync::Error::Protocol(error))
+    }
+
+    fn set_app_key(&self, app_key: &AppKey) -> libresync::Result<()> {
+        let mut config = self
+            .config
+            .lock()
+            .map_err(|_| libresync::Error::Protocol("config lock poisoned".to_string()))?;
+        config.set_app_key(app_key);
+        save_config(&self.config_path, &config)
+            .map_err(|error| libresync::Error::Protocol(error))?;
+        Ok(())
+    }
+
     fn is_paired_with_fingerprint(&self, identity: &Identity, fingerprint: &str) -> bool {
         if fingerprint.is_empty() {
             return false;
@@ -209,7 +245,7 @@ struct FranklyState {
     db_path: PathBuf,
     listener_addr: Mutex<Option<SocketAddr>>,
     mdns: Mutex<Option<MdnsAdvertiser>>,
-    watch: Mutex<Option<AdapterWatch>>,
+    auto_refresh: Mutex<Option<AutoRefresh>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -219,6 +255,7 @@ struct AppStatus {
     user_id: String,
     listener_addr: Option<String>,
     linked_devices: usize,
+    fingerprint: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -238,6 +275,16 @@ struct SyncResultDto {
     todos: Vec<Todo>,
 }
 
+#[derive(Debug, Serialize)]
+struct SyncEventDto {
+    kind: String,
+    adapter_id: Option<String>,
+    device_id: Option<String>,
+    user_id: Option<String>,
+    result: Option<String>,
+    message: Option<String>,
+}
+
 #[tauri::command]
 fn app_status(state: TauriState<FranklyState>) -> Result<AppStatus, String> {
     let config = state
@@ -255,6 +302,7 @@ fn app_status(state: TauriState<FranklyState>) -> Result<AppStatus, String> {
         user_id: config.user_id.clone(),
         listener_addr: listener_addr.as_ref().map(|addr| addr.to_string()),
         linked_devices: config.devices.len(),
+        fingerprint: config.device_keys.fingerprint.clone(),
     })
 }
 
@@ -320,6 +368,19 @@ fn sync_device(state: TauriState<FranklyState>, address: String) -> Result<SyncR
         device: device_to_dto(device),
         todos,
     })
+}
+
+#[tauri::command]
+fn revoke_device(state: TauriState<FranklyState>, device_id: String) -> Result<(), String> {
+    let mut config = state
+        .config
+        .lock()
+        .map_err(|_| "config lock poisoned".to_string())?;
+    if config.devices.remove(&device_id).is_none() {
+        return Err(format!("unknown device: {device_id}"));
+    }
+    save_config(&state.config_path, &config)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -476,6 +537,11 @@ fn load_or_init_config(path: &Path) -> Result<(FranklyConfig, DeviceKeys), Strin
         let mut config: FranklyConfig =
             serde_json::from_slice(&data).map_err(|error| error.to_string())?;
         let keys = config.device_keys()?;
+        if config.app_key.is_none() {
+            let app_key = AppKey::generate().map_err(|error| error.to_string())?;
+            config.set_app_key(&app_key);
+            save_config(path, &config)?;
+        }
         return Ok((config, keys));
     }
 
@@ -483,12 +549,14 @@ fn load_or_init_config(path: &Path) -> Result<(FranklyConfig, DeviceKeys), Strin
     let device_id = format!("frankly-{}", Uuid::new_v4().simple());
     let identity = Identity::new(&device_id, APP_ID, &user_id);
     let keys = DeviceKeys::generate(&identity).map_err(|error| error.to_string())?;
+    let app_key = AppKey::generate().map_err(|error| error.to_string())?;
 
     let config = FranklyConfig {
         app_id: APP_ID.to_string(),
         device_id,
         user_id,
         device_keys: DeviceKeysRecord::from_keys(&keys),
+        app_key: Some(BASE64.encode(app_key.as_bytes())),
         devices: BTreeMap::new(),
     };
 
@@ -502,15 +570,21 @@ fn save_config(path: &Path, config: &FranklyConfig) -> Result<(), String> {
     Ok(())
 }
 
-fn load_or_init_state(path: &Path, device_id: &str) -> Result<State, String> {
+fn load_or_init_state(path: &Path, device_id: &str, app_key: &AppKey) -> Result<State, String> {
     if path.exists() {
-        return State::load(path).map_err(|error| error.to_string());
+        let state = State::load_maybe_encrypted(app_key, path).map_err(|error| error.to_string())?;
+        state
+            .save_encrypted(app_key, path)
+            .map_err(|error| error.to_string())?;
+        return Ok(state);
     }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
     let state = State::new(device_id);
-    state.save(path).map_err(|error| error.to_string())?;
+    state
+        .save_encrypted(app_key, path)
+        .map_err(|error| error.to_string())?;
     Ok(state)
 }
 
@@ -522,6 +596,10 @@ fn init_state(app: &AppHandle) -> Result<FranklyState, String> {
         .lock()
         .map_err(|_| "config lock poisoned".to_string())?
         .identity();
+    let app_key = config
+        .lock()
+        .map_err(|_| "config lock poisoned".to_string())?
+        .app_key()?;
 
     let handler = Arc::new(FranklyHandler::new(
         identity.app_id.clone(),
@@ -530,7 +608,7 @@ fn init_state(app: &AppHandle) -> Result<FranklyState, String> {
         paths.config.clone(),
     ));
 
-    let state = load_or_init_state(&paths.state, &identity.device_id)?;
+    let state = load_or_init_state(&paths.state, &identity.device_id, &app_key)?;
     let listen_addr = LISTEN_ADDR
         .parse::<SocketAddr>()
         .map_err(|_| "invalid listen address".to_string())?;
@@ -552,9 +630,11 @@ fn init_state(app: &AppHandle) -> Result<FranklyState, String> {
         .start_listening()
         .map_err(|error| error.to_string())?;
     let mdns = register_mdns(&identity, listener_addr).ok();
-    let watch = engine
-        .watch(TODOS_KEY, &paths.state, Duration::from_millis(250))
+    let event_stream = engine.attach_event_channel();
+    let auto_refresh = engine
+        .auto_refresh(TODOS_KEY, &paths.state)
         .map_err(|error| error.to_string())?;
+    spawn_event_forwarder(app.clone(), event_stream);
 
     Ok(FranklyState {
         engine: Mutex::new(engine),
@@ -564,8 +644,55 @@ fn init_state(app: &AppHandle) -> Result<FranklyState, String> {
         db_path: paths.db,
         listener_addr: Mutex::new(Some(listener_addr)),
         mdns: Mutex::new(mdns),
-        watch: Mutex::new(Some(watch)),
+        auto_refresh: Mutex::new(Some(auto_refresh)),
     })
+}
+
+fn spawn_event_forwarder(app: AppHandle, stream: EventStream) {
+    std::thread::spawn(move || {
+        loop {
+            let event = match stream.recv() {
+                Ok(event) => event,
+                Err(_) => break,
+            };
+            let payload = match event {
+                Event::SyncStarted { device, adapter_id } => SyncEventDto {
+                    kind: "started".to_string(),
+                    adapter_id: Some(adapter_id),
+                    device_id: Some(device.identity.device_id),
+                    user_id: Some(device.identity.user_id),
+                    result: None,
+                    message: None,
+                },
+                Event::SyncFinished {
+                    device,
+                    adapter_id,
+                    result,
+                } => SyncEventDto {
+                    kind: "finished".to_string(),
+                    adapter_id: Some(adapter_id),
+                    device_id: Some(device.identity.device_id),
+                    user_id: Some(device.identity.user_id),
+                    result: Some(match result {
+                        libresync::SyncResult::Success => "success".to_string(),
+                        libresync::SyncResult::Failed(reason) => reason,
+                    }),
+                    message: None,
+                },
+                Event::Error { message } => SyncEventDto {
+                    kind: "error".to_string(),
+                    adapter_id: None,
+                    device_id: None,
+                    user_id: None,
+                    result: None,
+                    message: Some(message),
+                },
+                _ => continue,
+            };
+
+            let _ = app.emit_all("sync_event", payload);
+        }
+    });
 }
 
 fn main() {
@@ -581,6 +708,7 @@ fn main() {
             discover_devices,
             link_device,
             sync_device,
+            revoke_device,
             get_todos,
             add_todo,
             update_todo,

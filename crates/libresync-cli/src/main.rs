@@ -14,8 +14,9 @@ use chrono::{Local, TimeZone};
 use clap::{Parser, Subcommand};
 use directories::ProjectDirs;
 use libresync::{
-    DataAdapter, DeviceHandler, DeviceInfo, DeviceKeys, Engine, EngineConfig, Identity,
-    JsonFileAdapter, State,
+    AppKey, BackupManager, DataAdapter, DataAdapterBackup, DeviceHandler, DeviceInfo, DeviceKeys,
+    Engine, EngineConfig, FileSnapshotStore, Identity, JsonFileAdapter, RestoreOptions, State,
+    summarize_snapshot_diff,
 };
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
@@ -186,6 +187,26 @@ enum Commands {
         yes: bool,
     },
     #[command(
+        about = "Revoke pairing with a device.",
+        long_about = "Removes a paired device from the local allowlist. The device will need to pair again before any future refresh."
+    )]
+    Unpair {
+        #[arg(
+            long,
+            help = "Path to the config JSON file (defaults to the OS config directory).",
+            long_help = "Config file that includes the paired devices allowlist. Defaults to the OS config directory when omitted."
+        )]
+        config: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Device ID to revoke.",
+            long_help = "Device ID to remove from the allowlist."
+        )]
+        device_id: String,
+        #[arg(long, short, help = "Skip the confirmation prompt.")]
+        yes: bool,
+    },
+    #[command(
         about = "Run a device listener and advertise on LAN.",
         long_about = "Start a device listener that accepts inbound connections and (by default) advertises via mDNS. The listener runs in the background by default; use --foreground to keep it attached to your terminal."
     )]
@@ -309,6 +330,14 @@ enum Commands {
         config: Option<PathBuf>,
     },
     #[command(
+        about = "Manage encrypted backups and restore points for the selected data.",
+        long_about = "Create, list, and restore encrypted snapshots. Backups are opt-in per app, and restores require an explicit config flag plus --confirm."
+    )]
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommands,
+    },
+    #[command(
         about = "Show device status, paired devices, and recent discovery info.",
         long_about = "Show local identity, selected file, paired devices, and (by default) devices discovered on the LAN. Discovered devices are treated as connected now. Use --no-discover to skip LAN discovery."
     )]
@@ -335,6 +364,102 @@ enum Commands {
     },
 }
 
+#[derive(Subcommand)]
+enum BackupCommands {
+    #[command(
+        about = "Configure backup behavior for this app.",
+        long_about = "Enable backups and optionally allow restores. This is a required opt-in per app."
+    )]
+    Configure {
+        #[arg(
+            long,
+            help = "Path to the config JSON file (defaults to the OS config directory)."
+        )]
+        config: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Enable encrypted backups for this app."
+        )]
+        enable: bool,
+        #[arg(
+            long,
+            help = "Allow restores for this app (requires explicit confirmation at restore time)."
+        )]
+        allow_restore: bool,
+        #[arg(
+            long,
+            help = "Optional backup directory override."
+        )]
+        dir: Option<PathBuf>,
+    },
+    #[command(
+        about = "Create an encrypted snapshot.",
+        long_about = "Create a new encrypted snapshot of the selected data for backups."
+    )]
+    Snapshot {
+        #[arg(
+            long,
+            help = "Path to the config JSON file (defaults to the OS config directory)."
+        )]
+        config: Option<PathBuf>,
+        #[arg(
+            long,
+            default_value = FILE_KEY,
+            help = "Adapter ID to snapshot (default: file)."
+        )]
+        adapter_id: String,
+        #[arg(
+            long,
+            help = "Optional note to attach to the snapshot."
+        )]
+        note: Option<String>,
+    },
+    #[command(
+        about = "List encrypted snapshots.",
+        long_about = "List encrypted snapshots stored for the selected adapter."
+    )]
+    List {
+        #[arg(
+            long,
+            help = "Path to the config JSON file (defaults to the OS config directory)."
+        )]
+        config: Option<PathBuf>,
+        #[arg(
+            long,
+            default_value = FILE_KEY,
+            help = "Adapter ID to list (default: file)."
+        )]
+        adapter_id: String,
+    },
+    #[command(
+        about = "Restore an encrypted snapshot.",
+        long_about = "Restore a snapshot into the selected data. Requires backup allow-restore config and --confirm."
+    )]
+    Restore {
+        #[arg(
+            long,
+            help = "Path to the config JSON file (defaults to the OS config directory)."
+        )]
+        config: Option<PathBuf>,
+        #[arg(
+            long,
+            default_value = FILE_KEY,
+            help = "Adapter ID to restore (default: file)."
+        )]
+        adapter_id: String,
+        #[arg(
+            long,
+            help = "Snapshot ID to restore."
+        )]
+        snapshot_id: String,
+        #[arg(
+            long,
+            help = "Confirm the restore action."
+        )]
+        confirm: bool,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Config {
     device_id: String,
@@ -344,6 +469,14 @@ struct Config {
     data_path: Option<PathBuf>,
     #[serde(default)]
     device_keys: Option<DeviceKeysRecord>,
+    #[serde(default)]
+    app_key: Option<String>,
+    #[serde(default)]
+    backup_enabled: bool,
+    #[serde(default)]
+    backup_allow_restore: bool,
+    #[serde(default)]
+    backup_dir: Option<PathBuf>,
     #[serde(default)]
     devices: BTreeMap<String, DeviceRecord>,
 }
@@ -380,6 +513,32 @@ impl DeviceKeysRecord {
 impl Config {
     fn identity(&self) -> Identity {
         Identity::new(&self.device_id, &self.app_id, &self.user_id)
+    }
+
+    fn app_key(&self) -> Result<AppKey, Box<dyn std::error::Error>> {
+        let encoded = self
+            .app_key
+            .as_ref()
+            .ok_or("app key missing; re-run libresync init")?;
+        let bytes = BASE64
+            .decode(encoded.as_bytes())
+            .map_err(|error| format!("failed to decode app key: {error}"))?;
+        let key = AppKey::from_slice(&bytes)?;
+        Ok(key)
+    }
+
+    fn set_app_key(&mut self, key: &AppKey) {
+        self.app_key = Some(BASE64.encode(key.as_bytes()));
+    }
+
+    fn backup_dir(&self, config_path: &Path) -> PathBuf {
+        self.backup_dir
+            .clone()
+            .unwrap_or_else(|| default_backup_dir(config_path))
+    }
+
+    fn set_backup_dir(&mut self, path: PathBuf) {
+        self.backup_dir = Some(path);
     }
 
     fn device_keys(&self) -> Result<DeviceKeys, Box<dyn std::error::Error>> {
@@ -458,6 +617,20 @@ impl DeviceHandler for ConfigHandler {
             .map_err(|error| libresync::Error::Protocol(error.to_string()))
     }
 
+    fn app_key(&self) -> libresync::Result<AppKey> {
+        let config = self.config.lock().expect("config lock");
+        config
+            .app_key()
+            .map_err(|error| libresync::Error::Protocol(error.to_string()))
+    }
+
+    fn set_app_key(&self, app_key: &AppKey) -> libresync::Result<()> {
+        let mut config = self.config.lock().expect("config lock");
+        config.set_app_key(app_key);
+        save_config(&self.config_path, &config)
+            .map_err(|error| libresync::Error::Protocol(error.to_string()))
+    }
+
     fn is_paired_with_fingerprint(&self, identity: &Identity, fingerprint: &str) -> bool {
         if fingerprint.is_empty() {
             return self.is_paired(identity);
@@ -509,6 +682,7 @@ struct StaticHandler {
     app_id: String,
     allowed: HashMap<String, String>,
     keys: DeviceKeys,
+    app_key: AppKey,
 }
 
 impl DeviceHandler for StaticHandler {
@@ -528,6 +702,10 @@ impl DeviceHandler for StaticHandler {
         Ok(self.keys.clone())
     }
 
+    fn app_key(&self) -> libresync::Result<AppKey> {
+        Ok(self.app_key.clone())
+    }
+
     fn is_paired_with_fingerprint(&self, identity: &Identity, fingerprint: &str) -> bool {
         self.allowed
             .get(&identity.device_id)
@@ -540,10 +718,12 @@ fn engine_for_config(config: &Config) -> Engine {
     let device_keys = config
         .device_keys()
         .expect("device keys should exist");
+    let app_key = config.app_key().expect("app key should exist");
     let handler = Arc::new(StaticHandler {
         app_id: config.app_id.clone(),
         allowed: allowed_fingerprint_map(config),
         keys: device_keys,
+        app_key,
     });
     Engine::new(
         EngineConfig::new(config.identity()),
@@ -606,6 +786,14 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let config = resolve_config_path(config);
             pair_device(&config, device, device_id, yes)?;
         }
+        Commands::Unpair {
+            config,
+            device_id,
+            yes,
+        } => {
+            let config = resolve_config_path(config);
+            unpair_device(&config, &device_id, yes)?;
+        }
         Commands::Listen {
             config,
             listen,
@@ -644,6 +832,38 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let config = resolve_config_path(config);
             stop_listener(&config)?;
         }
+        Commands::Backup { command } => match command {
+            BackupCommands::Configure {
+                config,
+                enable,
+                allow_restore,
+                dir,
+            } => {
+                let config = resolve_config_path(config);
+                configure_backups(&config, enable, allow_restore, dir)?;
+            }
+            BackupCommands::Snapshot {
+                config,
+                adapter_id,
+                note,
+            } => {
+                let config = resolve_config_path(config);
+                create_backup_snapshot(&config, &adapter_id, note)?;
+            }
+            BackupCommands::List { config, adapter_id } => {
+                let config = resolve_config_path(config);
+                list_backup_snapshots(&config, &adapter_id)?;
+            }
+            BackupCommands::Restore {
+                config,
+                adapter_id,
+                snapshot_id,
+                confirm,
+            } => {
+                let config = resolve_config_path(config);
+                restore_backup_snapshot(&config, &adapter_id, &snapshot_id, confirm)?;
+            }
+        },
         Commands::Status {
             config,
             no_discover,
@@ -691,6 +911,8 @@ fn init_config(
     let identity = Identity::new(&device_id, app_id, &user_id);
     let device_keys = DeviceKeys::generate(&identity)
         .map_err(|error| io::Error::new(io::ErrorKind::Other, error.to_string()))?;
+    let app_key = AppKey::generate()
+        .map_err(|error| io::Error::new(io::ErrorKind::Other, error.to_string()))?;
 
     let config = Config {
         device_id,
@@ -699,13 +921,17 @@ fn init_config(
         state_path,
         data_path: None,
         device_keys: Some(DeviceKeysRecord::from_keys(&device_keys)),
+        app_key: Some(BASE64.encode(app_key.as_bytes())),
+        backup_enabled: false,
+        backup_allow_restore: false,
+        backup_dir: None,
         devices: BTreeMap::new(),
     };
 
     save_config(path, &config)?;
 
     let state = State::new(config.device_id.clone());
-    state.save(&config.state_path)?;
+    state.save_encrypted(&app_key, &config.state_path)?;
 
     println!(
         "Initialized config at {} (device: {}, user: {})",
@@ -724,6 +950,201 @@ fn select_file(path: &Path, file: &Path) -> Result<(), Box<dyn std::error::Error
     ensure_json_file(file)?;
     println!("Selected file {}", file.display());
     Ok(())
+}
+
+fn configure_backups(
+    path: &Path,
+    enable: bool,
+    allow_restore: bool,
+    dir: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut config = load_config(path)?;
+    let mut changed = false;
+
+    if enable {
+        config.backup_enabled = true;
+        changed = true;
+    }
+    if allow_restore {
+        config.backup_allow_restore = true;
+        changed = true;
+    }
+    if let Some(dir) = dir {
+        config.set_backup_dir(dir);
+        changed = true;
+    }
+
+    if !changed {
+        return Err("no backup changes requested; use --enable and/or --allow-restore".into());
+    }
+
+    if config.backup_enabled && config.backup_dir.is_none() {
+        config.set_backup_dir(default_backup_dir(path));
+    }
+
+    save_config(path, &config)?;
+
+    println!("Backups enabled: {}", config.backup_enabled);
+    println!("Restore allowed: {}", config.backup_allow_restore);
+    println!("Backup dir: {}", config.backup_dir(path).display());
+
+    Ok(())
+}
+
+fn create_backup_snapshot(
+    path: &Path,
+    adapter_id: &str,
+    note: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut config = load_config(path)?;
+    let backup_dir = ensure_backup_dir(path, &mut config)?;
+    if !config.backup_enabled {
+        return Err("backups are not enabled; run libresync backup configure --enable".into());
+    }
+
+    let app_key = config.app_key()?;
+    let store = FileSnapshotStore::new(&backup_dir)?;
+    let manager = BackupManager::new(app_key, Arc::new(store));
+
+    let (adapter, backup_adapter) = backup_adapter_for_config(&config, adapter_id)?;
+    let mut state = load_or_init_state(&config)?;
+    adapter.load_into_state(&mut state)?;
+
+    let metadata = manager.create_snapshot(&backup_adapter, &state, note)?;
+    state.save_encrypted(&config.app_key()?, &config.state_path)?;
+
+    println!(
+        "Created snapshot {} (entries: {})",
+        metadata.id, metadata.entry_count
+    );
+
+    Ok(())
+}
+
+fn list_backup_snapshots(
+    path: &Path,
+    adapter_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut config = load_config(path)?;
+    let backup_dir = ensure_backup_dir(path, &mut config)?;
+    if !config.backup_enabled {
+        return Err("backups are not enabled; run libresync backup configure --enable".into());
+    }
+
+    let app_key = config.app_key()?;
+    let store = FileSnapshotStore::new(&backup_dir)?;
+    let manager = BackupManager::new(app_key, Arc::new(store));
+
+    let snapshots = manager.list_snapshots(adapter_id)?;
+    if snapshots.is_empty() {
+        println!("No snapshots found for adapter {}", adapter_id);
+        return Ok(());
+    }
+
+    for snapshot in snapshots {
+        println!(
+            "{} | {} | entries: {}",
+            snapshot.id, snapshot.created_at_unix_secs, snapshot.entry_count
+        );
+        if let Some(note) = snapshot.note {
+            println!("  note: {note}");
+        }
+    }
+
+    Ok(())
+}
+
+fn restore_backup_snapshot(
+    path: &Path,
+    adapter_id: &str,
+    snapshot_id: &str,
+    confirm: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut config = load_config(path)?;
+    let backup_dir = ensure_backup_dir(path, &mut config)?;
+    if !config.backup_enabled {
+        return Err("backups are not enabled; run libresync backup configure --enable".into());
+    }
+    if !config.backup_allow_restore {
+        return Err(
+            "restores are disabled; run libresync backup configure --allow-restore".into(),
+        );
+    }
+
+    let app_key = config.app_key()?;
+    let store = FileSnapshotStore::new(&backup_dir)?;
+    let manager = BackupManager::new(app_key, Arc::new(store));
+    let (adapter, backup_adapter) = backup_adapter_for_config(&config, adapter_id)?;
+
+    let mut state = load_or_init_state(&config)?;
+    adapter.load_into_state(&mut state)?;
+
+    let (_metadata, entries) = manager.load_snapshot_entries(adapter_id, snapshot_id)?;
+    let summary = summarize_snapshot_diff(&state, &entries)?;
+    print_snapshot_summary(adapter_id, snapshot_id, &summary);
+
+    if !confirm {
+        return Err("restore requires --confirm".into());
+    }
+
+    manager.restore_snapshot(&backup_adapter, &mut state, snapshot_id, RestoreOptions::confirmed())?;
+    adapter.apply_from_state(&state)?;
+    state.save_encrypted(&config.app_key()?, &config.state_path)?;
+
+    println!("Restored snapshot {}", snapshot_id);
+    Ok(())
+}
+
+fn backup_adapter_for_config(
+    config: &Config,
+    adapter_id: &str,
+) -> Result<(Arc<JsonFileAdapter>, DataAdapterBackup), Box<dyn std::error::Error>> {
+    if adapter_id != FILE_KEY {
+        return Err("only the file adapter is supported for CLI backups".into());
+    }
+    let data_path = config
+        .data_path
+        .clone()
+        .ok_or("no file selected; run libresync select")?;
+    let adapter = Arc::new(JsonFileAdapter::new(FILE_KEY, data_path));
+    let adapter_trait: Arc<dyn DataAdapter> = adapter.clone();
+    let backup_adapter = DataAdapterBackup::new(adapter_trait);
+    Ok((adapter, backup_adapter))
+}
+
+fn ensure_backup_dir(path: &Path, config: &mut Config) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if config.backup_dir.is_none() {
+        config.set_backup_dir(default_backup_dir(path));
+        save_config(path, config)?;
+    }
+    Ok(config.backup_dir(path))
+}
+
+fn print_snapshot_summary(adapter_id: &str, snapshot_id: &str, summary: &libresync::SnapshotDiffSummary) {
+    println!("Snapshot diff for adapter {adapter_id} / {snapshot_id}");
+    println!(
+        "Entries: snapshot {} | current {}",
+        summary.total_snapshot_entries, summary.total_state_entries
+    );
+    println!(
+        "Counts: new {} | changed {} | unchanged {} | missing {}",
+        summary.overall.new_entries,
+        summary.overall.changed_entries,
+        summary.overall.unchanged_entries,
+        summary.overall.missing_entries
+    );
+    if !summary.by_group.is_empty() {
+        println!("Groups:");
+        for (group, counts) in &summary.by_group {
+            println!(
+                "  {group}: new {} | changed {} | unchanged {} | missing {}",
+                counts.new_entries,
+                counts.changed_entries,
+                counts.unchanged_entries,
+                counts.missing_entries
+            );
+        }
+    }
 }
 
 fn discover_devices(path: &Path, timeout_secs: u64) -> Result<(), Box<dyn std::error::Error>> {
@@ -762,6 +1183,14 @@ fn pair_device(
     let engine = engine_for_config(&config);
     let remote_device = engine.request_pair(device)?;
     let remote_identity = remote_device.identity;
+    if let Some(keys) = config.device_keys.as_ref() {
+        println!("Your fingerprint:   {}", keys.fingerprint);
+    }
+    let remote_fingerprint = remote_device
+        .fingerprint
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
+    println!("Remote fingerprint: {}", remote_fingerprint);
 
     let local_accept = if auto_accept {
         true
@@ -789,6 +1218,36 @@ fn pair_device(
         remote_identity.device_id, remote_identity.user_id
     );
 
+    Ok(())
+}
+
+fn unpair_device(
+    path: &Path,
+    device_id: &str,
+    auto_accept: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut config = load_config(path)?;
+    if !config.devices.contains_key(device_id) {
+        return Err(format!("device not paired: {device_id}").into());
+    }
+
+    let confirmed = if auto_accept {
+        true
+    } else {
+        prompt_yes_no(&format!(
+            "Revoke pairing with {device_id}? [y/N]: "
+        ))
+        .unwrap_or(false)
+    };
+
+    if !confirmed {
+        return Err("unpair aborted locally".into());
+    }
+
+    config.devices.remove(device_id);
+    save_config(path, &config)?;
+
+    println!("Unpaired {device_id}");
     Ok(())
 }
 
@@ -876,8 +1335,9 @@ fn listen_device(
     if let Some(watch) = adapter_watch {
         let _ = watch.stop();
     }
+    let app_key = config.lock().expect("config lock").app_key()?;
     let state = state.lock().expect("state poisoned");
-    state.save(&config.lock().expect("config lock").state_path)?;
+    state.save_encrypted(&app_key, &config.lock().expect("config lock").state_path)?;
     drop(mdns);
     listener?;
 
@@ -999,11 +1459,13 @@ fn refresh_file(
         .ok_or("no file selected; run libresync select")?;
 
     let device_keys = config.device_keys()?;
+    let app_key = config.app_key()?;
     let state = load_or_init_state(&config)?;
     let handler = Arc::new(StaticHandler {
         app_id: config.app_id.clone(),
         allowed: allowed_fingerprint_map(&config),
         keys: device_keys,
+        app_key,
     });
     let mut engine = Engine::new(EngineConfig::new(config.identity()), state, handler);
     let adapter = Arc::new(JsonFileAdapter::new(FILE_KEY, data_path));
@@ -1013,10 +1475,11 @@ fn refresh_file(
     let remote_device = engine.sync_now(device, FILE_KEY)?;
 
     let state = engine.state();
+    let app_key = config.app_key()?;
     state
         .lock()
         .expect("state lock")
-        .save(&config.state_path)?;
+        .save_encrypted(&app_key, &config.state_path)?;
     config.upsert_device(
         &remote_device.identity,
         Some(device),
@@ -1042,6 +1505,9 @@ fn status(
     println!("Device ID: {}", config.device_id);
     println!("User ID:   {}", config.user_id);
     println!("App ID:    {}", config.app_id);
+    if let Some(keys) = config.device_keys.as_ref() {
+        println!("Fingerprint: {}", keys.fingerprint);
+    }
     match &config.data_path {
         Some(path) => println!("Selected file: {}", path.display()),
         None => println!("Selected file: (none)"),
@@ -1113,6 +1579,9 @@ fn status(
             "  {} ({}) at {} [{}] {}",
             record.device_id, record.user_id, addr, connected, last_seen
         );
+        if let Some(fingerprint) = record.fingerprint.as_deref() {
+            println!("    fingerprint: {fingerprint}");
+        }
     }
 
     if discover && !discovered_map.is_empty() {
@@ -1198,6 +1667,13 @@ fn load_config(path: &Path) -> Result<Config, Box<dyn std::error::Error>> {
         save_config(path, &config)?;
     }
 
+    if config.app_key.is_none() {
+        let app_key = AppKey::generate()
+            .map_err(|error| io::Error::new(io::ErrorKind::Other, error.to_string()))?;
+        config.set_app_key(&app_key);
+        save_config(path, &config)?;
+    }
+
     Ok(config)
 }
 
@@ -1232,16 +1708,25 @@ fn default_state_path(config_path: &Path) -> PathBuf {
     config_path.with_extension("state.json")
 }
 
+fn default_backup_dir(config_path: &Path) -> PathBuf {
+    config_path
+        .parent()
+        .map(|parent| parent.join("backups"))
+        .unwrap_or_else(|| PathBuf::from("backups"))
+}
+
 fn load_or_init_state(config: &Config) -> Result<State, Box<dyn std::error::Error>> {
+    let app_key = config.app_key()?;
     if config.state_path.exists() {
-        let state = State::load(&config.state_path)?;
+        let state = State::load_maybe_encrypted(&app_key, &config.state_path)?;
         if state.device_id != config.device_id {
             return Err("state device id does not match config".into());
         }
+        state.save_encrypted(&app_key, &config.state_path)?;
         Ok(state)
     } else {
         let state = State::new(config.device_id.clone());
-        state.save(&config.state_path)?;
+        state.save_encrypted(&app_key, &config.state_path)?;
         Ok(state)
     }
 }
@@ -1626,11 +2111,13 @@ fn refresh_with_address(
 
     let before_bytes = fs::read(&data_path).unwrap_or_default();
     let device_keys = config.device_keys()?;
+    let app_key = config.app_key()?;
     let state = load_or_init_state(config)?;
     let handler = Arc::new(StaticHandler {
         app_id: config.app_id.clone(),
         allowed: allowed_fingerprint_map(config),
         keys: device_keys,
+        app_key,
     });
     let mut engine = Engine::new(EngineConfig::new(config.identity()), state, handler);
     let adapter = Arc::new(JsonFileAdapter::new(FILE_KEY, data_path.clone()));
@@ -1642,10 +2129,11 @@ fn refresh_with_address(
     let changed = before_bytes != after_bytes;
 
     let state = engine.state();
+    let app_key = config.app_key()?;
     state
         .lock()
         .expect("state lock")
-        .save(&config.state_path)?;
+        .save_encrypted(&app_key, &config.state_path)?;
     config.upsert_device(
         &remote_device.identity,
         Some(device),
@@ -1692,8 +2180,10 @@ const NOUNS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::Ipv4Addr;
-    use std::net::SocketAddrV4;
+    use std::collections::HashMap;
+    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener};
+    use std::time::Duration;
+    use tempfile::tempdir;
 
     #[test]
     fn device_id_has_three_parts() {
@@ -1714,6 +2204,7 @@ mod tests {
         let device_keys = DeviceKeysRecord::from_keys(
             &DeviceKeys::generate(&identity).expect("device keys"),
         );
+        let app_key = AppKey::generate().expect("app key");
         let config = Config {
             device_id: "local-device".to_string(),
             app_id: APP_ID_DEFAULT.to_string(),
@@ -1721,6 +2212,10 @@ mod tests {
             state_path: PathBuf::from("state.json"),
             data_path: None,
             device_keys: Some(device_keys),
+            app_key: Some(BASE64.encode(app_key.as_bytes())),
+            backup_enabled: false,
+            backup_allow_restore: false,
+            backup_dir: None,
             devices: BTreeMap::new(),
         };
         let resolved = resolve_device_address_with_timeout(
@@ -1739,6 +2234,7 @@ mod tests {
         let device_keys = DeviceKeysRecord::from_keys(
             &DeviceKeys::generate(&identity).expect("device keys"),
         );
+        let app_key = AppKey::generate().expect("app key");
         let config = Config {
             device_id: "local-device".to_string(),
             app_id: APP_ID_DEFAULT.to_string(),
@@ -1746,6 +2242,10 @@ mod tests {
             state_path: PathBuf::from("state.json"),
             data_path: None,
             device_keys: Some(device_keys),
+            app_key: Some(BASE64.encode(app_key.as_bytes())),
+            backup_enabled: false,
+            backup_allow_restore: false,
+            backup_dir: None,
             devices: BTreeMap::new(),
         };
         let error = resolve_device_address_with_timeout(
@@ -1768,6 +2268,7 @@ mod tests {
         let device_keys = DeviceKeysRecord::from_keys(
             &DeviceKeys::generate(&identity).expect("device keys"),
         );
+        let app_key = AppKey::generate().expect("app key");
         let mut config = Config {
             device_id: "local".to_string(),
             app_id: APP_ID_DEFAULT.to_string(),
@@ -1775,6 +2276,10 @@ mod tests {
             state_path: PathBuf::from("state.json"),
             data_path: None,
             device_keys: Some(device_keys),
+            app_key: Some(BASE64.encode(app_key.as_bytes())),
+            backup_enabled: false,
+            backup_allow_restore: false,
+            backup_dir: None,
             devices: BTreeMap::new(),
         };
 
@@ -1785,6 +2290,749 @@ mod tests {
         let record = config.devices.get("remote").expect("record");
         assert_eq!(record.last_seen_addr.as_deref(), Some("127.0.0.1:52345"));
         assert!(record.last_seen_unix_secs.unwrap_or(0) > 0);
+    }
+
+    #[test]
+    fn backup_configure_updates_flags() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+
+        configure_backups(
+            &config_path,
+            true,
+            true,
+            Some(temp.path().join("custom-backups")),
+        )
+        .expect("configure");
+
+        let config = load_config(&config_path).expect("load");
+        assert!(config.backup_enabled);
+        assert!(config.backup_allow_restore);
+        assert_eq!(
+            config.backup_dir(&config_path),
+            temp.path().join("custom-backups")
+        );
+    }
+
+    #[test]
+    fn backup_snapshot_list_restore_round_trip() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        let data_path = temp.path().join("data.json");
+
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+        select_file(&config_path, &data_path).expect("select");
+        configure_backups(&config_path, true, true, None).expect("configure");
+        std::fs::write(&data_path, b"{\"before\":true}").expect("write");
+
+        create_backup_snapshot(&config_path, FILE_KEY, Some("test".to_string()))
+            .expect("snapshot");
+
+        let snapshots = {
+            let mut config = load_config(&config_path).expect("load");
+            let backup_dir = ensure_backup_dir(&config_path, &mut config).expect("dir");
+            let app_key = config.app_key().expect("app key");
+            let manager = BackupManager::new(
+                app_key,
+                Arc::new(FileSnapshotStore::new(&backup_dir).expect("store")),
+            );
+            manager.list_snapshots(FILE_KEY).expect("list")
+        };
+        assert_eq!(snapshots.len(), 1);
+
+        std::fs::write(&data_path, b"{\"after\":true}").expect("write after");
+        restore_backup_snapshot(&config_path, FILE_KEY, &snapshots[0].id, true)
+            .expect("restore");
+
+        let restored = std::fs::read_to_string(&data_path).expect("read");
+        assert!(restored.contains("before"));
+    }
+
+    #[test]
+    fn backup_restore_requires_allow_restore() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        let data_path = temp.path().join("data.json");
+
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+        select_file(&config_path, &data_path).expect("select");
+        configure_backups(&config_path, true, false, None).expect("configure");
+
+        let result = restore_backup_snapshot(&config_path, FILE_KEY, "missing", true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn init_config_rejects_existing_without_force() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        std::fs::write(&config_path, b"{}").expect("write");
+
+        let result = init_config(&config_path, APP_ID_DEFAULT, None, None, false);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn init_config_creates_state_file() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+
+        let state_path = default_state_path(&config_path);
+        assert!(state_path.exists());
+    }
+
+    #[test]
+    fn load_config_generates_keys_and_app_key() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        let config = Config {
+            device_id: "device".to_string(),
+            app_id: APP_ID_DEFAULT.to_string(),
+            user_id: "user".to_string(),
+            state_path: temp.path().join("state.json"),
+            data_path: None,
+            device_keys: None,
+            app_key: None,
+            backup_enabled: false,
+            backup_allow_restore: false,
+            backup_dir: None,
+            devices: BTreeMap::new(),
+        };
+        save_config(&config_path, &config).expect("save");
+
+        let loaded = load_config(&config_path).expect("load");
+        assert!(loaded.device_keys.is_some());
+        assert!(loaded.app_key.is_some());
+    }
+
+    #[test]
+    fn config_app_key_missing_errors() {
+        let config = Config {
+            device_id: "device".to_string(),
+            app_id: APP_ID_DEFAULT.to_string(),
+            user_id: "user".to_string(),
+            state_path: PathBuf::from("state.json"),
+            data_path: None,
+            device_keys: None,
+            app_key: None,
+            backup_enabled: false,
+            backup_allow_restore: false,
+            backup_dir: None,
+            devices: BTreeMap::new(),
+        };
+        assert!(config.app_key().is_err());
+    }
+
+    #[test]
+    fn config_device_keys_missing_errors() {
+        let config = Config {
+            device_id: "device".to_string(),
+            app_id: APP_ID_DEFAULT.to_string(),
+            user_id: "user".to_string(),
+            state_path: PathBuf::from("state.json"),
+            data_path: None,
+            device_keys: None,
+            app_key: None,
+            backup_enabled: false,
+            backup_allow_restore: false,
+            backup_dir: None,
+            devices: BTreeMap::new(),
+        };
+        assert!(config.device_keys().is_err());
+    }
+
+    #[test]
+    fn log_and_pid_paths_use_parent_directory() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        let log_path = log_path_for_config(&config_path);
+        let pid_path = pid_path_for_config(&config_path);
+        assert!(log_path.ends_with("libresync-listen.log"));
+        assert!(pid_path.ends_with("libresync-listen.pid"));
+    }
+
+    #[test]
+    fn ensure_json_file_creates_default() {
+        let temp = tempdir().expect("tempdir");
+        let data_path = temp.path().join("nested").join("data.json");
+        ensure_json_file(&data_path).expect("ensure");
+        let contents = std::fs::read_to_string(&data_path).expect("read");
+        assert_eq!(contents, "{}");
+    }
+
+    #[test]
+    fn format_relative_inner_formats_ranges() {
+        assert_eq!(format_relative_inner(5, false), "just now");
+        assert_eq!(format_relative_inner(30, false), "30s ago");
+        assert_eq!(format_relative_inner(90, true), "in 1m");
+        assert_eq!(format_relative_inner(3600, false), "1h ago");
+    }
+
+    #[test]
+    fn print_listener_status_handles_missing_and_invalid_pid() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+
+        print_listener_status(&config_path).expect("missing pid");
+
+        let pid_path = pid_path_for_config(&config_path);
+        std::fs::write(&pid_path, b"abc").expect("write pid");
+        print_listener_status(&config_path).expect("invalid pid");
+
+        std::fs::write(&pid_path, b"999999").expect("write pid");
+        print_listener_status(&config_path).expect("stale pid");
+    }
+
+    #[test]
+    fn status_without_discover_runs() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+
+        let mut config = load_config(&config_path).expect("load");
+        config.devices.insert(
+            "remote-device".to_string(),
+            DeviceRecord {
+                device_id: "remote-device".to_string(),
+                user_id: "remote-user".to_string(),
+                app_id: APP_ID_DEFAULT.to_string(),
+                last_seen_addr: Some("127.0.0.1:1".to_string()),
+                last_seen_unix_secs: Some(now_unix_secs()),
+                fingerprint: Some("fingerprint".to_string()),
+            },
+        );
+        save_config(&config_path, &config).expect("save");
+
+        status(&config_path, false, 0).expect("status");
+    }
+
+    #[test]
+    fn resolve_addresses_for_watch_dedupes_and_orders() {
+        let identity = Identity::new("local-device", APP_ID_DEFAULT, "user");
+        let device_keys = DeviceKeysRecord::from_keys(
+            &DeviceKeys::generate(&identity).expect("device keys"),
+        );
+        let app_key = AppKey::generate().expect("app key");
+        let mut config = Config {
+            device_id: "local-device".to_string(),
+            app_id: APP_ID_DEFAULT.to_string(),
+            user_id: "user".to_string(),
+            state_path: PathBuf::from("state.json"),
+            data_path: None,
+            device_keys: Some(device_keys),
+            app_key: Some(BASE64.encode(app_key.as_bytes())),
+            backup_enabled: false,
+            backup_allow_restore: false,
+            backup_dir: None,
+            devices: BTreeMap::new(),
+        };
+        config.devices.insert(
+            "remote-device".to_string(),
+            DeviceRecord {
+                device_id: "remote-device".to_string(),
+                user_id: "remote-user".to_string(),
+                app_id: APP_ID_DEFAULT.to_string(),
+                last_seen_addr: Some("127.0.0.1:1234".to_string()),
+                last_seen_unix_secs: None,
+                fingerprint: None,
+            },
+        );
+
+        let addr: SocketAddr = "127.0.0.1:1234".parse().expect("addr");
+        let mut discovered = HashMap::new();
+        discovered.insert("remote-device".to_string(), addr);
+        let addresses = resolve_addresses_for_watch(&config, "remote-device", &discovered);
+        assert_eq!(addresses, vec![addr]);
+
+        let alt: SocketAddr = "127.0.0.1:2345".parse().expect("addr");
+        discovered.insert("remote-device".to_string(), alt);
+        let addresses = resolve_addresses_for_watch(&config, "remote-device", &discovered);
+        assert_eq!(addresses, vec![alt, addr]);
+    }
+
+    #[test]
+    fn is_port_listening_detects_open_and_closed_ports() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        assert!(is_port_listening(addr).expect("listening"));
+
+        drop(listener);
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(!is_port_listening(addr).expect("not listening"));
+    }
+
+    #[test]
+    fn ensure_listener_running_returns_ok_when_active() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let listen = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port));
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+
+        ensure_listener_running(&config_path, listen).expect("ensure");
+        drop(listener);
+    }
+
+    #[test]
+    fn load_or_init_state_creates_and_validates() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+        let config = load_config(&config_path).expect("load");
+
+        std::fs::remove_file(&config.state_path).expect("remove state");
+        let state = load_or_init_state(&config).expect("state");
+        assert_eq!(state.device_id, config.device_id);
+        assert!(config.state_path.exists());
+
+        let bad_state = State::new("other-device");
+        bad_state
+            .save_encrypted(&config.app_key().expect("app key"), &config.state_path)
+            .expect("save");
+        let result = load_or_init_state(&config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn report_error_prints_hint_and_verbose() {
+        let error = io::Error::new(io::ErrorKind::Other, "boom");
+        report_error(&error, false);
+        report_error(&error, true);
+    }
+
+    #[test]
+    fn run_init_select_status_stop() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        let data_path = temp.path().join("data.json");
+
+        run(Cli {
+            verbose: false,
+            command: Commands::Init {
+                config: Some(config_path.clone()),
+                app_id: APP_ID_DEFAULT.to_string(),
+                device_id: None,
+                user_id: None,
+                force: true,
+            },
+        })
+        .expect("run init");
+
+        run(Cli {
+            verbose: false,
+            command: Commands::Select {
+                config: Some(config_path.clone()),
+                file: data_path.clone(),
+            },
+        })
+        .expect("run select");
+
+        run(Cli {
+            verbose: false,
+            command: Commands::Status {
+                config: Some(config_path.clone()),
+                no_discover: true,
+                timeout_secs: 0,
+            },
+        })
+        .expect("run status");
+
+        let pid_path = pid_path_for_config(&config_path);
+        std::fs::write(&pid_path, b"999999").expect("write pid");
+
+        run(Cli {
+            verbose: false,
+            command: Commands::Stop {
+                config: Some(config_path),
+            },
+        })
+        .expect("run stop");
+    }
+
+    #[test]
+    fn run_backup_list_without_snapshots() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        let data_path = temp.path().join("data.json");
+
+        run(Cli {
+            verbose: false,
+            command: Commands::Init {
+                config: Some(config_path.clone()),
+                app_id: APP_ID_DEFAULT.to_string(),
+                device_id: None,
+                user_id: None,
+                force: true,
+            },
+        })
+        .expect("run init");
+
+        run(Cli {
+            verbose: false,
+            command: Commands::Select {
+                config: Some(config_path.clone()),
+                file: data_path,
+            },
+        })
+        .expect("run select");
+
+        run(Cli {
+            verbose: false,
+            command: Commands::Backup {
+                command: BackupCommands::Configure {
+                    config: Some(config_path.clone()),
+                    enable: true,
+                    allow_restore: false,
+                    dir: None,
+                },
+            },
+        })
+        .expect("run backup configure");
+
+        run(Cli {
+            verbose: false,
+            command: Commands::Backup {
+                command: BackupCommands::List {
+                    config: Some(config_path),
+                    adapter_id: FILE_KEY.to_string(),
+                },
+            },
+        })
+        .expect("run backup list");
+    }
+
+    #[test]
+    fn resolve_config_path_prefers_override() {
+        let path = PathBuf::from("override.json");
+        let resolved = resolve_config_path(Some(path.clone()));
+        assert_eq!(resolved, path);
+    }
+
+    #[test]
+    fn default_paths_helpers_use_parent() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        let state_path = default_state_path(&config_path);
+        let backup_dir = default_backup_dir(&config_path);
+        assert!(state_path.ends_with("config.state.json"));
+        assert!(backup_dir.ends_with("backups"));
+    }
+
+    #[test]
+    fn configure_backups_no_changes_errors() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+
+        let result = configure_backups(&config_path, false, false, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn backup_adapter_for_config_errors_on_unknown_id() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+        let config = load_config(&config_path).expect("load");
+
+        let result = backup_adapter_for_config(&config, "unknown");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn allowed_fingerprint_map_filters_missing() {
+        let identity = Identity::new("local-device", APP_ID_DEFAULT, "user");
+        let device_keys = DeviceKeysRecord::from_keys(
+            &DeviceKeys::generate(&identity).expect("device keys"),
+        );
+        let app_key = AppKey::generate().expect("app key");
+        let mut config = Config {
+            device_id: "local-device".to_string(),
+            app_id: APP_ID_DEFAULT.to_string(),
+            user_id: "user".to_string(),
+            state_path: PathBuf::from("state.json"),
+            data_path: None,
+            device_keys: Some(device_keys),
+            app_key: Some(BASE64.encode(app_key.as_bytes())),
+            backup_enabled: false,
+            backup_allow_restore: false,
+            backup_dir: None,
+            devices: BTreeMap::new(),
+        };
+        config.devices.insert(
+            "device-a".to_string(),
+            DeviceRecord {
+                device_id: "device-a".to_string(),
+                user_id: "user-a".to_string(),
+                app_id: APP_ID_DEFAULT.to_string(),
+                last_seen_addr: None,
+                last_seen_unix_secs: None,
+                fingerprint: Some("finger-a".to_string()),
+            },
+        );
+        config.devices.insert(
+            "device-b".to_string(),
+            DeviceRecord {
+                device_id: "device-b".to_string(),
+                user_id: "user-b".to_string(),
+                app_id: APP_ID_DEFAULT.to_string(),
+                last_seen_addr: None,
+                last_seen_unix_secs: None,
+                fingerprint: None,
+            },
+        );
+
+        let map = allowed_fingerprint_map(&config);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("device-a").map(String::as_str), Some("finger-a"));
+    }
+
+    #[test]
+    fn unpair_device_removes_and_errors_when_missing() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+
+        let mut config = load_config(&config_path).expect("load");
+        config.devices.insert(
+            "remote-device".to_string(),
+            DeviceRecord {
+                device_id: "remote-device".to_string(),
+                user_id: "remote-user".to_string(),
+                app_id: APP_ID_DEFAULT.to_string(),
+                last_seen_addr: None,
+                last_seen_unix_secs: None,
+                fingerprint: None,
+            },
+        );
+        save_config(&config_path, &config).expect("save");
+
+        unpair_device(&config_path, "remote-device", true).expect("unpair");
+        let config = load_config(&config_path).expect("reload");
+        assert!(!config.devices.contains_key("remote-device"));
+
+        let result = unpair_device(&config_path, "remote-device", true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn format_last_seen_includes_prefix() {
+        let formatted = format_last_seen(now_unix_secs());
+        assert!(formatted.contains("last seen:"));
+    }
+
+    #[test]
+    fn default_config_path_ends_with_filename() {
+        let path = default_config_path();
+        assert!(path
+            .file_name()
+            .map(|name| name == CONFIG_FILE_NAME)
+            .unwrap_or(false));
+    }
+
+    #[test]
+    fn resolve_config_path_none_uses_default() {
+        let resolved = resolve_config_path(None);
+        assert_eq!(resolved, default_config_path());
+    }
+
+    #[test]
+    fn load_config_invalid_json_errors() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        std::fs::write(&config_path, b"not-json").expect("write");
+        let result = load_config(&config_path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn save_config_creates_parent_directory() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("nested").join("config.json");
+        let config = Config {
+            device_id: "device".to_string(),
+            app_id: APP_ID_DEFAULT.to_string(),
+            user_id: "user".to_string(),
+            state_path: temp.path().join("state.json"),
+            data_path: None,
+            device_keys: None,
+            app_key: None,
+            backup_enabled: false,
+            backup_allow_restore: false,
+            backup_dir: None,
+            devices: BTreeMap::new(),
+        };
+
+        save_config(&config_path, &config).expect("save");
+        assert!(config_path.exists());
+    }
+
+    #[test]
+    fn select_file_creates_data_file() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        let data_path = temp.path().join("data.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+        select_file(&config_path, &data_path).expect("select");
+        assert!(data_path.exists());
+    }
+
+    #[test]
+    fn engine_for_config_uses_identity() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+        let config = load_config(&config_path).expect("load");
+
+        let engine = engine_for_config(&config);
+        assert_eq!(engine.identity().device_id, config.device_id);
+    }
+
+    #[test]
+    fn backup_list_errors_when_disabled() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+
+        let result = list_backup_snapshots(&config_path, FILE_KEY);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn create_backup_snapshot_errors_when_disabled() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        let data_path = temp.path().join("data.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+        select_file(&config_path, &data_path).expect("select");
+
+        let result = create_backup_snapshot(&config_path, FILE_KEY, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn restore_backup_snapshot_errors_when_disabled() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+
+        let result = restore_backup_snapshot(&config_path, FILE_KEY, "missing", true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn backup_adapter_for_config_requires_selected_file() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+        let config = load_config(&config_path).expect("load");
+
+        let result = backup_adapter_for_config(&config, FILE_KEY);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn ensure_backup_dir_sets_default_when_missing() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+        let mut config = load_config(&config_path).expect("load");
+
+        let dir = ensure_backup_dir(&config_path, &mut config).expect("ensure");
+        assert_eq!(dir, default_backup_dir(&config_path));
+        assert!(config.backup_dir.is_some());
+    }
+
+    #[test]
+    fn print_snapshot_summary_accepts_empty_summary() {
+        let summary = libresync::SnapshotDiffSummary::default();
+        print_snapshot_summary("file", "snapshot", &summary);
+    }
+
+    #[test]
+    fn refresh_with_address_errors_without_selected_file() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+        let mut config = load_config(&config_path).expect("load");
+
+        let addr: SocketAddr = "127.0.0.1:1".parse().expect("addr");
+        let result = refresh_with_address(&config_path, &mut config, addr);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn refresh_all_devices_handles_connection_errors() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        let data_path = temp.path().join("data.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+        select_file(&config_path, &data_path).expect("select");
+
+        let mut config = load_config(&config_path).expect("load");
+        config.devices.insert(
+            "remote-device".to_string(),
+            DeviceRecord {
+                device_id: "remote-device".to_string(),
+                user_id: "remote-user".to_string(),
+                app_id: APP_ID_DEFAULT.to_string(),
+                last_seen_addr: Some("127.0.0.1:1".to_string()),
+                last_seen_unix_secs: None,
+                fingerprint: None,
+            },
+        );
+
+        let changed = refresh_all_devices(&config_path, &mut config, false).expect("refresh");
+        assert!(!changed);
+    }
+
+    #[test]
+    fn stop_listener_errors_on_non_libresync_pid() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+
+        let pid_path = pid_path_for_config(&config_path);
+        std::fs::write(&pid_path, b"1").expect("write pid");
+        let result = stop_listener(&config_path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn run_unpair_command() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+
+        let mut config = load_config(&config_path).expect("load");
+        config.devices.insert(
+            "remote-device".to_string(),
+            DeviceRecord {
+                device_id: "remote-device".to_string(),
+                user_id: "remote-user".to_string(),
+                app_id: APP_ID_DEFAULT.to_string(),
+                last_seen_addr: None,
+                last_seen_unix_secs: None,
+                fingerprint: None,
+            },
+        );
+        save_config(&config_path, &config).expect("save");
+
+        run(Cli {
+            verbose: false,
+            command: Commands::Unpair {
+                config: Some(config_path.clone()),
+                device_id: "remote-device".to_string(),
+                yes: true,
+            },
+        })
+        .expect("run unpair");
+
+        let config = load_config(&config_path).expect("load");
+        assert!(!config.devices.contains_key("remote-device"));
     }
 
 }

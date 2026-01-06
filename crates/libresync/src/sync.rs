@@ -9,7 +9,10 @@ use rustls::server::{ClientCertVerified, ClientCertVerifier};
 use rustls::{Certificate, ClientConfig, ClientConnection, ServerConfig, ServerConnection, StreamOwned};
 
 use crate::protocol::{read_message, write_message, Message};
-use crate::{DeviceHandler, DeviceKeys, Error, Identity, Result, State};
+use crate::{
+    AppKey, DeviceHandler, DeviceKeys, Error, Identity, Result, State, decrypt_entries,
+    encrypt_entries,
+};
 
 pub struct SyncListener {
     addr: SocketAddr,
@@ -77,18 +80,20 @@ pub fn sync_with_device<F>(
     state: &mut State,
     device: SocketAddr,
     device_keys: &DeviceKeys,
+    app_key: &AppKey,
     device_check: F,
 ) -> Result<(Identity, String)>
 where
     F: Fn(&Identity, &str) -> Result<()>,
 {
     let (remote_identity, fingerprint) =
-        push_snapshot(identity, state, device, device_keys, &device_check)?;
+        push_snapshot(identity, state, device, device_keys, app_key, &device_check)?;
     pull_snapshot(
         identity,
         state,
         device,
         device_keys,
+        app_key,
         &remote_identity,
         &fingerprint,
     )?;
@@ -98,8 +103,9 @@ where
 pub fn pair_with_device(
     identity: &Identity,
     device_keys: &DeviceKeys,
+    app_key: &AppKey,
     device: SocketAddr,
-) -> Result<(Identity, String)> {
+) -> Result<(Identity, String, AppKey)> {
     let stream = TcpStream::connect_timeout(&device, Duration::from_secs(5))?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -111,13 +117,18 @@ pub fn pair_with_device(
         reader.get_mut(),
         &Message::PairRequest {
             identity: identity.clone(),
+            app_key: Some(app_key.as_bytes().to_vec()),
         },
     )?;
 
     let response = read_message(&mut reader)?;
     let fingerprint = peer_fingerprint(reader.get_mut().conn.peer_certificates())?;
-    let (remote_identity, accepted) = match response {
-        Message::PairResponse { identity, accepted } => (identity, accepted),
+    let (remote_identity, accepted, remote_app_key) = match response {
+        Message::PairResponse {
+            identity,
+            accepted,
+            app_key,
+        } => (identity, accepted, app_key),
         _ => return Err(Error::Protocol("unexpected pairing response".to_string())),
     };
 
@@ -128,11 +139,16 @@ pub fn pair_with_device(
         )));
     }
 
+    let key_bytes = remote_app_key.ok_or_else(|| {
+        Error::Protocol("pairing response missing app key".to_string())
+    })?;
+    let remote_app_key = AppKey::from_slice(&key_bytes)?;
+
     if remote_identity.app_id != identity.app_id {
         return Err(Error::Protocol("app id mismatch during pairing".to_string()));
     }
 
-    Ok((remote_identity, fingerprint))
+    Ok((remote_identity, fingerprint, remote_app_key))
 }
 
 fn handle_connection(
@@ -151,20 +167,39 @@ fn handle_connection(
 
     let message = read_message(&mut reader)?;
     let fingerprint = peer_fingerprint(reader.get_mut().conn.peer_certificates())?;
+    let app_key = handler.app_key()?;
 
     match message {
-        Message::PairRequest { identity: device_identity } => {
+        Message::PairRequest {
+            identity: device_identity,
+            app_key: remote_app_key,
+        } => {
             if !device_identity.matches_app(handler.app_id()) {
                 write_message(reader.get_mut(), &Message::PairResponse {
                     identity: identity.clone(),
                     accepted: false,
+                    app_key: None,
                 })?;
                 return Ok(());
             }
-            let accepted = handler.approve_pair_with_fingerprint(&device_identity, &fingerprint)?;
+            let incoming_key = remote_app_key.ok_or_else(|| {
+                Error::Protocol("pairing request missing app key".to_string())
+            })?;
+            let incoming_key = AppKey::from_slice(&incoming_key)?;
+            let accepted =
+                handler.approve_pair_with_fingerprint(&device_identity, &fingerprint)?;
+            if accepted && incoming_key != app_key {
+                handler.set_app_key(&incoming_key)?;
+            }
+            let response_key = if accepted {
+                Some(handler.app_key()?.as_bytes().to_vec())
+            } else {
+                None
+            };
             write_message(reader.get_mut(), &Message::PairResponse {
                 identity: identity.clone(),
                 accepted,
+                app_key: response_key,
             })?;
         }
         Message::Hello { identity: device_identity } => {
@@ -180,11 +215,12 @@ fn handle_connection(
                 Message::SnapshotRequest => {
                     let snapshot = {
                         let state = state.lock().expect("state poisoned");
-                        state.snapshot()
+                        encrypt_entries(&app_key, state.snapshot())?
                     };
                     write_message(reader.get_mut(), &Message::Snapshot { entries: snapshot })?;
                 }
                 Message::Snapshot { entries } => {
+                    let entries = decrypt_entries(&app_key, entries)?;
                     let mut state = state.lock().expect("state poisoned");
                     state.merge_snapshot(entries);
                     write_message(reader.get_mut(), &Message::Ack)?;
@@ -202,11 +238,12 @@ fn handle_connection(
     Ok(())
 }
 
-fn push_snapshot<F>(
+pub(crate) fn push_snapshot<F>(
     identity: &Identity,
     state: &State,
     device: SocketAddr,
     device_keys: &DeviceKeys,
+    app_key: &AppKey,
     device_check: &F,
 ) -> Result<(Identity, String)>
 where
@@ -224,7 +261,7 @@ where
     let fingerprint = peer_fingerprint(reader.get_mut().conn.peer_certificates())?;
     device_check(&remote_identity, &fingerprint)?;
 
-    let snapshot = state.snapshot();
+    let snapshot = encrypt_entries(app_key, state.snapshot())?;
     write_message(reader.get_mut(), &Message::Snapshot { entries: snapshot })?;
 
     let ack = read_message(&mut reader)?;
@@ -235,11 +272,12 @@ where
     Ok((remote_identity, fingerprint))
 }
 
-fn pull_snapshot(
+pub(crate) fn pull_snapshot(
     identity: &Identity,
     state: &mut State,
     device: SocketAddr,
     device_keys: &DeviceKeys,
+    app_key: &AppKey,
     expected_remote: &Identity,
     expected_fingerprint: &str,
 ) -> Result<()> {
@@ -267,6 +305,7 @@ fn pull_snapshot(
         Message::Snapshot { entries } => entries,
         _ => return Err(Error::Protocol("expected snapshot".to_string())),
     };
+    let entries = decrypt_entries(app_key, entries)?;
     state.merge_snapshot(entries);
 
     Ok(())
@@ -396,12 +435,13 @@ mod tests {
     use super::{tls_client_stream, tls_server_stream};
     use crate::{
         read_message, sync_with_device, write_message, DeviceHandler, Identity, Message, Result,
-        State, SyncListener,
+        State, SyncListener, AppKey,
     };
 
     struct AllowAllHandler {
         app_id: String,
         keys: crate::DeviceKeys,
+        app_key: AppKey,
     }
 
     impl DeviceHandler for AllowAllHandler {
@@ -420,6 +460,10 @@ mod tests {
         fn device_keys(&self) -> Result<crate::DeviceKeys> {
             Ok(self.keys.clone())
         }
+
+        fn app_key(&self) -> Result<AppKey> {
+            Ok(self.app_key.clone())
+        }
     }
 
     struct RecordingHandler {
@@ -428,16 +472,19 @@ mod tests {
         approve: bool,
         keys: crate::DeviceKeys,
         fingerprints: Mutex<HashMap<String, String>>,
+        app_key: Mutex<AppKey>,
     }
 
     impl RecordingHandler {
         fn new(app_id: &str, approve: bool, keys: crate::DeviceKeys) -> Self {
+            let app_key = AppKey::generate().expect("app key");
             Self {
                 app_id: app_id.to_string(),
                 paired: Mutex::new(HashSet::new()),
                 approve,
                 keys,
                 fingerprints: Mutex::new(HashMap::new()),
+                app_key: Mutex::new(app_key),
             }
         }
     }
@@ -468,6 +515,15 @@ mod tests {
 
         fn device_keys(&self) -> Result<crate::DeviceKeys> {
             Ok(self.keys.clone())
+        }
+
+        fn app_key(&self) -> Result<AppKey> {
+            Ok(self.app_key.lock().expect("app key lock").clone())
+        }
+
+        fn set_app_key(&self, app_key: &AppKey) -> Result<()> {
+            *self.app_key.lock().expect("app key lock") = app_key.clone();
+            Ok(())
         }
 
         fn is_paired_with_fingerprint(&self, identity: &Identity, fingerprint: &str) -> bool {
@@ -507,6 +563,7 @@ mod tests {
     fn sync_round_trip_merges_entries() {
         let identity = Identity::new("listener", "com.example.app", "listener-user");
         let listener_keys = crate::DeviceKeys::generate(&identity).expect("listener keys");
+        let app_key = AppKey::generate().expect("app key");
         let listener_state = Arc::new(Mutex::new(State::new("listener")));
         {
             let mut state = listener_state.lock().expect("state");
@@ -516,6 +573,7 @@ mod tests {
         let handler = Arc::new(AllowAllHandler {
             app_id: "com.example.app".to_string(),
             keys: listener_keys.clone(),
+            app_key: app_key.clone(),
         });
         let listener = SyncListener::start(
             "127.0.0.1:0".parse().expect("addr"),
@@ -527,6 +585,7 @@ mod tests {
 
         let device_identity = Identity::new("device", "com.example.app", "device-user");
         let device_keys = crate::DeviceKeys::generate(&device_identity).expect("device keys");
+        let device_app_key = app_key.clone();
         let mut device_state = State::new("device");
         device_state.set("beta", b"two".to_vec());
 
@@ -535,6 +594,7 @@ mod tests {
             &mut device_state,
             listener.addr(),
             &device_keys,
+            &device_app_key,
             |_, _| Ok(()),
         )
             .expect("sync");
@@ -552,19 +612,20 @@ mod tests {
     fn sync_with_device_errors_on_unexpected_message() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
-        let server_identity = Identity::new("listener", "com.example.app", "user");
-        let server_keys = crate::DeviceKeys::generate(&server_identity).expect("server keys");
+        let listener_identity = Identity::new("listener", "com.example.app", "user");
+        let listener_keys = crate::DeviceKeys::generate(&listener_identity).expect("listener keys");
+        let listener_app_key = AppKey::generate().expect("app key");
 
         let handle = thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept push");
-            let stream = tls_server_stream(stream, &server_keys).expect("tls server");
+            let stream = tls_server_stream(stream, &listener_keys).expect("tls server");
             let mut reader = std::io::BufReader::new(stream);
 
             let _ = read_message(&mut reader).expect("hello");
             write_message(
                 reader.get_mut(),
                 &Message::Hello {
-                    identity: server_identity.clone(),
+                    identity: listener_identity.clone(),
                 },
             )
             .expect("hello response");
@@ -572,14 +633,14 @@ mod tests {
             write_message(reader.get_mut(), &Message::Ack).expect("write ack");
 
             let (stream, _) = listener.accept().expect("accept pull");
-            let stream = tls_server_stream(stream, &server_keys).expect("tls server");
+            let stream = tls_server_stream(stream, &listener_keys).expect("tls server");
             let mut reader = std::io::BufReader::new(stream);
 
             let _ = read_message(&mut reader).expect("hello");
             write_message(
                 reader.get_mut(),
                 &Message::Hello {
-                    identity: server_identity,
+                    identity: listener_identity,
                 },
             )
             .expect("hello response");
@@ -590,7 +651,14 @@ mod tests {
         let mut state = State::new("device");
         let identity = Identity::new("device", "com.example.app", "user");
         let device_keys = crate::DeviceKeys::generate(&identity).expect("device keys");
-        let result = sync_with_device(&identity, &mut state, addr, &device_keys, |_, _| Ok(()));
+        let result = sync_with_device(
+            &identity,
+            &mut state,
+            addr,
+            &device_keys,
+            &listener_app_key,
+            |_, _| Ok(()),
+        );
         assert!(result.is_err());
 
         handle.join().expect("join");
@@ -616,6 +684,7 @@ mod tests {
 
         let device_identity = Identity::new("device", "com.example.app", "device-user");
         let device_keys = crate::DeviceKeys::generate(&device_identity).expect("device keys");
+        let app_key = handler.app_key().expect("app key");
         let stream = TcpStream::connect(listener.addr()).expect("connect");
         let stream = tls_client_stream(stream, &device_keys).expect("tls client");
         let mut reader = std::io::BufReader::new(stream);
@@ -624,6 +693,7 @@ mod tests {
             reader.get_mut(),
             &Message::PairRequest {
                 identity: device_identity.clone(),
+                app_key: Some(app_key.as_bytes().to_vec()),
             },
         )
         .expect("pair request");
@@ -642,6 +712,7 @@ mod tests {
     fn sync_rejects_unpaired_device() {
         let identity = Identity::new("listener", "com.example.app", "listener-user");
         let listener_keys = crate::DeviceKeys::generate(&identity).expect("listener keys");
+        let app_key = AppKey::generate().expect("app key");
         let handler = Arc::new(RecordingHandler::new(
             "com.example.app",
             false,
@@ -664,6 +735,7 @@ mod tests {
             &mut state,
             listener.addr(),
             &device_keys,
+            &app_key,
             |_, _| Ok(()),
         );
         assert!(result.is_err());

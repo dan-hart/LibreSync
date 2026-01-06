@@ -7,19 +7,28 @@ The CLI is a thin wrapper around the core library. It exposes the minimal flow n
 - `select`: choose the JSON file to refresh.
 - `discover`: list devices on the LAN for the same app ID.
 - `pair`: request pairing with a device (mutual consent).
+- `unpair`: revoke pairing with a device (removes from allowlist).
 - `listen`: run the device listener and advertise on LAN.
 - `refresh`: refresh the selected JSON file with a paired device.
 - `watch`: watch the selected JSON file and refresh all paired devices (auto-starts a listener by default).
 - `stop`: stop the background listener for this config.
 - `status`: show identity, selected file, listener status, paired devices, and discovered devices (with last seen time).
+- `backup configure`: opt in to encrypted backups (and optionally allow restores).
+- `backup snapshot`: create an encrypted snapshot.
+- `backup list`: list encrypted snapshots.
+- `backup restore`: restore an encrypted snapshot (requires allow-restore + `--confirm`).
 
 ## Config file
 The config is a JSON file that stores identity and trust state:
 - `device_id`: three words separated by dashes.
 - `user_id`: adjective-noun pair separated by a dash.
 - `app_id`: bundle identifier.
-- `state_path`: internal state file for refresh metadata.
+- `state_path`: encrypted internal state file for refresh metadata.
 - `data_path`: path to the selected JSON file.
+- `app_key`: app-level encryption key (stored locally).
+- `backup_enabled`: whether encrypted backups are enabled.
+- `backup_allow_restore`: whether restores are allowed for this app.
+- `backup_dir`: optional backup directory override.
 - `devices`: map of paired devices keyed by device ID.
 
 ### Default location
@@ -39,14 +48,16 @@ You can override the location with `--config` on any command.
    - pass a device address with `--device`, or
    - pass a device ID with `--device-id`, or
    - omit both and select from the discovery list.
-6. Run `refresh` whenever you want to refresh the file. The same address/device-ID selection rules apply.
-7. Run `watch` to refresh all paired devices on local changes and on a periodic interval.
-8. Run `status` to see connected devices and last seen addresses.
+6. Use `unpair --device-id <device-id>` to revoke trust and require re-pairing.
+7. Run `refresh` whenever you want to refresh the file. The same address/device-ID selection rules apply.
+8. Run `watch` to refresh all paired devices on local changes and on a periodic interval.
+9. Run `status` to see connected devices and last seen addresses.
 
 ## Notes
 - Pair establishes trust only; it does not refresh data.
 - Refresh exchanges data and requires prior pairing.
 - Discovery only lists devices; it does not grant trust.
+- `pair` prints the local and remote fingerprints so you can verify trust out of band.
 - `listen` can be run with `--no-discovery` to avoid mDNS advertising.
 - `listen` writes logs to `libresync-listen.log` and a PID to `libresync-listen.pid` next to the config file.
 - `listen` updates the selected JSON file when incoming refreshes are received.
@@ -54,4 +65,5 @@ You can override the location with `--config` on any command.
 - `pair` and `refresh` will prompt for a device if multiple are discovered and no device is specified.
 - `watch` refreshes all paired devices and uses discovery unless `--no-discover` is set.
 - `watch` will start a local listener unless `--no-listen` is set.
+- `backup restore` requires two steps: `backup configure --allow-restore` plus `backup restore --confirm`.
 - Use `--verbose` to include debug details when errors occur.

@@ -59,6 +59,8 @@ impl From<rustls::Error> for Error {
 #[cfg(test)]
 mod tests {
     use super::{Error, Result};
+    use std::error::Error as StdError;
+    use std::io;
 
     #[test]
     fn error_display_includes_context() {
@@ -73,5 +75,18 @@ mod tests {
         }
 
         assert!(helper().is_ok());
+    }
+
+    #[test]
+    fn error_source_is_set_for_io() {
+        let io_error = io::Error::new(io::ErrorKind::Other, "boom");
+        let error = Error::from(io_error);
+        assert!(StdError::source(&error).is_some());
+    }
+
+    #[test]
+    fn error_source_is_none_for_protocol() {
+        let error = Error::Protocol("missing".to_string());
+        assert!(StdError::source(&error).is_none());
     }
 }

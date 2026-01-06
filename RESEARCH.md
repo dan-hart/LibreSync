@@ -12,6 +12,7 @@ You are proposing an **embeddable, cross-platform, device-to-device structured-d
 - Is **AGPLv3-only** and explicitly values **privacy and security as rights**.
 - Starts with **iOS + macOS**, then expands broadly (Linux/Windows/Android/CLI, etc.).
 - Optionally works over **Tailscale/Headscale** as a private overlay network.
+- Aims to be the **gold standard for device-to-device sync**, with top-tier DX and UX.
 
 This is feasible. The main engineering risks are (1) cross-platform discovery/connectivity constraints (especially iOS), (2) conflict-resolution strategy for arbitrary structured data at scale, and (3) DX (developer experience) across multiple platforms without duplicating logic.
 
@@ -25,6 +26,18 @@ The strongest approach is a **shared Rust core** with **thin native bindings**, 
 
 - A **library/framework** app developers embed to sync application data across trusted devices.
 - A “local-first” sync engine: each device has a full local copy; sync reconciles changes.
+
+### Product vision (summary)
+
+LibreSync should be the default choice when someone wants sync without servers.
+It must be:
+- **Easy to integrate** (small API, clear docs, reliable defaults).
+- **Easy to understand** (transparent pairing, visible trust, status you can trust).
+- **Easy to trust** (local-only, encrypted transport, explicit consent).
+
+Definitions:
+- **DX (developer experience)**: how simple it is to integrate, test, and ship LibreSync in an app.
+- **UX (user experience)**: how clear, predictable, and trustworthy sync feels to end users.
 
 ### What this is not
 
