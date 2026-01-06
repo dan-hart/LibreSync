@@ -7,7 +7,7 @@
 
 ## Status
 - Swift/Kotlin bindings are early and not yet production-ready.
-- Platform permission flows and secure key storage are still pending in the wrappers.
+- Local Network permission helpers and secure key storage helpers are available, but full integration UX is still pending.
 
 ## Core objects
 - `Identity`: `device_id`, `app_id`, `user_id`.
@@ -63,6 +63,7 @@
 
 ## Secure key storage
 - SDK wrappers should store app keys and device keys in Keychain (Apple) or Keystore (Android).
+- This repo includes Swift Keychain helpers and an Android Keystore storage sample to build on.
 - File-based key storage is acceptable only for development and the CLI.
 
 ## FFI boundary plan

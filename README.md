@@ -113,14 +113,15 @@ The CLI is a device-to-device testing tool that uses LAN discovery, device pairi
 - Runs as a device that keeps data synced even when the primary app is closed.
 - Status dashboard with manual refresh and per-app backup toggles.
 - Snapshot preview and restore controls (restore gated by allow-restore).
+- System tray controls and trust panel (pairing + fingerprints).
 - Intended targets: macOS, Windows, Linux.
 
 ## Current limitations (alpha)
 - Logical record sync is the recommended integration path but still early for production apps.
 - The SQLite logical adapter does not yet map arbitrary existing schemas.
 - Discovery on iOS/macOS requires local network permissions and may be blocked by AP isolation.
-- SDK wrappers still need platform key storage (Keychain/Keystore) integration.
-- LibreSyncAlwaysOn still needs tray/daemon behavior for always-on UX.
+- SDK wrappers include Keychain/Keystore helpers but still need default integration and UX polish.
+- LibreSyncAlwaysOn still needs true OS-level background/auto-start behavior.
 
 ## Values
 - Privacy: a human right

@@ -101,6 +101,8 @@ The CLI maps one or more file-backed adapters (JSON or SQLite) into the state:
 - Status dashboard with manual refresh and per-app backup policy controls.
 - Snapshot preview and restore controls (restore gated by allow-restore).
 - Stored last-seen addresses allow refresh even when discovery is unavailable.
+- System tray controls and trust UI (pairing, fingerprints, auto-accept toggle).
+- Still needs OS-level background/auto-start behavior and retention defaults per app.
 
 ## Future hardening
 - Device keypairs and signed app attestations.

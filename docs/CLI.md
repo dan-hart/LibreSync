@@ -33,6 +33,7 @@ The CLI is a thin wrapper around the core library. It covers the full flow to co
 - `select` prints adapter ID, kind, and path.
 - `discover` prints device IDs, user IDs, and addresses.
 - `pair`/`refresh` print local and remote fingerprints plus per-device summaries.
+- `device set-address` prints the stored address and updates last-seen metadata.
 - `backup snapshot` prints the snapshot ID and storage path.
 - `backup preview`/`restore` print diff summaries and restore status.
 

@@ -8,8 +8,8 @@ LibreSync has a working device-to-device MVP for two CLI instances on a LAN. Dev
 - Security/E2EE: strong (app key encryption, key export/import/rotation).
 - File adapters (JSON/SQLite/WAL/SHM): strong (page-delta optional, solid tests).
 - Logical records (mergeable state): moderate (schema and merges exist; still early for real apps).
-- SDK bindings (Swift/Kotlin): early (scaffolding exists; not production-ready).
-- Always-on desktop device: MVP (UI and snapshots present; needs always-on UX).
+- SDK bindings (Swift/Kotlin): early (wrappers exist, Keychain/Keystore helpers added; not production-ready).
+- Always-on desktop device: MVP (UI, snapshots, tray, trust panel; needs OS-level background).
 - DX/UX docs + examples: good (docs are coherent; sample apps are limited).
 
 ## Completed
@@ -64,6 +64,7 @@ LibreSync has a working device-to-device MVP for two CLI instances on a LAN. Dev
 - LibreSyncAlwaysOn now supports system tray show/hide and trust UI (pairing + fingerprints).
 - Frankly demo now uses SQLite logical mapping for record-level sync.
 - Swift/Kotlin samples now default to logical record adapters.
+- FFI tests added to meet the coverage gate.
 
 ## Current MVP behavior
 - Two devices on the same LAN can run `libresync`.
@@ -78,12 +79,11 @@ LibreSync has a working device-to-device MVP for two CLI instances on a LAN. Dev
 - SQLite logical mapping is available but still evolving for complex schemas.
 - Background auto-refresh is polling-based; discovery is mDNS-first with manual fallback addresses.
 - LibreSyncAlwaysOn still needs true OS-level daemon/service behavior.
-- Coverage is below the 75% target in several modules.
+- Coverage gate is met but additional tests would improve confidence across the SDK/FFI surface.
 
 ## Next steps
-- Ship logical record sync as the default integration path in SDK samples.
 - Extend SQLite logical mapping with richer type/merge policy configs.
-- Build platform key storage integrations for SDK wrappers (not just helpers).
+- Finalize platform key storage integration and UX in SDK wrappers.
 - Implement true OS-level daemon/service behavior for LibreSyncAlwaysOn.
 - Add DB-backed logical adapters (SwiftData/Kotlin storage).
 
