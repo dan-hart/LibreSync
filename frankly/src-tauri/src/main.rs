@@ -9,7 +9,8 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use libresync::{
     AppKey, register_mdns, AutoRefresh, DeviceHandler, DeviceInfo, DeviceKeys, Engine,
-    EngineConfig, Event, EventStream, Identity, MdnsAdvertiser, SqliteFileAdapter, State,
+    EngineConfig, Event, EventStream, Identity, MdnsAdvertiser, SqliteLogicalAdapter,
+    SqliteLogicalMapping, State,
 };
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -619,9 +620,15 @@ fn init_state(app: &AppHandle) -> Result<FranklyState, String> {
         handler,
     );
 
-    let adapter = Arc::new(SqliteFileAdapter::new(TODOS_KEY, &paths.db));
+    let mapping = SqliteLogicalMapping::new("todos", "id", "frankly", "Todo")
+        .with_field("title", "title")
+        .with_bool_field("completed", "completed");
+    let adapter = Arc::new(
+        SqliteLogicalAdapter::new(TODOS_KEY, identity.app_id.clone(), &paths.db, "records")
+            .with_mapping(mapping),
+    );
     engine
-        .register_adapter(adapter)
+        .register_logical_adapter(adapter)
         .map_err(|error| error.to_string())?;
 
     let _ = open_db(&paths.db)?;

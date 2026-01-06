@@ -13,6 +13,9 @@ pub trait DeviceHandler: Send + Sync {
     fn device_keys(&self) -> Result<DeviceKeys> {
         Err(Error::Protocol("device keys not configured".to_string()))
     }
+    fn set_device_keys(&self, _device_keys: &DeviceKeys) -> Result<()> {
+        Err(Error::Protocol("device key updates not supported".to_string()))
+    }
     fn is_paired_with_fingerprint(&self, identity: &Identity, fingerprint: &str) -> bool {
         let _ = fingerprint;
         self.is_paired(identity)
@@ -30,7 +33,7 @@ pub trait DeviceHandler: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::DeviceHandler;
-    use crate::{AppKey, Error, Identity};
+    use crate::{AppKey, DeviceKeys, Error, Identity};
 
     struct StubHandler;
 
@@ -67,6 +70,17 @@ mod tests {
         let handler = StubHandler;
         let app_key = AppKey::generate().expect("app key");
         let error = handler.set_app_key(&app_key).expect_err("no set app key");
+        assert!(matches!(error, Error::Protocol(_)));
+    }
+
+    #[test]
+    fn default_set_device_keys_is_unsupported() {
+        let handler = StubHandler;
+        let identity = Identity::new("device", "com.example.app", "user");
+        let device_keys = DeviceKeys::generate(&identity).expect("device keys");
+        let error = handler
+            .set_device_keys(&device_keys)
+            .expect_err("no set device keys");
         assert!(matches!(error, Error::Protocol(_)));
     }
 

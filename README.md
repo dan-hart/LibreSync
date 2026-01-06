@@ -9,7 +9,7 @@
 LibreSync should be the gold standard for device-to-device, local-first data synchronization.
 
 Success means:
-- Developers can add reliable sync without running servers or maintaining backend infrastructure.
+- Developers can add reliable sync without running always-on devices or maintaining backend infrastructure.
 - Users can pair once and stay in sync automatically, with clear trust and status indicators.
 - Privacy and security are defaults, not optional add-ons.
 
@@ -47,13 +47,17 @@ User experience:
 
 ## Library (libresync)
 - Register an adapter, start a listener, and enable auto refresh.
+- Logical record adapters are the intended primary integration path; file adapters remain available for arbitrary data.
 - Adapters can be logical (records) or file-based (JSON, SQLite, arbitrary files).
 - `InMemoryLogicalAdapter` provides a minimal record adapter for merge-policy testing.
-- SQLite adapters can enable page-delta encoding to reduce payload size when changes are small.
+- `FileLogicalAdapter` persists logical records to a JSON file for simple app storage.
+- `SqliteLogicalAdapter` (feature `sqlite-logical`) persists records to a SQLite table; it is not yet a drop-in mapping for existing schemas.
+- SQLite file adapters can enable page-delta encoding to reduce payload size when changes are small.
 - Auto refresh polls for local changes and syncs with paired devices discovered on the LAN.
 - Use `AutoRefreshConfig` to customize polling and refresh intervals.
 - Use `WatchedFileAdapter` for near-real-time local file change detection.
 - Attach an `EventStream` to update UI immediately after sync completes.
+- See `crates/libresync/examples/logical_record_sync.rs` for a minimal logical-record example.
 
 ```rust
 use std::sync::Arc;
@@ -70,18 +74,19 @@ let _auto = engine.auto_refresh("file", "./state.json")?;
 ```
 
 ## CLI (libresync)
-The CLI is a minimal device-to-device testing tool that uses LAN discovery, device pairing, and a single JSON file refresh.
+The CLI is a device-to-device testing tool that uses LAN discovery, device pairing, and JSON/SQLite adapter refresh.
 
 ### Quick start
 1. Initialize a config on each device:
    - `libresync init`
-2. Select the JSON file to keep in sync:
+2. Select a file adapter to keep in sync:
    - `libresync select --file ./data.json`
+   - `libresync select --id db --kind sqlite --file ./app.db`
 3. Start the device listener (advertises via mDNS, default port 52345):
    - `libresync listen`
 4. Pair once between devices (consent required):
    - `libresync pair`
-5. Refresh the selected JSON file:
+5. Refresh the selected adapter:
    - `libresync refresh`
 6. For continuous updates, run:
    - `libresync watch`
@@ -99,7 +104,7 @@ The CLI is a minimal device-to-device testing tool that uses LAN discovery, devi
 - `status` shows the selected file, listener status, connected devices (discovered now), last seen addresses, and last seen timestamps for paired devices.
 - Config defaults to the OS config directory (override with `--config`).
 - `listen` runs in the background by default; use `--foreground` to keep it in the terminal.
-- `listen` updates the selected JSON file when incoming refreshes are received.
+- `listen` updates the selected adapter files when incoming refreshes are received.
 - `stop` terminates the background listener for the current config.
 - Use `--verbose` to include debug details when errors occur.
 
@@ -109,6 +114,13 @@ The CLI is a minimal device-to-device testing tool that uses LAN discovery, devi
 - Status dashboard with manual refresh and per-app backup toggles.
 - Snapshot preview and restore controls (restore gated by allow-restore).
 - Intended targets: macOS, Windows, Linux.
+
+## Current limitations (alpha)
+- Logical record sync is the recommended integration path but still early for production apps.
+- The SQLite logical adapter does not yet map arbitrary existing schemas.
+- Discovery on iOS/macOS requires local network permissions and may be blocked by AP isolation.
+- SDK wrappers still need platform key storage (Keychain/Keystore) integration.
+- LibreSyncAlwaysOn still needs tray/daemon behavior for always-on UX.
 
 ## Values
 - Privacy: a human right
@@ -129,11 +141,17 @@ AGPLv3 - Why? Because it's what we decided upon.
 - See `SECURITY.md`, `PRIVACY.md`, and `CONTRIBUTING.md` for full guidance.
 
 ## Additional documents
+- [Quickstart](docs/QUICKSTART.md)
+- [Why LibreSync](docs/WHY.md)
 - [Research](RESEARCH.md)
 - [Security](SECURITY.md)
 - [Privacy](PRIVACY.md)
 - [Contributing](CONTRIBUTING.md)
 - [LibreSyncAlwaysOn](alwaysOn/README.md)
+- [Logical record sync](docs/LOGICAL.md)
+- [API stability](docs/API.md)
 - [SDK surface](docs/SDK.md)
+- [Bindings](bindings/README.md)
+- [Debugging](docs/DEBUGGING.md)
 - [Releases](RELEASES.md)
 - [License](LICENSE)

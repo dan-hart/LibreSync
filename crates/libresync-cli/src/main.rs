@@ -8,15 +8,16 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use chrono::{Local, TimeZone};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use directories::ProjectDirs;
 use libresync::{
     AppKey, BackupManager, DataAdapter, DataAdapterBackup, DeviceHandler, DeviceInfo, DeviceKeys,
-    Engine, EngineConfig, FileSnapshotStore, Identity, JsonFileAdapter, RestoreOptions, State,
-    summarize_snapshot_diff,
+    Engine, EngineConfig, FileLogicalAdapter, FileSnapshotStore, Identity, JsonFileAdapter,
+    LogicalAdapterWrapper, RestoreOptions, RetentionPolicy, SnapshotStore, SqliteFileAdapter,
+    State, decrypt_entries, encrypt_entries, summarize_snapshot_diff,
 };
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
@@ -63,9 +64,9 @@ fn pid_path_for_config(config_path: &Path) -> PathBuf {
 #[command(
     name = "libresync",
     version,
-    about = "Local-only device-to-device refresh CLI for LibreSync.",
-    long_about = "A practical CLI for exercising the LibreSync core. Use it to discover devices on LAN,\npair devices, refresh JSON files, and manage encrypted backups from the terminal.",
-    after_help = "Examples:\n  libresync init --app-id com.example.notes\n  libresync select --file ./data.json\n  libresync listen\n  libresync pair\n  libresync refresh --all\n  libresync watch --interval-secs 5\n  libresync backup configure --enable\n  libresync backup snapshot --note \"before import\"\n  libresync backup list\n  libresync backup restore --snapshot-id <id> --confirm --confirm-id <id>\n  libresync status"
+    about = "Local-only device-to-device sync CLI for LibreSync.",
+    long_about = "A practical CLI for the LibreSync core. Use it to create configs, select logical/JSON/SQLite adapters,\ndiscover devices on LAN, pair devices, refresh/watch adapters, and manage encrypted backups and keys.",
+    after_help = "Examples:\n  libresync init --app-id com.example.notes\n  libresync select --file ./data.json\n  libresync select --id settings --file ./settings.json\n  libresync select --id db --kind sqlite --page-delta 4096 --file ./app.db\n  libresync select --id records --kind logical-file --file ./records.json\n  libresync listen\n  libresync pair\n  libresync refresh --all\n  libresync refresh --all-adapters\n  libresync watch --interval-secs 5\n  libresync backup configure --enable\n  libresync backup snapshot --note \"before import\"\n  libresync backup list\n  libresync backup restore --snapshot-id <id> --confirm --confirm-id <id>\n  libresync status\n\nOutput hints:\n  - Most commands print the config path in use and adapter IDs affected.\n  - Pair/refresh output includes local and remote fingerprints for trust checks.\n  - Snapshot/export commands print the snapshot ID or output file path."
 )]
 struct Cli {
     #[arg(
@@ -84,7 +85,8 @@ struct Cli {
 enum Commands {
     #[command(
         about = "Create a new LibreSync config with device/app/user identity.",
-        long_about = "Creates a config file that stores the device ID, user ID, app ID, allowlisted devices, and internal state paths. This is required before discovery, pairing, or refresh. Use --force to overwrite an existing config."
+        long_about = "Creates a config file that stores the device ID, user ID, app ID, allowlisted devices, and internal state paths. This is required before discovery, pairing, or refresh. Use --force to overwrite an existing config.",
+        after_help = "Examples:\n  libresync init\n  libresync init --app-id com.example.notes\n  libresync init --config ./libresync.json\n\nOutput:\n  - prints the config path\n  - prints device ID, user ID, app ID, and fingerprint"
     )]
     Init {
         #[arg(
@@ -120,26 +122,51 @@ enum Commands {
         force: bool,
     },
     #[command(
-        about = "Select the JSON file to keep refreshed.",
-        long_about = "Sets the JSON file path that LibreSync will refresh. The file is created if it does not exist."
+        about = "Select a file-backed adapter to keep refreshed.",
+        long_about = "Sets the file path for an adapter (json, sqlite, or logical-file). The file is created if it does not exist. SQLite adapters may enable page-delta encoding. Logical-file adapters store structured records as JSON.",
+        after_help = "Examples:\n  libresync select --file ./data.json\n  libresync select --id settings --file ./settings.json\n  libresync select --id db --kind sqlite --page-delta 4096 --file ./app.db\n  libresync select --id records --kind logical-file --file ./records.json\n\nOutput:\n  - prints adapter ID, kind, and path\n  - updates the default adapter when the ID is \"file\""
     )]
     Select {
         #[arg(
             long,
             help = "Path to the config JSON file (defaults to the OS config directory).",
-            long_help = "Config file that stores the selected JSON file path. Defaults to the OS config directory when omitted."
+            long_help = "Config file that stores the selected adapter paths. Defaults to the OS config directory when omitted."
         )]
         config: Option<PathBuf>,
         #[arg(
             long,
-            help = "Path to the JSON file to refresh.",
-            long_help = "Path to the JSON file that will be refreshed between devices. The file is created if missing."
+            default_value = FILE_KEY,
+            help = "Adapter ID to assign this file to."
+        )]
+        id: String,
+        #[arg(
+            long,
+            value_enum,
+            default_value = "json",
+            help = "Adapter kind (json, sqlite, or logical-file)."
+        )]
+        kind: AdapterKindArg,
+        #[arg(
+            long,
+            help = "SQLite page-delta size in bytes (enables delta encoding)."
+        )]
+        page_delta: Option<usize>,
+        #[arg(
+            long,
+            help = "Logical namespace override (defaults to the app ID)."
+        )]
+        namespace: Option<String>,
+        #[arg(
+            long,
+            help = "Path to the file for this adapter.",
+            long_help = "Path to the file that will be refreshed between devices. The file is created if missing."
         )]
         file: PathBuf,
     },
     #[command(
         about = "Discover devices on the LAN running the same app ID.",
-        long_about = "List devices discovered via mDNS for the current app ID. Discovery is unauthenticated and does not grant trust."
+        long_about = "List devices discovered via mDNS for the current app ID. Discovery is unauthenticated and does not grant trust.",
+        after_help = "Examples:\n  libresync discover\n  libresync discover --timeout-secs 6\n\nOutput:\n  - list of device IDs, user IDs, and addresses"
     )]
     Discover {
         #[arg(
@@ -158,7 +185,8 @@ enum Commands {
     },
     #[command(
         about = "Pair with a device by address (requires device consent).",
-        long_about = "Pair establishes trust only. It does not refresh any data. The remote device must accept the pairing request, and you must confirm locally unless --yes is set."
+        long_about = "Pair establishes trust only. It does not refresh any data. The remote device must accept the pairing request, and you must confirm locally unless --yes is set.",
+        after_help = "Examples:\n  libresync pair --device 192.168.1.10:52345\n  libresync pair --device-id amber-river-summit\n  libresync pair --yes\n\nOutput:\n  - local and remote fingerprints\n  - pairing result and stored allowlist entry"
     )]
     Pair {
         #[arg(
@@ -188,8 +216,17 @@ enum Commands {
         yes: bool,
     },
     #[command(
+        about = "Manage paired device metadata.",
+        long_about = "Set or update stored addresses for paired devices."
+    )]
+    Device {
+        #[command(subcommand)]
+        command: DeviceCommands,
+    },
+    #[command(
         about = "Revoke pairing with a device.",
-        long_about = "Removes a paired device from the local allowlist. The device will need to pair again before any future refresh."
+        long_about = "Removes a paired device from the local allowlist. The device will need to pair again before any future refresh.",
+        after_help = "Examples:\n  libresync unpair --device-id amber-river-summit\n\nOutput:\n  - confirmation that the device was removed"
     )]
     Unpair {
         #[arg(
@@ -209,7 +246,8 @@ enum Commands {
     },
     #[command(
         about = "Run a device listener and advertise on LAN.",
-        long_about = "Start a device listener that accepts inbound connections and (by default) advertises via mDNS. The listener runs in the background by default; use --foreground to keep it attached to your terminal."
+        long_about = "Start a device listener that accepts inbound connections and (by default) advertises via mDNS. The listener runs in the background by default; use --foreground to keep it attached to your terminal.",
+        after_help = "Examples:\n  libresync listen\n  libresync listen --listen 0.0.0.0:52345 --foreground\n  libresync listen --no-discovery\n\nOutput:\n  - prints the listen address\n  - background mode prints PID and log path"
     )]
     Listen {
         #[arg(
@@ -249,17 +287,27 @@ enum Commands {
     #[command(
         name = "refresh",
         alias = "sync",
-        about = "Refresh the selected JSON file with a paired device.",
-        long_about = "Refresh exchanges data only after trust is established. It requires prior pairing. The file is loaded into the local state before refresh and written back after refresh.",
-        after_help = "Examples:\n  libresync refresh --device 192.168.1.10:52345\n  libresync refresh --device-id amber-river-summit\n  libresync refresh --all\n  libresync refresh --all --no-discover"
+        about = "Refresh selected adapters with a paired device.",
+        long_about = "Refresh exchanges data only after trust is established. It requires prior pairing. Adapter data is loaded into local state before refresh and written back after refresh.",
+        after_help = "Examples:\n  libresync refresh --device 192.168.1.10:52345\n  libresync refresh --device-id amber-river-summit\n  libresync refresh --all\n  libresync refresh --all --no-discover\n  libresync refresh --all-adapters\n\nOutput:\n  - per-device refresh summary\n  - adapter IDs updated and error hints"
     )]
     Refresh {
         #[arg(
             long,
             help = "Path to the config JSON file (defaults to the OS config directory).",
-            long_help = "Config file that includes the selected JSON file path and device allowlist. Defaults to the OS config directory when omitted."
+            long_help = "Config file that includes selected adapters and device allowlist. Defaults to the OS config directory when omitted."
         )]
         config: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Adapter ID to refresh (defaults to the selected adapter)."
+        )]
+        adapter_id: Option<String>,
+        #[arg(
+            long,
+            help = "Refresh all selected adapters."
+        )]
+        all_adapters: bool,
         #[arg(
             long,
             conflicts_with_all = ["device", "device_id"],
@@ -289,16 +337,27 @@ enum Commands {
         device_id: Option<String>,
     },
     #[command(
-        about = "Watch the selected JSON file and refresh all paired devices.",
-        long_about = "Watch the selected JSON file for local changes and refresh with all paired devices. Refresh pulls and pushes data, providing best-effort bidirectional updates."
+        about = "Watch selected adapters and refresh all paired devices.",
+        long_about = "Watch selected adapter files for local changes and refresh with all paired devices. Refresh pulls and pushes data, providing best-effort bidirectional updates.",
+        after_help = "Examples:\n  libresync watch\n  libresync watch --interval-secs 5\n  libresync watch --all-adapters --no-discover\n\nOutput:\n  - watch start banner with interval and debounce\n  - refresh summaries per cycle"
     )]
     Watch {
         #[arg(
             long,
             help = "Path to the config JSON file (defaults to the OS config directory).",
-            long_help = "Config file that includes the selected JSON file path and device allowlist. Defaults to the OS config directory when omitted."
+            long_help = "Config file that includes selected adapters and device allowlist. Defaults to the OS config directory when omitted."
         )]
         config: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Adapter ID to watch (defaults to the selected adapter)."
+        )]
+        adapter_id: Option<String>,
+        #[arg(
+            long,
+            help = "Watch all selected adapters."
+        )]
+        all_adapters: bool,
         #[arg(
             long,
             default_value = DEFAULT_LISTEN,
@@ -335,7 +394,8 @@ enum Commands {
     },
     #[command(
         about = "Stop the background listener for this config.",
-        long_about = "Stop the background listener spawned by `libresync listen`. This reads the PID from the config directory and terminates the process."
+        long_about = "Stop the background listener spawned by `libresync listen`. This reads the PID from the config directory and terminates the process.",
+        after_help = "Examples:\n  libresync stop\n\nOutput:\n  - confirmation that the listener was stopped"
     )]
     Stop {
         #[arg(
@@ -348,7 +408,7 @@ enum Commands {
     #[command(
         about = "Manage encrypted backups and restore points for the selected data.",
         long_about = "Create, list, and restore encrypted snapshots. Backups are opt-in per app, and restores require an explicit config flag plus --confirm.",
-        after_help = "Examples:\n  libresync backup configure --enable\n  libresync backup snapshot --note \"before import\"\n  libresync backup list\n  libresync backup preview --snapshot-id <id>\n  libresync backup restore --snapshot-id <id> --confirm --confirm-id <id>"
+        after_help = "Examples:\n  libresync backup configure --enable\n  libresync backup snapshot --note \"before import\"\n  libresync backup list\n  libresync backup preview --snapshot-id <id>\n  libresync backup restore --snapshot-id <id> --confirm --confirm-id <id>\n\nOutput hints:\n  - snapshot commands print snapshot IDs\n  - restore/preview commands print a diff summary"
     )]
     Backup {
         #[command(subcommand)]
@@ -357,7 +417,7 @@ enum Commands {
     #[command(
         about = "Show device status, paired devices, and recent discovery info.",
         long_about = "Show local identity, selected file, backup settings, listener status, paired devices, and (by default) devices discovered on the LAN. Discovered devices are treated as connected now. Use --no-discover to skip LAN discovery.",
-        after_help = "Examples:\n  libresync status\n  libresync status --no-discover"
+        after_help = "Examples:\n  libresync status\n  libresync status --no-discover\n\nOutput:\n  - identity, adapters, backups, listener status\n  - paired devices with last seen address"
     )]
     Status {
         #[arg(
@@ -380,13 +440,196 @@ enum Commands {
         )]
         timeout_secs: u64,
     },
+    #[command(
+        about = "Run diagnostics for the current config.",
+        long_about = "Check config, keys, state file, selected file, and backup settings. Useful for troubleshooting before pairing or refresh.",
+        after_help = "Examples:\n  libresync diagnose\n  libresync diagnose --config ./libresync.json\n\nOutput:\n  - checklist with pass/fail hints"
+    )]
+    Diagnose {
+        #[arg(
+            long,
+            help = "Path to the config JSON file (defaults to the OS config directory)."
+        )]
+        config: Option<PathBuf>,
+    },
+    #[command(
+        about = "Manage app-level encryption keys.",
+        long_about = "Rotate, export, and import app-level encryption keys. App keys protect sync payloads, state files, and backups."
+    )]
+    Key {
+        #[command(subcommand)]
+        command: KeyCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum KeyCommands {
+    #[command(
+        about = "Rotate the app-level key.",
+        long_about = "Re-encrypts state and backups with a new app key. Clears paired devices by default, requiring re-pairing.",
+        after_help = "Examples:\n  libresync key rotate --confirm\n  libresync key rotate --confirm --keep-allowlist\n\nOutput:\n  - reports re-encryption status and allowlist behavior"
+    )]
+    Rotate {
+        #[arg(
+            long,
+            help = "Path to the config JSON file (defaults to the OS config directory)."
+        )]
+        config: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Keep the existing allowlist (skip forced re-pairing)."
+        )]
+        keep_allowlist: bool,
+        #[arg(
+            long,
+            help = "Confirm key rotation."
+        )]
+        confirm: bool,
+    },
+    #[command(
+        about = "Export the app-level key.",
+        long_about = "Writes the app-level encryption key to a file so it can be imported on another device.",
+        after_help = "Examples:\n  libresync key export-app --output ./app.key\n\nOutput:\n  - path of the key file written"
+    )]
+    ExportApp {
+        #[arg(
+            long,
+            help = "Path to the config JSON file (defaults to the OS config directory)."
+        )]
+        config: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Output path for the key file."
+        )]
+        output: PathBuf,
+    },
+    #[command(
+        about = "Import an app-level key.",
+        long_about = "Replaces the app-level key and re-encrypts state/backups with the provided key.",
+        after_help = "Examples:\n  libresync key import-app --input ./app.key --confirm\n\nOutput:\n  - reports re-encryption status and allowlist behavior"
+    )]
+    ImportApp {
+        #[arg(
+            long,
+            help = "Path to the config JSON file (defaults to the OS config directory)."
+        )]
+        config: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Path to the key file to import."
+        )]
+        input: PathBuf,
+        #[arg(
+            long,
+            help = "Clear the allowlist to force re-pairing."
+        )]
+        clear_allowlist: bool,
+        #[arg(
+            long,
+            help = "Confirm key import."
+        )]
+        confirm: bool,
+    },
+    #[command(
+        about = "Export the device keys.",
+        long_about = "Writes the device TLS keys and fingerprint to a file.",
+        after_help = "Examples:\n  libresync key export-device --output ./device.keys\n\nOutput:\n  - path of the device key file written"
+    )]
+    ExportDevice {
+        #[arg(
+            long,
+            help = "Path to the config JSON file (defaults to the OS config directory)."
+        )]
+        config: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Output path for the device key file."
+        )]
+        output: PathBuf,
+    },
+    #[command(
+        about = "Import device keys.",
+        long_about = "Replaces the device TLS keys with the provided file.",
+        after_help = "Examples:\n  libresync key import-device --input ./device.keys --confirm\n\nOutput:\n  - reports the new fingerprint and allowlist behavior"
+    )]
+    ImportDevice {
+        #[arg(
+            long,
+            help = "Path to the config JSON file (defaults to the OS config directory)."
+        )]
+        config: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Path to the device key file to import."
+        )]
+        input: PathBuf,
+        #[arg(
+            long,
+            help = "Clear the allowlist to force re-pairing."
+        )]
+        clear_allowlist: bool,
+        #[arg(
+            long,
+            help = "Confirm key import."
+        )]
+        confirm: bool,
+    },
+    #[command(
+        about = "Rotate the device identity keys.",
+        long_about = "Generates new device TLS keys and fingerprint. Remote devices must re-pair to trust the new fingerprint.",
+        after_help = "Examples:\n  libresync key rotate-device --confirm\n  libresync key rotate-device --confirm --clear-allowlist\n\nOutput:\n  - prints the new fingerprint and allowlist behavior"
+    )]
+    RotateDevice {
+        #[arg(
+            long,
+            help = "Path to the config JSON file (defaults to the OS config directory)."
+        )]
+        config: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Clear the local allowlist to force re-pairing."
+        )]
+        clear_allowlist: bool,
+        #[arg(
+            long,
+            help = "Confirm key rotation."
+        )]
+        confirm: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum DeviceCommands {
+    #[command(
+        about = "Store a manual address for a paired device.",
+        long_about = "Overrides the stored address for a paired device to enable manual refresh when discovery fails.",
+        after_help = "Examples:\n  libresync device set-address --device-id amber-river-summit --address 192.168.1.10:52345\n\nOutput:\n  - confirms the stored address and updates last seen"
+    )]
+    SetAddress {
+        #[arg(
+            long,
+            help = "Path to the config JSON file (defaults to the OS config directory)."
+        )]
+        config: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Paired device ID to update."
+        )]
+        device_id: String,
+        #[arg(
+            long,
+            help = "Socket address to store for the device."
+        )]
+        address: SocketAddr,
+    },
 }
 
 #[derive(Subcommand)]
 enum BackupCommands {
     #[command(
         about = "Configure backup behavior for this app.",
-        long_about = "Enable backups and optionally allow restores. This is a required opt-in per app."
+        long_about = "Enable backups and optionally allow restores. This is a required opt-in per app.",
+        after_help = "Examples:\n  libresync backup configure --enable\n  libresync backup configure --enable --allow-restore\n\nOutput:\n  - prints backup status and storage path"
     )]
     Configure {
         #[arg(
@@ -412,7 +655,8 @@ enum BackupCommands {
     },
     #[command(
         about = "Create an encrypted snapshot.",
-        long_about = "Create a new encrypted snapshot of the selected data for backups."
+        long_about = "Create a new encrypted snapshot of the selected data for backups.",
+        after_help = "Examples:\n  libresync backup snapshot\n  libresync backup snapshot --note \"before import\"\n\nOutput:\n  - snapshot ID and storage path"
     )]
     Snapshot {
         #[arg(
@@ -434,7 +678,8 @@ enum BackupCommands {
     },
     #[command(
         about = "List encrypted snapshots.",
-        long_about = "List encrypted snapshots stored for the selected adapter."
+        long_about = "List encrypted snapshots stored for the selected adapter.",
+        after_help = "Examples:\n  libresync backup list\n\nOutput:\n  - table of snapshot IDs, timestamps, and sizes"
     )]
     List {
         #[arg(
@@ -451,7 +696,8 @@ enum BackupCommands {
     },
     #[command(
         about = "Preview the diff between a snapshot and current state.",
-        long_about = "Shows a diff summary between a snapshot and the current state without restoring."
+        long_about = "Shows a diff summary between a snapshot and the current state without restoring.",
+        after_help = "Examples:\n  libresync backup preview --snapshot-id <id>\n\nOutput:\n  - diff summary (added/updated/removed)"
     )]
     Preview {
         #[arg(
@@ -473,7 +719,8 @@ enum BackupCommands {
     },
     #[command(
         about = "Restore an encrypted snapshot.",
-        long_about = "Restore a snapshot into the selected data. Requires backup allow-restore config, --confirm, and --confirm-id."
+        long_about = "Restore a snapshot into the selected data. Requires backup allow-restore config, --confirm, and --confirm-id.",
+        after_help = "Examples:\n  libresync backup restore --snapshot-id <id> --confirm --confirm-id <id>\n\nOutput:\n  - restore result and updated adapter path"
     )]
     Restore {
         #[arg(
@@ -503,6 +750,39 @@ enum BackupCommands {
         )]
         confirm_id: Option<String>,
     },
+    #[command(
+        about = "Prune old encrypted snapshots.",
+        long_about = "Delete old snapshots using retention rules. Provide at least one of --keep or --max-age-days.",
+        after_help = "Examples:\n  libresync backup prune --keep 10\n  libresync backup prune --max-age-days 30\n  libresync backup prune --keep 5 --max-age-days 14 --dry-run\n\nOutput:\n  - prune plan and items removed (or to be removed)"
+    )]
+    Prune {
+        #[arg(
+            long,
+            help = "Path to the config JSON file (defaults to the OS config directory)."
+        )]
+        config: Option<PathBuf>,
+        #[arg(
+            long,
+            default_value = FILE_KEY,
+            help = "Adapter ID to prune (default: file)."
+        )]
+        adapter_id: String,
+        #[arg(
+            long,
+            help = "Keep at most this many snapshots."
+        )]
+        keep: Option<usize>,
+        #[arg(
+            long,
+            help = "Delete snapshots older than this many days."
+        )]
+        max_age_days: Option<u64>,
+        #[arg(
+            long,
+            help = "Show what would be deleted without removing snapshots."
+        )]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -512,6 +792,12 @@ struct Config {
     user_id: String,
     state_path: PathBuf,
     data_path: Option<PathBuf>,
+    #[serde(default)]
+    data_paths: BTreeMap<String, PathBuf>,
+    #[serde(default)]
+    default_adapter: Option<String>,
+    #[serde(default)]
+    adapters: BTreeMap<String, AdapterConfig>,
     #[serde(default)]
     device_keys: Option<DeviceKeysRecord>,
     #[serde(default)]
@@ -545,6 +831,41 @@ struct DeviceRecord {
     fingerprint: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum AdapterKindConfig {
+    Json,
+    Sqlite,
+    LogicalFile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AdapterConfig {
+    kind: AdapterKindConfig,
+    path: PathBuf,
+    #[serde(default)]
+    page_delta: Option<usize>,
+    #[serde(default)]
+    namespace: Option<String>,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+enum AdapterKindArg {
+    Json,
+    Sqlite,
+    LogicalFile,
+}
+
+impl From<AdapterKindArg> for AdapterKindConfig {
+    fn from(value: AdapterKindArg) -> Self {
+        match value {
+            AdapterKindArg::Json => AdapterKindConfig::Json,
+            AdapterKindArg::Sqlite => AdapterKindConfig::Sqlite,
+            AdapterKindArg::LogicalFile => AdapterKindConfig::LogicalFile,
+        }
+    }
+}
+
 impl DeviceKeysRecord {
     fn from_keys(keys: &DeviceKeys) -> Self {
         Self {
@@ -552,6 +873,17 @@ impl DeviceKeysRecord {
             key_der: BASE64.encode(keys.key_der()),
             fingerprint: keys.fingerprint().to_string(),
         }
+    }
+
+    fn to_keys(&self) -> Result<DeviceKeys, Box<dyn std::error::Error>> {
+        let cert_der = BASE64
+            .decode(self.cert_der.as_bytes())
+            .map_err(|error| format!("failed to decode cert: {error}"))?;
+        let key_der = BASE64
+            .decode(self.key_der.as_bytes())
+            .map_err(|error| format!("failed to decode key: {error}"))?;
+        let keys = DeviceKeys::from_der(cert_der, key_der)?;
+        Ok(keys)
     }
 }
 
@@ -584,6 +916,88 @@ impl Config {
 
     fn set_backup_dir(&mut self, path: PathBuf) {
         self.backup_dir = Some(path);
+    }
+
+    fn adapter_config(&self, adapter_id: &str) -> Option<AdapterConfig> {
+        if let Some(config) = self.adapters.get(adapter_id) {
+            return Some(config.clone());
+        }
+        if let Some(path) = self.data_paths.get(adapter_id) {
+            return Some(AdapterConfig {
+                kind: AdapterKindConfig::Json,
+                path: path.clone(),
+                page_delta: None,
+                namespace: None,
+            });
+        }
+        if adapter_id == FILE_KEY {
+            return self.data_path.clone().map(|path| AdapterConfig {
+                kind: AdapterKindConfig::Json,
+                path,
+                page_delta: None,
+                namespace: None,
+            });
+        }
+        None
+    }
+
+    fn adapter_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.adapters.keys().cloned().collect();
+        if ids.is_empty() {
+            ids = self.data_paths.keys().cloned().collect();
+            if ids.is_empty() && self.data_path.is_some() {
+                ids.push(FILE_KEY.to_string());
+            }
+        }
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    fn default_adapter_id(&self) -> Option<String> {
+        if let Some(id) = self.default_adapter.as_ref() {
+            if self.adapters.contains_key(id) {
+                return Some(id.clone());
+            }
+        }
+        if self.adapters.contains_key(FILE_KEY)
+            || self.data_paths.contains_key(FILE_KEY)
+            || self.data_path.is_some()
+        {
+            return Some(FILE_KEY.to_string());
+        }
+        self.adapters
+            .keys()
+            .next()
+            .cloned()
+            .or_else(|| self.data_paths.keys().next().cloned())
+    }
+
+    fn set_adapter_config(
+        &mut self,
+        adapter_id: &str,
+        kind: AdapterKindConfig,
+        path: PathBuf,
+        page_delta: Option<usize>,
+        namespace: Option<String>,
+    ) {
+        self.adapters.insert(
+            adapter_id.to_string(),
+            AdapterConfig {
+                kind,
+                path: path.clone(),
+                page_delta,
+                namespace,
+            },
+        );
+        self.default_adapter = Some(adapter_id.to_string());
+        if kind == AdapterKindConfig::Json {
+            self.data_paths
+                .insert(adapter_id.to_string(), path.clone());
+            if adapter_id == FILE_KEY {
+                self.data_path = Some(path);
+            }
+        }
     }
 
     fn device_keys(&self) -> Result<DeviceKeys, Box<dyn std::error::Error>> {
@@ -659,6 +1073,13 @@ impl DeviceHandler for ConfigHandler {
         let config = self.config.lock().expect("config lock");
         config
             .device_keys()
+            .map_err(|error| libresync::Error::Protocol(error.to_string()))
+    }
+
+    fn set_device_keys(&self, device_keys: &DeviceKeys) -> libresync::Result<()> {
+        let mut config = self.config.lock().expect("config lock");
+        config.device_keys = Some(DeviceKeysRecord::from_keys(device_keys));
+        save_config(&self.config_path, &config)
             .map_err(|error| libresync::Error::Protocol(error.to_string()))
     }
 
@@ -811,9 +1232,16 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let config = resolve_config_path(config);
             init_config(&config, &app_id, device_id, user_id, force)?;
         }
-        Commands::Select { config, file } => {
+        Commands::Select {
+            config,
+            id,
+            kind,
+            page_delta,
+            namespace,
+            file,
+        } => {
             let config = resolve_config_path(config);
-            select_file(&config, &file)?;
+            select_file(&config, &id, kind.into(), page_delta, namespace, &file)?;
         }
         Commands::Discover {
             config,
@@ -831,6 +1259,16 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let config = resolve_config_path(config);
             pair_device(&config, device, device_id, yes)?;
         }
+        Commands::Device { command } => match command {
+            DeviceCommands::SetAddress {
+                config,
+                device_id,
+                address,
+            } => {
+                let config = resolve_config_path(config);
+                set_device_address(&config, &device_id, address)?;
+            }
+        },
         Commands::Unpair {
             config,
             device_id,
@@ -856,6 +1294,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Refresh {
             config,
+            adapter_id,
+            all_adapters,
             device,
             device_id,
             all,
@@ -863,13 +1303,21 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let config = resolve_config_path(config);
             if all {
-                refresh_all(&config, !no_discover)?;
+                refresh_all(&config, !no_discover, adapter_id.as_deref(), all_adapters)?;
             } else {
-                refresh_file(&config, device, device_id)?;
+                refresh_file(
+                    &config,
+                    device,
+                    device_id,
+                    adapter_id.as_deref(),
+                    all_adapters,
+                )?;
             }
         }
         Commands::Watch {
             config,
+            adapter_id,
+            all_adapters,
             listen,
             interval_secs,
             debounce_ms,
@@ -877,7 +1325,16 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             no_listen,
         } => {
             let config = resolve_config_path(config);
-            watch_file(&config, listen, interval_secs, debounce_ms, no_discover, no_listen)?;
+            watch_file(
+                &config,
+                adapter_id.as_deref(),
+                all_adapters,
+                listen,
+                interval_secs,
+                debounce_ms,
+                no_discover,
+                no_listen,
+            )?;
         }
         Commands::Stop { config } => {
             let config = resolve_config_path(config);
@@ -923,6 +1380,16 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 let config = resolve_config_path(config);
                 restore_backup_snapshot(&config, &adapter_id, &snapshot_id, confirm, confirm_id)?;
             }
+            BackupCommands::Prune {
+                config,
+                adapter_id,
+                keep,
+                max_age_days,
+                dry_run,
+            } => {
+                let config = resolve_config_path(config);
+                prune_backup_snapshots(&config, &adapter_id, keep, max_age_days, dry_run)?;
+            }
         },
         Commands::Status {
             config,
@@ -932,6 +1399,54 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let config = resolve_config_path(config);
             status(&config, !no_discover, timeout_secs)?;
         }
+        Commands::Diagnose { config } => {
+            let config = resolve_config_path(config);
+            diagnose(&config)?;
+        }
+        Commands::Key { command } => match command {
+            KeyCommands::Rotate {
+                config,
+                keep_allowlist,
+                confirm,
+            } => {
+                let config = resolve_config_path(config);
+                rotate_app_key(&config, keep_allowlist, confirm)?;
+            }
+            KeyCommands::RotateDevice {
+                config,
+                clear_allowlist,
+                confirm,
+            } => {
+                let config = resolve_config_path(config);
+                rotate_device_keys(&config, clear_allowlist, confirm)?;
+            }
+            KeyCommands::ExportApp { config, output } => {
+                let config = resolve_config_path(config);
+                export_app_key(&config, &output)?;
+            }
+            KeyCommands::ImportApp {
+                config,
+                input,
+                clear_allowlist,
+                confirm,
+            } => {
+                let config = resolve_config_path(config);
+                import_app_key(&config, &input, clear_allowlist, confirm)?;
+            }
+            KeyCommands::ExportDevice { config, output } => {
+                let config = resolve_config_path(config);
+                export_device_keys(&config, &output)?;
+            }
+            KeyCommands::ImportDevice {
+                config,
+                input,
+                clear_allowlist,
+                confirm,
+            } => {
+                let config = resolve_config_path(config);
+                import_device_keys(&config, &input, clear_allowlist, confirm)?;
+            }
+        },
     }
 
     Ok(())
@@ -980,6 +1495,9 @@ fn init_config(
         user_id,
         state_path,
         data_path: None,
+        data_paths: BTreeMap::new(),
+        default_adapter: None,
+        adapters: BTreeMap::new(),
         device_keys: Some(DeviceKeysRecord::from_keys(&device_keys)),
         app_key: Some(BASE64.encode(app_key.as_bytes())),
         backup_enabled: false,
@@ -1003,12 +1521,33 @@ fn init_config(
     Ok(())
 }
 
-fn select_file(path: &Path, file: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn select_file(
+    path: &Path,
+    adapter_id: &str,
+    kind: AdapterKindConfig,
+    page_delta: Option<usize>,
+    namespace: Option<String>,
+    file: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = load_config(path)?;
-    config.data_path = Some(file.to_path_buf());
+    let file = file.to_path_buf();
+    if kind != AdapterKindConfig::Sqlite && page_delta.is_some() {
+        return Err("page-delta is only supported for sqlite adapters".into());
+    }
+    match kind {
+        AdapterKindConfig::Json => ensure_json_file(&file)?,
+        AdapterKindConfig::Sqlite => ensure_file(&file)?,
+        AdapterKindConfig::LogicalFile => ensure_logical_file(&file)?,
+    }
+    let namespace = match kind {
+        AdapterKindConfig::LogicalFile => {
+            Some(namespace.unwrap_or_else(|| config.app_id.clone()))
+        }
+        _ => None,
+    };
+    config.set_adapter_config(adapter_id, kind, file.clone(), page_delta, namespace);
     save_config(path, &config)?;
-    ensure_json_file(file)?;
-    println!("Selected file {}", file.display());
+    println!("Selected adapter {adapter_id} ({:?}): {}", kind, file.display());
     Ok(())
 }
 
@@ -1195,20 +1734,268 @@ fn restore_backup_snapshot(
     Ok(())
 }
 
+fn prune_backup_snapshots(
+    path: &Path,
+    adapter_id: &str,
+    keep: Option<usize>,
+    max_age_days: Option<u64>,
+    dry_run: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut config = load_config(path)?;
+    let backup_dir = ensure_backup_dir(path, &mut config)?;
+    if !config.backup_enabled {
+        return Err("backups are not enabled; run libresync backup configure --enable".into());
+    }
+
+    let policy = RetentionPolicy {
+        max_snapshots: keep,
+        max_age_secs: max_age_days.map(|days| days.saturating_mul(24 * 60 * 60)),
+    };
+    if policy.is_empty() {
+        return Err("prune requires --keep and/or --max-age-days".into());
+    }
+
+    let app_key = config.app_key()?;
+    let store = FileSnapshotStore::new(&backup_dir)?;
+    let manager = BackupManager::new(app_key, Arc::new(store));
+
+    let plan = manager.plan_prune(adapter_id, policy.clone())?;
+    if plan.to_delete.is_empty() {
+        println!("No snapshots to prune for adapter {}", adapter_id);
+        return Ok(());
+    }
+
+    if dry_run {
+        println!(
+            "Dry run: {} snapshot(s) would be deleted for adapter {}.",
+            plan.to_delete.len(),
+            adapter_id
+        );
+        for snapshot_id in plan.to_delete {
+            println!("  {snapshot_id}");
+        }
+        return Ok(());
+    }
+
+    let summary = manager.prune_snapshots(adapter_id, policy)?;
+    println!(
+        "Deleted {} snapshot(s); {} remaining for adapter {}.",
+        summary.deleted.len(),
+        summary.remaining,
+        adapter_id
+    );
+    for snapshot_id in summary.deleted {
+        println!("  removed {snapshot_id}");
+    }
+    Ok(())
+}
+
+fn rotate_app_key(
+    path: &Path,
+    keep_allowlist: bool,
+    confirm: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !confirm {
+        return Err("key rotation requires --confirm".into());
+    }
+
+    let mut config = load_config(path)?;
+    let old_key = config.app_key()?;
+    let new_key = AppKey::generate()?;
+
+    let state = match State::load_maybe_encrypted(&old_key, &config.state_path) {
+        Ok(state) => state,
+        Err(_) => State::new(config.device_id.clone()),
+    };
+    state.save_encrypted(&new_key, &config.state_path)?;
+
+    let mut rotated = 0usize;
+    if config.backup_enabled {
+        let backup_dir = config.backup_dir(path);
+        let store = FileSnapshotStore::new(&backup_dir)?;
+        let manager = BackupManager::new(old_key.clone(), Arc::new(store.clone()));
+        let snapshots = manager.list_snapshots(FILE_KEY)?;
+        for snapshot in snapshots {
+            let stored = store.load_snapshot(FILE_KEY, &snapshot.id)?;
+            let entries = decrypt_entries(&old_key, stored.entries)?;
+            let encrypted = encrypt_entries(&new_key, entries)?;
+            let updated = libresync::Snapshot {
+                metadata: stored.metadata,
+                entries: encrypted,
+            };
+            store.save_snapshot(&updated)?;
+            rotated += 1;
+        }
+    }
+
+    config.set_app_key(&new_key);
+    if !keep_allowlist {
+        config.devices.clear();
+    }
+    save_config(path, &config)?;
+
+    println!("Rotated app key.");
+    if rotated > 0 {
+        println!("Re-encrypted {rotated} snapshot(s).");
+    }
+    if keep_allowlist {
+        println!("Allowlist kept; re-pairing not required.");
+    } else {
+        println!("Allowlist cleared; re-pair devices before refresh.");
+    }
+
+    Ok(())
+}
+
+fn rotate_device_keys(
+    path: &Path,
+    clear_allowlist: bool,
+    confirm: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !confirm {
+        return Err("device key rotation requires --confirm".into());
+    }
+
+    let mut config = load_config(path)?;
+    let identity = config.identity();
+    let new_keys = DeviceKeys::generate(&identity)?;
+    config.device_keys = Some(DeviceKeysRecord::from_keys(&new_keys));
+    if clear_allowlist {
+        config.devices.clear();
+    }
+    save_config(path, &config)?;
+
+    println!("Rotated device keys.");
+    println!("New fingerprint: {}", new_keys.fingerprint());
+    if clear_allowlist {
+        println!("Allowlist cleared; re-pair devices before refresh.");
+    } else {
+        println!("Remote devices must re-pair to trust this fingerprint.");
+    }
+    println!("Restart listeners to apply the new keys.");
+    Ok(())
+}
+
+fn export_app_key(path: &Path, output: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let config = load_config(path)?;
+    let key = config.app_key()?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(output, BASE64.encode(key.as_bytes()))?;
+    println!("App key exported to {}", output.display());
+    Ok(())
+}
+
+fn import_app_key(
+    path: &Path,
+    input: &Path,
+    clear_allowlist: bool,
+    confirm: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !confirm {
+        return Err("app key import requires --confirm".into());
+    }
+
+    let mut config = load_config(path)?;
+    let old_key = config.app_key()?;
+    let raw = fs::read_to_string(input)?;
+    let bytes = BASE64
+        .decode(raw.trim().as_bytes())
+        .map_err(|error| format!("failed to decode app key: {error}"))?;
+    let new_key = AppKey::from_slice(&bytes)?;
+
+    let state = match State::load_maybe_encrypted(&old_key, &config.state_path) {
+        Ok(state) => state,
+        Err(_) => State::new(config.device_id.clone()),
+    };
+    state.save_encrypted(&new_key, &config.state_path)?;
+
+    let mut rotated = 0usize;
+    if config.backup_enabled {
+        let backup_dir = config.backup_dir(path);
+        let store = FileSnapshotStore::new(&backup_dir)?;
+        let manager = BackupManager::new(old_key.clone(), Arc::new(store.clone()));
+        let snapshots = manager.list_snapshots(FILE_KEY)?;
+        for snapshot in snapshots {
+            let stored = store.load_snapshot(FILE_KEY, &snapshot.id)?;
+            let entries = decrypt_entries(&old_key, stored.entries)?;
+            let encrypted = encrypt_entries(&new_key, entries)?;
+            let updated = libresync::Snapshot {
+                metadata: stored.metadata,
+                entries: encrypted,
+            };
+            store.save_snapshot(&updated)?;
+            rotated += 1;
+        }
+    }
+
+    config.set_app_key(&new_key);
+    if clear_allowlist {
+        config.devices.clear();
+    }
+    save_config(path, &config)?;
+
+    println!("Imported app key.");
+    if rotated > 0 {
+        println!("Re-encrypted {rotated} snapshot(s).");
+    }
+    if clear_allowlist {
+        println!("Allowlist cleared; re-pair devices before refresh.");
+    }
+    Ok(())
+}
+
+fn export_device_keys(path: &Path, output: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let config = load_config(path)?;
+    let record = config
+        .device_keys
+        .as_ref()
+        .ok_or("device keys missing; re-run libresync init")?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let data = serde_json::to_vec_pretty(record)?;
+    fs::write(output, data)?;
+    println!("Device keys exported to {}", output.display());
+    Ok(())
+}
+
+fn import_device_keys(
+    path: &Path,
+    input: &Path,
+    clear_allowlist: bool,
+    confirm: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !confirm {
+        return Err("device key import requires --confirm".into());
+    }
+
+    let mut config = load_config(path)?;
+    let data = fs::read(input)?;
+    let record: DeviceKeysRecord = serde_json::from_slice(&data)?;
+    let keys = record.to_keys()?;
+    config.device_keys = Some(DeviceKeysRecord::from_keys(&keys));
+    if clear_allowlist {
+        config.devices.clear();
+    }
+    save_config(path, &config)?;
+
+    println!("Imported device keys.");
+    println!("Fingerprint: {}", keys.fingerprint());
+    if clear_allowlist {
+        println!("Allowlist cleared; re-pair devices before refresh.");
+    }
+    println!("Restart listeners to apply the new keys.");
+    Ok(())
+}
+
 fn backup_adapter_for_config(
     config: &Config,
     adapter_id: &str,
-) -> Result<(Arc<JsonFileAdapter>, DataAdapterBackup), Box<dyn std::error::Error>> {
-    if adapter_id != FILE_KEY {
-        return Err("only the file adapter is supported for CLI backups".into());
-    }
-    let data_path = config
-        .data_path
-        .clone()
-        .ok_or("no file selected; run libresync select")?;
-    let adapter = Arc::new(JsonFileAdapter::new(FILE_KEY, data_path));
-    let adapter_trait: Arc<dyn DataAdapter> = adapter.clone();
-    let backup_adapter = DataAdapterBackup::new(adapter_trait);
+) -> Result<(Arc<dyn DataAdapter>, DataAdapterBackup), Box<dyn std::error::Error>> {
+    let adapter = build_adapter(adapter_id, config)?;
+    let backup_adapter = DataAdapterBackup::new(adapter.clone());
     Ok((adapter, backup_adapter))
 }
 
@@ -1351,6 +2138,23 @@ fn unpair_device(
     Ok(())
 }
 
+fn set_device_address(
+    path: &Path,
+    device_id: &str,
+    address: SocketAddr,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut config = load_config(path)?;
+    let record = config
+        .devices
+        .get_mut(device_id)
+        .ok_or_else(|| format!("device not paired: {device_id}"))?;
+    record.last_seen_addr = Some(address.to_string());
+    record.last_seen_unix_secs = Some(now_unix_secs());
+    save_config(path, &config)?;
+    println!("Stored address for {device_id}: {address}");
+    Ok(())
+}
+
 fn listen_device(
     path: &Path,
     listen: SocketAddr,
@@ -1377,16 +2181,17 @@ fn listen_device(
         handler,
     );
 
-    let adapter = {
+    let adapter_ids = {
         let cfg = config.lock().expect("config lock");
-        cfg.data_path
-            .clone()
-            .map(|path| Arc::new(JsonFileAdapter::new(FILE_KEY, path)))
+        cfg.adapter_ids()
     };
 
-    if let Some(adapter) = &adapter {
-        let adapter_trait: Arc<dyn DataAdapter> = adapter.clone();
-        engine.register_adapter(adapter_trait)?;
+    for adapter_id in &adapter_ids {
+        let adapter = {
+            let cfg = config.lock().expect("config lock");
+            build_adapter(adapter_id, &cfg)?
+        };
+        engine.register_adapter(adapter)?;
     }
 
     let listener_addr = engine.start_listening()?;
@@ -1405,12 +2210,14 @@ fn listen_device(
         running_clone.store(false, Ordering::SeqCst);
     })?;
 
-    let adapter_watch = if adapter.is_some() {
+    let mut adapter_watches = Vec::new();
+    if !adapter_ids.is_empty() {
         let state_path = config.lock().expect("config lock").state_path.clone();
-        Some(engine.watch(FILE_KEY, state_path, Duration::from_millis(250))?)
-    } else {
-        None
-    };
+        for adapter_id in &adapter_ids {
+            let watch = engine.watch(adapter_id, state_path.clone(), Duration::from_millis(250))?;
+            adapter_watches.push(watch);
+        }
+    }
 
     println!(
         "Listening on {} (device: {}, user: {})",
@@ -1432,7 +2239,7 @@ fn listen_device(
 
     let listener = engine.stop_listening();
     running.store(false, Ordering::SeqCst);
-    if let Some(watch) = adapter_watch {
+    for watch in adapter_watches {
         let _ = watch.stop();
     }
     let app_key = config.lock().expect("config lock").app_key()?;
@@ -1550,13 +2357,12 @@ fn refresh_file(
     path: &Path,
     device: Option<SocketAddr>,
     device_id: Option<String>,
+    adapter_id: Option<&str>,
+    all_adapters: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = load_config(path)?;
     let device = resolve_device_address(&config, device, device_id.as_deref())?;
-    let data_path = config
-        .data_path
-        .clone()
-        .ok_or("no file selected; run libresync select")?;
+    let adapter_ids = resolve_adapter_ids(&config, adapter_id, all_adapters)?;
 
     let device_keys = config.device_keys()?;
     let app_key = config.app_key()?;
@@ -1565,44 +2371,54 @@ fn refresh_file(
         app_id: config.app_id.clone(),
         allowed: allowed_fingerprint_map(&config),
         keys: device_keys,
-        app_key,
+        app_key: app_key.clone(),
     });
     let mut engine = Engine::new(EngineConfig::new(config.identity()), state, handler);
-    let adapter = Arc::new(JsonFileAdapter::new(FILE_KEY, data_path));
-    let adapter_trait: Arc<dyn DataAdapter> = adapter;
-    engine.register_adapter(adapter_trait)?;
 
-    let remote_device = engine.sync_now(device, FILE_KEY)?;
+    for adapter_id in &adapter_ids {
+        let adapter = build_adapter(adapter_id, &config)?;
+        engine.register_adapter(adapter)?;
+    }
+
+    let mut remote_device = None::<DeviceInfo>;
+    for adapter_id in &adapter_ids {
+        let device_info = engine.sync_now(device, adapter_id)?;
+        remote_device = Some(device_info);
+    }
 
     let state = engine.state();
-    let app_key = config.app_key()?;
     state
         .lock()
         .expect("state lock")
         .save_encrypted(&app_key, &config.state_path)?;
-    config.upsert_device(
-        &remote_device.identity,
-        Some(device),
-        remote_device.fingerprint.clone(),
-    );
+    if let Some(remote_device) = remote_device {
+        config.upsert_device(
+            &remote_device.identity,
+            Some(device),
+            remote_device.fingerprint.clone(),
+        );
+    }
     save_config(path, &config)?;
 
-    println!(
-        "Refreshed with {} ({})",
-        remote_device.identity.device_id, remote_device.identity.user_id
-    );
+    println!("Refreshed {} adapter(s) with {}", adapter_ids.len(), device);
 
     Ok(())
 }
 
-fn refresh_all(path: &Path, discover: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn refresh_all(
+    path: &Path,
+    discover: bool,
+    adapter_id: Option<&str>,
+    all_adapters: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = load_config(path)?;
     if config.devices.is_empty() {
         println!("No paired devices to refresh.");
         return Ok(());
     }
 
-    let changed = refresh_all_devices(path, &mut config, discover)?;
+    let adapter_ids = resolve_adapter_ids(&config, adapter_id, all_adapters)?;
+    let changed = refresh_all_devices(path, &mut config, discover, &adapter_ids)?;
     if changed {
         println!("Refresh complete; local file updated.");
     } else {
@@ -1624,9 +2440,28 @@ fn status(
     if let Some(keys) = config.device_keys.as_ref() {
         println!("Fingerprint: {}", keys.fingerprint);
     }
-    match &config.data_path {
-        Some(path) => println!("Selected file: {}", path.display()),
-        None => println!("Selected file: (none)"),
+    let adapter_ids = config.adapter_ids();
+    if adapter_ids.is_empty() {
+        println!("Selected adapters: (none)");
+    } else {
+        let default_id = config.default_adapter_id();
+        println!("Selected adapters:");
+        for adapter_id in adapter_ids {
+            let adapter = config.adapter_config(&adapter_id);
+            let kind = adapter
+                .as_ref()
+                .map(|config| format!("{:?}", config.kind).to_lowercase())
+                .unwrap_or_else(|| "unknown".to_string());
+            let path = adapter
+                .map(|config| config.path.display().to_string())
+                .unwrap_or_else(|| "(missing)".to_string());
+            let marker = if default_id.as_deref() == Some(adapter_id.as_str()) {
+                " (default)"
+            } else {
+                ""
+            };
+            println!("  {} ({}) : {}{}", adapter_id, kind, path, marker);
+        }
     }
     print_listener_status(path)?;
     print_backup_status(&config, path)?;
@@ -1709,6 +2544,71 @@ fn status(
     Ok(())
 }
 
+fn diagnose(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let config = load_config(path)?;
+    println!("Config: {}", path.display());
+    println!("Device ID: {}", config.device_id);
+    println!("App ID: {}", config.app_id);
+    println!("User ID: {}", config.user_id);
+
+    match config.device_keys() {
+        Ok(keys) => println!("Device keys: OK (fingerprint {})", keys.fingerprint()),
+        Err(error) => println!("Device keys: ERROR ({error})"),
+    }
+
+    match config.app_key() {
+        Ok(_) => println!("App key: OK"),
+        Err(error) => println!("App key: ERROR ({error})"),
+    }
+
+    if config.state_path.exists() {
+        match State::load_maybe_encrypted(&config.app_key()?, &config.state_path) {
+            Ok(state) => println!("State file: OK (entries {})", state.entries.len()),
+            Err(error) => println!("State file: ERROR ({error})"),
+        }
+    } else {
+        println!("State file: missing (will be created on first refresh)");
+    }
+
+    let adapter_ids = config.adapter_ids();
+    if adapter_ids.is_empty() {
+        println!("Selected adapters: (none)");
+    } else {
+        println!("Selected adapters:");
+        for adapter_id in adapter_ids {
+            let adapter = config.adapter_config(&adapter_id);
+            let kind = adapter
+                .as_ref()
+                .map(|config| format!("{:?}", config.kind).to_lowercase())
+                .unwrap_or_else(|| "unknown".to_string());
+            let path = adapter.map(|config| config.path);
+            match path {
+                Some(path) if path.exists() => {
+                    println!("  {adapter_id} ({kind}): OK ({})", path.display());
+                }
+                Some(path) => {
+                    println!("  {adapter_id} ({kind}): missing ({})", path.display());
+                }
+                None => println!("  {adapter_id} ({kind}): missing"),
+            }
+        }
+    }
+
+    println!("Backups enabled: {}", config.backup_enabled);
+    println!("Restore allowed: {}", config.backup_allow_restore);
+    if config.backup_enabled || config.backup_dir.is_some() {
+        println!("Backup dir: {}", config.backup_dir(path).display());
+    }
+
+    if config.devices.is_empty() {
+        println!("Paired devices: (none)");
+    } else {
+        println!("Paired devices: {}", config.devices.len());
+    }
+
+    Ok(())
+}
+
 fn print_backup_status(
     config: &Config,
     config_path: &Path,
@@ -1740,17 +2640,42 @@ fn print_storage_status(config: &Config) -> Result<(), Box<dyn std::error::Error
         println!("{}", format_time_label("State updated", updated));
     }
 
-    if let Some(data_path) = config.data_path.as_ref() {
-        match file_size(data_path) {
-            Some(size) => println!(
-                "Selected file size: {} ({})",
-                data_path.display(),
-                format_bytes(size)
-            ),
-            None => println!("Selected file size: {} (missing)", data_path.display()),
-        }
-        if let Some(updated) = file_modified_unix_secs(data_path) {
-            println!("{}", format_time_label("Selected file updated", updated));
+    let adapter_ids = config.adapter_ids();
+    if adapter_ids.is_empty() {
+        println!("Selected adapters: (none)");
+    } else {
+        for adapter_id in adapter_ids {
+            let adapter = config.adapter_config(&adapter_id);
+            let kind = adapter
+                .as_ref()
+                .map(|config| adapter_kind_label(config.kind).to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            if let Some(path) = adapter.map(|config| config.path) {
+                match file_size(&path) {
+                    Some(size) => println!(
+                        "Adapter {} ({}) size: {} ({})",
+                        adapter_id,
+                        kind,
+                        path.display(),
+                        format_bytes(size)
+                    ),
+                    None => println!(
+                        "Adapter {} ({}) size: {} (missing)",
+                        adapter_id,
+                        kind,
+                        path.display()
+                    ),
+                }
+                if let Some(updated) = file_modified_unix_secs(&path) {
+                    println!(
+                        "{}",
+                        format_time_label(
+                            &format!("Adapter {} ({}) updated", adapter_id, kind),
+                            updated
+                        )
+                    );
+                }
+            }
         }
     }
     Ok(())
@@ -1824,18 +2749,72 @@ fn load_config(path: &Path) -> Result<Config, Box<dyn std::error::Error>> {
         )
     })?;
 
+    let mut changed = false;
+
     if config.device_keys.is_none() {
         let identity = config.identity();
         let keys = DeviceKeys::generate(&identity)
             .map_err(|error| io::Error::new(io::ErrorKind::Other, error.to_string()))?;
         config.device_keys = Some(DeviceKeysRecord::from_keys(&keys));
-        save_config(path, &config)?;
+        changed = true;
     }
 
     if config.app_key.is_none() {
         let app_key = AppKey::generate()
             .map_err(|error| io::Error::new(io::ErrorKind::Other, error.to_string()))?;
         config.set_app_key(&app_key);
+        changed = true;
+    }
+
+    if config.adapters.is_empty() {
+        if !config.data_paths.is_empty() {
+            for (adapter_id, path) in config.data_paths.clone() {
+                config.adapters.insert(
+                    adapter_id,
+                    AdapterConfig {
+                        kind: AdapterKindConfig::Json,
+                        path,
+                        page_delta: None,
+                        namespace: None,
+                    },
+                );
+            }
+            changed = true;
+        } else if let Some(path) = config.data_path.clone() {
+            config.adapters.insert(
+                FILE_KEY.to_string(),
+                AdapterConfig {
+                    kind: AdapterKindConfig::Json,
+                    path,
+                    page_delta: None,
+                    namespace: None,
+                },
+            );
+            changed = true;
+        }
+    }
+
+    if config.data_paths.is_empty() {
+        if let Some(path) = config.data_path.clone() {
+            config.data_paths.insert(FILE_KEY.to_string(), path);
+            changed = true;
+        }
+    }
+
+    if config.default_adapter.is_none() {
+        if config.adapters.contains_key(FILE_KEY) || config.data_paths.contains_key(FILE_KEY) {
+            config.default_adapter = Some(FILE_KEY.to_string());
+            changed = true;
+        } else if let Some(first) = config.adapters.keys().next().cloned() {
+            config.default_adapter = Some(first);
+            changed = true;
+        } else if let Some(first) = config.data_paths.keys().next().cloned() {
+            config.default_adapter = Some(first);
+            changed = true;
+        }
+    }
+
+    if changed {
         save_config(path, &config)?;
     }
 
@@ -1896,6 +2875,27 @@ fn load_or_init_state(config: &Config) -> Result<State, Box<dyn std::error::Erro
     }
 }
 
+fn ensure_file(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("failed to create directory {}: {error}", parent.display()),
+            )
+        })?;
+    }
+    fs::write(path, b"").map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("failed to write file {}: {error}", path.display()),
+        )
+    })?;
+    Ok(())
+}
+
 fn ensure_json_file(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if path.exists() {
         return Ok(());
@@ -1909,6 +2909,27 @@ fn ensure_json_file(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         })?;
     }
     fs::write(path, b"{}").map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("failed to write data file {}: {error}", path.display()),
+        )
+    })?;
+    Ok(())
+}
+
+fn ensure_logical_file(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("failed to create data directory {}: {error}", parent.display()),
+            )
+        })?;
+    }
+    fs::write(path, b"[]").map_err(|error| {
         io::Error::new(
             error.kind(),
             format!("failed to write data file {}: {error}", path.display()),
@@ -1946,18 +2967,24 @@ fn resolve_device_address_with_timeout(
 
     let engine = engine_for_config(config);
     let devices = engine.discover_devices_with_timeout(timeout)?;
-    if devices.is_empty() {
-        return Err("no devices found on the LAN".into());
-    }
+    let stored_devices = stored_device_infos(config);
 
     if let Some(device_id) = device_id {
         let matched = devices
             .into_iter()
             .find(|device| device.identity.device_id == device_id)
-            .ok_or_else(|| format!("device not found: {device_id}"))?;
-        return matched
-            .address
-            .ok_or_else(|| "device address unavailable".into());
+            .and_then(|device| device.address);
+        if let Some(address) = matched {
+            return Ok(address);
+        }
+        if let Some(address) = stored_devices
+            .iter()
+            .find(|device| device.identity.device_id == device_id)
+            .and_then(|device| device.address)
+        {
+            return Ok(address);
+        }
+        return Err(format!("device not found: {device_id}").into());
     }
 
     if devices.len() == 1 {
@@ -1966,10 +2993,112 @@ fn resolve_device_address_with_timeout(
             .ok_or_else(|| "device address unavailable".into());
     }
 
+    if devices.is_empty() && !stored_devices.is_empty() {
+        if stored_devices.len() == 1 {
+            return stored_devices[0]
+                .address
+                .ok_or_else(|| "device address unavailable".into());
+        }
+        let selection = prompt_select_device(&stored_devices)?;
+        return selection
+            .address
+            .ok_or_else(|| "device address unavailable".into());
+    }
+
     let selection = prompt_select_device(&devices)?;
     selection
         .address
         .ok_or_else(|| "device address unavailable".into())
+}
+
+fn stored_device_infos(config: &Config) -> Vec<DeviceInfo> {
+    config
+        .devices
+        .values()
+        .filter_map(|record| {
+            let address = record
+                .last_seen_addr
+                .as_deref()
+                .and_then(|addr| addr.parse::<SocketAddr>().ok());
+            address.map(|address| DeviceInfo {
+                identity: Identity::new(&record.device_id, &record.app_id, &record.user_id),
+                address: Some(address),
+                last_seen: record.last_seen_unix_secs.map(|secs| {
+                    SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
+                }),
+                paired: true,
+                fingerprint: record.fingerprint.clone(),
+            })
+        })
+        .collect()
+}
+
+fn resolve_adapter_ids(
+    config: &Config,
+    adapter_id: Option<&str>,
+    all_adapters: bool,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    if all_adapters {
+        let ids = config.adapter_ids();
+        if ids.is_empty() {
+            return Err("no adapters selected; run libresync select".into());
+        }
+        return Ok(ids);
+    }
+
+    if let Some(adapter_id) = adapter_id {
+        return Ok(vec![adapter_id.to_string()]);
+    }
+
+    if let Some(default_id) = config.default_adapter_id() {
+        return Ok(vec![default_id]);
+    }
+
+    Err("no adapters selected; run libresync select".into())
+}
+
+fn adapter_config_or_err(
+    config: &Config,
+    adapter_id: &str,
+) -> Result<AdapterConfig, Box<dyn std::error::Error>> {
+    config
+        .adapter_config(adapter_id)
+        .ok_or_else(|| format!("no adapter configured for {adapter_id}").into())
+}
+
+fn adapter_kind_label(kind: AdapterKindConfig) -> &'static str {
+    match kind {
+        AdapterKindConfig::Json => "json",
+        AdapterKindConfig::Sqlite => "sqlite",
+        AdapterKindConfig::LogicalFile => "logical-file",
+    }
+}
+
+fn build_adapter(
+    adapter_id: &str,
+    config: &Config,
+) -> Result<Arc<dyn DataAdapter>, Box<dyn std::error::Error>> {
+    let adapter = adapter_config_or_err(config, adapter_id)?;
+    match adapter.kind {
+        AdapterKindConfig::Json => Ok(Arc::new(JsonFileAdapter::new(
+            adapter_id,
+            adapter.path,
+        ))),
+        AdapterKindConfig::Sqlite => {
+            let mut sqlite = SqliteFileAdapter::new(adapter_id, &adapter.path);
+            if let Some(delta) = adapter.page_delta {
+                sqlite = sqlite.with_page_delta(delta);
+            }
+            Ok(Arc::new(sqlite))
+        }
+        AdapterKindConfig::LogicalFile => {
+            let namespace = adapter
+                .namespace
+                .unwrap_or_else(|| config.app_id.clone());
+            let logical = FileLogicalAdapter::new(adapter_id, namespace, adapter.path);
+            Ok(Arc::new(LogicalAdapterWrapper::new(Arc::new(logical))))
+        }
+    }
 }
 
 fn prompt_select_device(devices: &[DeviceInfo]) -> Result<DeviceInfo, io::Error> {
@@ -2112,6 +3241,8 @@ fn format_relative_inner(secs: u64, future: bool) -> String {
 
 fn watch_file(
     path: &Path,
+    adapter_id: Option<&str>,
+    all_adapters: bool,
     listen: SocketAddr,
     interval_secs: u64,
     debounce_ms: u64,
@@ -2119,13 +3250,26 @@ fn watch_file(
     no_listen: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = load_config(path)?;
-    let data_path = config
-        .data_path
-        .clone()
-        .ok_or("no file selected; run libresync select")?;
-    ensure_json_file(&data_path)?;
+    let adapter_ids = resolve_adapter_ids(&config, adapter_id, all_adapters)?;
+    let mut watch_paths = Vec::new();
+    for adapter_id in &adapter_ids {
+        let adapter = adapter_config_or_err(&config, adapter_id)?;
+        match adapter.kind {
+            AdapterKindConfig::Json => ensure_json_file(&adapter.path)?,
+            AdapterKindConfig::Sqlite => ensure_file(&adapter.path)?,
+            AdapterKindConfig::LogicalFile => ensure_logical_file(&adapter.path)?,
+        }
+        watch_paths.push((adapter_id.clone(), adapter.path));
+    }
 
-    println!("Watching {}", data_path.display());
+    if watch_paths.len() == 1 {
+        println!("Watching {}", watch_paths[0].1.display());
+    } else {
+        println!("Watching {} adapters:", watch_paths.len());
+        for (adapter_id, path) in &watch_paths {
+            println!("  {adapter_id}: {}", path.display());
+        }
+    }
     println!(
         "Paired devices: {}",
         if config.devices.is_empty() {
@@ -2144,7 +3288,9 @@ fn watch_file(
 
     let (tx, rx) = std::sync::mpsc::channel();
     let mut watcher = RecommendedWatcher::new(tx, notify::Config::default())?;
-    watcher.watch(&data_path, RecursiveMode::NonRecursive)?;
+    for (_, path) in &watch_paths {
+        watcher.watch(path, RecursiveMode::NonRecursive)?;
+    }
 
     let running = Arc::new(AtomicBool::new(true));
     let running_clone = running.clone();
@@ -2181,7 +3327,7 @@ fn watch_file(
                 println!("Change detected at {timestamp}; refreshing paired devices.");
             }
             let refresh_result =
-                refresh_all_devices(path, &mut config, !no_discover);
+                refresh_all_devices(path, &mut config, !no_discover, &adapter_ids);
             match refresh_result {
                 Ok(changed) => {
                     if changed {
@@ -2240,6 +3386,7 @@ fn refresh_all_devices(
     path: &Path,
     config: &mut Config,
     discover: bool,
+    adapter_ids: &[String],
 ) -> Result<bool, Box<dyn std::error::Error>> {
     if config.devices.is_empty() {
         return Ok(false);
@@ -2267,7 +3414,7 @@ fn refresh_all_devices(
         let mut last_error = None::<String>;
         let mut refreshed = false;
         for addr in addresses {
-            match refresh_with_address(path, config, addr) {
+            match refresh_with_address(path, config, addr, adapter_ids) {
                 Ok(changed) => {
                     if changed {
                         any_changed = true;
@@ -2322,13 +3469,18 @@ fn refresh_with_address(
     path: &Path,
     config: &mut Config,
     device: SocketAddr,
+    adapter_ids: &[String],
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    let data_path = config
-        .data_path
-        .clone()
-        .ok_or("no file selected; run libresync select")?;
+    let mut adapter_paths = Vec::new();
+    for adapter_id in adapter_ids {
+        adapter_paths.push(adapter_config_or_err(config, adapter_id)?.path);
+    }
 
-    let before_bytes = fs::read(&data_path).unwrap_or_default();
+    let mut before_bytes = Vec::new();
+    for path in &adapter_paths {
+        before_bytes.extend(fs::read(path).unwrap_or_default());
+    }
+
     let device_keys = config.device_keys()?;
     let app_key = config.app_key()?;
     let state = load_or_init_state(config)?;
@@ -2336,28 +3488,38 @@ fn refresh_with_address(
         app_id: config.app_id.clone(),
         allowed: allowed_fingerprint_map(config),
         keys: device_keys,
-        app_key,
+        app_key: app_key.clone(),
     });
     let mut engine = Engine::new(EngineConfig::new(config.identity()), state, handler);
-    let adapter = Arc::new(JsonFileAdapter::new(FILE_KEY, data_path.clone()));
-    let adapter_trait: Arc<dyn DataAdapter> = adapter;
-    engine.register_adapter(adapter_trait)?;
+    for adapter_id in adapter_ids {
+        let adapter = build_adapter(adapter_id, config)?;
+        engine.register_adapter(adapter)?;
+    }
 
-    let remote_device = engine.sync_now(device, FILE_KEY)?;
-    let after_bytes = fs::read(&data_path).unwrap_or_default();
+    let mut remote_device = None::<DeviceInfo>;
+    for adapter_id in adapter_ids {
+        let device_info = engine.sync_now(device, adapter_id)?;
+        remote_device = Some(device_info);
+    }
+
+    let mut after_bytes = Vec::new();
+    for path in &adapter_paths {
+        after_bytes.extend(fs::read(path).unwrap_or_default());
+    }
     let changed = before_bytes != after_bytes;
 
     let state = engine.state();
-    let app_key = config.app_key()?;
     state
         .lock()
         .expect("state lock")
         .save_encrypted(&app_key, &config.state_path)?;
-    config.upsert_device(
-        &remote_device.identity,
-        Some(device),
-        remote_device.fingerprint.clone(),
-    );
+    if let Some(remote_device) = remote_device {
+        config.upsert_device(
+            &remote_device.identity,
+            Some(device),
+            remote_device.fingerprint.clone(),
+        );
+    }
     save_config(path, config)?;
     Ok(changed)
 }
@@ -2430,6 +3592,9 @@ mod tests {
             user_id: "user".to_string(),
             state_path: PathBuf::from("state.json"),
             data_path: None,
+            data_paths: BTreeMap::new(),
+            default_adapter: None,
+        adapters: BTreeMap::new(),
             device_keys: Some(device_keys),
             app_key: Some(BASE64.encode(app_key.as_bytes())),
             backup_enabled: false,
@@ -2460,6 +3625,9 @@ mod tests {
             user_id: "user".to_string(),
             state_path: PathBuf::from("state.json"),
             data_path: None,
+            data_paths: BTreeMap::new(),
+            default_adapter: None,
+        adapters: BTreeMap::new(),
             device_keys: Some(device_keys),
             app_key: Some(BASE64.encode(app_key.as_bytes())),
             backup_enabled: false,
@@ -2482,6 +3650,63 @@ mod tests {
     }
 
     #[test]
+    fn resolve_device_address_uses_stored_address() {
+        let identity = Identity::new("local-device", APP_ID_DEFAULT, "user");
+        let device_keys = DeviceKeysRecord::from_keys(
+            &DeviceKeys::generate(&identity).expect("device keys"),
+        );
+        let app_key = AppKey::generate().expect("app key");
+        let mut config = Config {
+            device_id: "local-device".to_string(),
+            app_id: APP_ID_DEFAULT.to_string(),
+            user_id: "user".to_string(),
+            state_path: PathBuf::from("state.json"),
+            data_path: None,
+            data_paths: BTreeMap::new(),
+            default_adapter: None,
+        adapters: BTreeMap::new(),
+            device_keys: Some(device_keys),
+            app_key: Some(BASE64.encode(app_key.as_bytes())),
+            backup_enabled: false,
+            backup_allow_restore: false,
+            backup_dir: None,
+            devices: BTreeMap::new(),
+        };
+        let remote_identity = Identity::new("remote-device", APP_ID_DEFAULT, "remote-user");
+        let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 60000));
+        config.upsert_device(&remote_identity, Some(addr), None);
+
+        let resolved = resolve_device_address_with_timeout(
+            &config,
+            None,
+            Some("remote-device"),
+            Duration::from_millis(1),
+        )
+        .expect("resolve");
+        assert_eq!(resolved, addr);
+    }
+
+    #[test]
+    fn set_device_address_updates_last_seen() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+
+        let mut config = load_config(&config_path).expect("load");
+        let identity = Identity::new("remote", APP_ID_DEFAULT, "remote-user");
+        config.upsert_device(&identity, None, None);
+        save_config(&config_path, &config).expect("save");
+
+        let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 52345));
+        set_device_address(&config_path, "remote", addr).expect("set address");
+
+        let updated = load_config(&config_path).expect("load");
+        let record = updated.devices.get("remote").expect("record");
+        assert_eq!(record.last_seen_addr.as_deref(), Some("127.0.0.1:52345"));
+        assert!(record.last_seen_unix_secs.unwrap_or(0) > 0);
+    }
+
+    #[test]
     fn upsert_device_sets_last_seen_fields() {
         let identity = Identity::new("local", APP_ID_DEFAULT, "user");
         let device_keys = DeviceKeysRecord::from_keys(
@@ -2494,6 +3719,9 @@ mod tests {
             user_id: "user".to_string(),
             state_path: PathBuf::from("state.json"),
             data_path: None,
+            data_paths: BTreeMap::new(),
+            default_adapter: None,
+        adapters: BTreeMap::new(),
             device_keys: Some(device_keys),
             app_key: Some(BASE64.encode(app_key.as_bytes())),
             backup_enabled: false,
@@ -2541,7 +3769,15 @@ mod tests {
         let data_path = temp.path().join("data.json");
 
         init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
-        select_file(&config_path, &data_path).expect("select");
+        select_file(
+            &config_path,
+            FILE_KEY,
+            AdapterKindConfig::Json,
+            None,
+            None,
+            &data_path,
+        )
+        .expect("select");
         configure_backups(&config_path, true, true, None).expect("configure");
         std::fs::write(&data_path, b"{\"before\":true}").expect("write");
 
@@ -2578,13 +3814,223 @@ mod tests {
     }
 
     #[test]
+    fn refresh_all_handles_no_devices() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+
+        refresh_all(&config_path, false, None, false).expect("refresh all");
+    }
+
+    #[test]
+    fn status_helpers_render_storage_and_backup_info() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        let data_path = temp.path().join("data.json");
+
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+        select_file(
+            &config_path,
+            FILE_KEY,
+            AdapterKindConfig::Json,
+            None,
+            None,
+            &data_path,
+        )
+        .expect("select");
+        configure_backups(&config_path, true, false, None).expect("configure");
+        std::fs::write(&data_path, b"{\"alpha\":1}").expect("write");
+
+        let config = load_config(&config_path).expect("load");
+        print_backup_status(&config, &config_path).expect("backup status");
+        print_storage_status(&config).expect("storage status");
+    }
+
+    #[test]
+    fn prune_backup_snapshots_dry_run() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        let data_path = temp.path().join("data.json");
+
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+        select_file(
+            &config_path,
+            FILE_KEY,
+            AdapterKindConfig::Json,
+            None,
+            None,
+            &data_path,
+        )
+        .expect("select");
+        configure_backups(&config_path, true, false, None).expect("configure");
+
+        create_backup_snapshot(&config_path, FILE_KEY, None).expect("snapshot");
+        prune_backup_snapshots(&config_path, FILE_KEY, Some(1), None, true).expect("prune");
+    }
+
+    #[test]
+    fn rotate_app_key_requires_confirm() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+
+        let result = rotate_app_key(&config_path, false, false);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rotate_app_key_clears_allowlist_by_default() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+        let mut config = load_config(&config_path).expect("load");
+        config.devices.insert(
+            "device-a".to_string(),
+            DeviceRecord {
+                device_id: "device-a".to_string(),
+                user_id: "user-a".to_string(),
+                app_id: APP_ID_DEFAULT.to_string(),
+                last_seen_addr: None,
+                last_seen_unix_secs: None,
+                fingerprint: None,
+            },
+        );
+        save_config(&config_path, &config).expect("save");
+
+        rotate_app_key(&config_path, false, true).expect("rotate");
+        let config = load_config(&config_path).expect("reload");
+        assert!(config.devices.is_empty());
+    }
+
+    #[test]
+    fn export_app_key_writes_file() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        let output = temp.path().join("app.key");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+
+        export_app_key(&config_path, &output).expect("export");
+        let raw = std::fs::read_to_string(&output).expect("read");
+        let bytes = BASE64.decode(raw.trim().as_bytes()).expect("decode");
+        let key = AppKey::from_slice(&bytes).expect("key");
+
+        let config = load_config(&config_path).expect("load");
+        assert_eq!(config.app_key().expect("app key"), key);
+    }
+
+    #[test]
+    fn import_app_key_requires_confirm() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        let input = temp.path().join("app.key");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+
+        let new_key = AppKey::generate().expect("new key");
+        std::fs::write(&input, BASE64.encode(new_key.as_bytes())).expect("write");
+
+        let result = import_app_key(&config_path, &input, false, false);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn export_device_keys_writes_file() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        let output = temp.path().join("device.keys");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+
+        export_device_keys(&config_path, &output).expect("export");
+        let data = std::fs::read(&output).expect("read");
+        let record: DeviceKeysRecord = serde_json::from_slice(&data).expect("parse");
+        assert!(!record.fingerprint.is_empty());
+    }
+
+    #[test]
+    fn import_device_keys_updates_fingerprint() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        let input = temp.path().join("device.keys");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+
+        let identity = Identity::new("device", APP_ID_DEFAULT, "user");
+        let keys = DeviceKeys::generate(&identity).expect("device keys");
+        let record = DeviceKeysRecord::from_keys(&keys);
+        let data = serde_json::to_vec_pretty(&record).expect("serialize");
+        std::fs::write(&input, data).expect("write");
+
+        import_device_keys(&config_path, &input, false, true).expect("import");
+
+        let config = load_config(&config_path).expect("load");
+        let fingerprint = config
+            .device_keys
+            .as_ref()
+            .expect("device keys")
+            .fingerprint
+            .clone();
+        assert_eq!(fingerprint, keys.fingerprint());
+    }
+
+    #[test]
+    fn rotate_device_keys_requires_confirm() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+
+        let result = rotate_device_keys(&config_path, false, false);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rotate_device_keys_updates_fingerprint() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+
+        let before = load_config(&config_path).expect("load");
+        let before_fp = before
+            .device_keys
+            .as_ref()
+            .expect("device keys")
+            .fingerprint
+            .clone();
+
+        rotate_device_keys(&config_path, false, true).expect("rotate");
+
+        let after = load_config(&config_path).expect("load");
+        let after_fp = after
+            .device_keys
+            .as_ref()
+            .expect("device keys")
+            .fingerprint
+            .clone();
+        assert_ne!(before_fp, after_fp);
+    }
+
+    #[test]
+    fn diagnose_runs() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+
+        diagnose(&config_path).expect("diagnose");
+    }
+
+    #[test]
     fn backup_restore_requires_allow_restore() {
         let temp = tempdir().expect("tempdir");
         let config_path = temp.path().join("config.json");
         let data_path = temp.path().join("data.json");
 
         init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
-        select_file(&config_path, &data_path).expect("select");
+        select_file(
+            &config_path,
+            FILE_KEY,
+            AdapterKindConfig::Json,
+            None,
+            None,
+            &data_path,
+        )
+        .expect("select");
         configure_backups(&config_path, true, false, None).expect("configure");
 
         let result = restore_backup_snapshot(
@@ -2604,7 +4050,15 @@ mod tests {
         let data_path = temp.path().join("data.json");
 
         init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
-        select_file(&config_path, &data_path).expect("select");
+        select_file(
+            &config_path,
+            FILE_KEY,
+            AdapterKindConfig::Json,
+            None,
+            None,
+            &data_path,
+        )
+        .expect("select");
         configure_backups(&config_path, true, true, None).expect("configure");
 
         let result = restore_backup_snapshot(&config_path, FILE_KEY, "missing", true, None);
@@ -2642,6 +4096,9 @@ mod tests {
             user_id: "user".to_string(),
             state_path: temp.path().join("state.json"),
             data_path: None,
+            data_paths: BTreeMap::new(),
+            default_adapter: None,
+        adapters: BTreeMap::new(),
             device_keys: None,
             app_key: None,
             backup_enabled: false,
@@ -2664,6 +4121,9 @@ mod tests {
             user_id: "user".to_string(),
             state_path: PathBuf::from("state.json"),
             data_path: None,
+            data_paths: BTreeMap::new(),
+            default_adapter: None,
+        adapters: BTreeMap::new(),
             device_keys: None,
             app_key: None,
             backup_enabled: false,
@@ -2682,6 +4142,9 @@ mod tests {
             user_id: "user".to_string(),
             state_path: PathBuf::from("state.json"),
             data_path: None,
+            data_paths: BTreeMap::new(),
+            default_adapter: None,
+        adapters: BTreeMap::new(),
             device_keys: None,
             app_key: None,
             backup_enabled: false,
@@ -2770,6 +4233,9 @@ mod tests {
             user_id: "user".to_string(),
             state_path: PathBuf::from("state.json"),
             data_path: None,
+            data_paths: BTreeMap::new(),
+            default_adapter: None,
+        adapters: BTreeMap::new(),
             device_keys: Some(device_keys),
             app_key: Some(BASE64.encode(app_key.as_bytes())),
             backup_enabled: false,
@@ -2873,6 +4339,10 @@ mod tests {
             verbose: false,
             command: Commands::Select {
                 config: Some(config_path.clone()),
+                id: FILE_KEY.to_string(),
+                kind: AdapterKindArg::Json,
+                page_delta: None,
+                namespace: None,
                 file: data_path.clone(),
             },
         })
@@ -2922,6 +4392,10 @@ mod tests {
             verbose: false,
             command: Commands::Select {
                 config: Some(config_path.clone()),
+                id: FILE_KEY.to_string(),
+                kind: AdapterKindArg::Json,
+                page_delta: None,
+                namespace: None,
                 file: data_path,
             },
         })
@@ -3003,6 +4477,9 @@ mod tests {
             user_id: "user".to_string(),
             state_path: PathBuf::from("state.json"),
             data_path: None,
+            data_paths: BTreeMap::new(),
+            default_adapter: None,
+        adapters: BTreeMap::new(),
             device_keys: Some(device_keys),
             app_key: Some(BASE64.encode(app_key.as_bytes())),
             backup_enabled: false,
@@ -3106,6 +4583,9 @@ mod tests {
             user_id: "user".to_string(),
             state_path: temp.path().join("state.json"),
             data_path: None,
+            data_paths: BTreeMap::new(),
+            default_adapter: None,
+        adapters: BTreeMap::new(),
             device_keys: None,
             app_key: None,
             backup_enabled: false,
@@ -3124,8 +4604,35 @@ mod tests {
         let config_path = temp.path().join("config.json");
         let data_path = temp.path().join("data.json");
         init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
-        select_file(&config_path, &data_path).expect("select");
+        select_file(
+            &config_path,
+            FILE_KEY,
+            AdapterKindConfig::Json,
+            None,
+            None,
+            &data_path,
+        )
+        .expect("select");
         assert!(data_path.exists());
+    }
+
+    #[test]
+    fn select_file_creates_logical_file() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        let data_path = temp.path().join("records.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+        select_file(
+            &config_path,
+            "records",
+            AdapterKindConfig::LogicalFile,
+            None,
+            None,
+            &data_path,
+        )
+        .expect("select");
+        let contents = std::fs::read_to_string(&data_path).expect("read");
+        assert_eq!(contents.trim(), "[]");
     }
 
     #[test]
@@ -3155,7 +4662,15 @@ mod tests {
         let config_path = temp.path().join("config.json");
         let data_path = temp.path().join("data.json");
         init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
-        select_file(&config_path, &data_path).expect("select");
+        select_file(
+            &config_path,
+            FILE_KEY,
+            AdapterKindConfig::Json,
+            None,
+            None,
+            &data_path,
+        )
+        .expect("select");
 
         let result = create_backup_snapshot(&config_path, FILE_KEY, None);
         assert!(result.is_err());
@@ -3214,7 +4729,12 @@ mod tests {
         let mut config = load_config(&config_path).expect("load");
 
         let addr: SocketAddr = "127.0.0.1:1".parse().expect("addr");
-        let result = refresh_with_address(&config_path, &mut config, addr);
+        let result = refresh_with_address(
+            &config_path,
+            &mut config,
+            addr,
+            &[FILE_KEY.to_string()],
+        );
         assert!(result.is_err());
     }
 
@@ -3224,7 +4744,15 @@ mod tests {
         let config_path = temp.path().join("config.json");
         let data_path = temp.path().join("data.json");
         init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
-        select_file(&config_path, &data_path).expect("select");
+        select_file(
+            &config_path,
+            FILE_KEY,
+            AdapterKindConfig::Json,
+            None,
+            None,
+            &data_path,
+        )
+        .expect("select");
 
         let mut config = load_config(&config_path).expect("load");
         config.devices.insert(
@@ -3239,7 +4767,9 @@ mod tests {
             },
         );
 
-        let changed = refresh_all_devices(&config_path, &mut config, false).expect("refresh");
+        let changed =
+            refresh_all_devices(&config_path, &mut config, false, &[FILE_KEY.to_string()])
+                .expect("refresh");
         assert!(!changed);
     }
 

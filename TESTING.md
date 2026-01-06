@@ -37,6 +37,11 @@ libresync select --file ~/libresync-data.json
 
 If the file does not exist, LibreSync creates it with `{}`.
 
+Optional: add more than one file (each with its own adapter ID):
+```
+libresync select --id settings --file ~/libresync-settings.json
+```
+
 ## 3) Start listeners on both devices
 On **Device A**:
 ```
@@ -86,6 +91,11 @@ On either device:
 libresync refresh
 ```
 
+To refresh all selected adapters:
+```
+libresync refresh --all-adapters
+```
+
 You’ll be prompted to select a device if more than one is discovered. Refresh exchanges the JSON file and applies last‑writer‑wins logic.
 
 ## 7) (Optional) Run watch for real-time updates
@@ -127,5 +137,5 @@ libresync status
 ## Notes
 - Discovery is unauthenticated and only used to find devices.
 - Pairing is required before refresh.
-- The current MVP uses identity strings only; crypto/auth will be added later.
+- E2EE is enforced by the engine; state files and backups are encrypted at rest.
 - Config defaults to the OS config directory; pass `--config` to override.

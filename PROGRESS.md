@@ -1,7 +1,16 @@
 # Progress log
 
 ## Summary
-LibreSync has a working device-to-device MVP for two CLI instances on a LAN. Devices can discover each other, pair with consent, and refresh a single JSON file with deterministic conflict resolution.
+LibreSync has a working device-to-device MVP for two CLI instances on a LAN. Devices can discover each other, pair with consent, and refresh JSON or SQLite adapters with deterministic conflict resolution.
+
+## Status snapshot
+- Core sync engine: strong (pairing, discovery, refresh, auto-refresh, event stream).
+- Security/E2EE: strong (app key encryption, key export/import/rotation).
+- File adapters (JSON/SQLite/WAL/SHM): strong (page-delta optional, solid tests).
+- Logical records (mergeable state): moderate (schema and merges exist; still early for real apps).
+- SDK bindings (Swift/Kotlin): early (scaffolding exists; not production-ready).
+- Always-on desktop device: MVP (UI and snapshots present; needs always-on UX).
+- DX/UX docs + examples: good (docs are coherent; sample apps are limited).
 
 ## Completed
 - Rust workspace with core library and CLI.
@@ -28,34 +37,55 @@ LibreSync has a working device-to-device MVP for two CLI instances on a LAN. Dev
 - SQLite sync now includes WAL/SHM sidecar data alongside snapshots.
 - SQLite adapter supports optional page-delta encoding to reduce payload size.
 - In-memory logical adapter added for record-level merges and policy testing.
+- File-backed logical adapter added for JSON record persistence.
+- Logical record schema and merge policy documentation added.
+- Logical record compaction policy added with tombstone pruning.
+- Counter/list merge semantics hardened for idempotent state-based sync.
 - LibreSyncAlwaysOn planning docs added (always-on desktop device).
 - LibreSyncAlwaysOn now includes status dashboard, manual refresh, and snapshot controls.
+- LibreSyncAlwaysOn can now create snapshots from the UI and stores last-seen device addresses.
 - SDK surface document added for Swift/Kotlin bindings.
-- Expanded unit test coverage (75%+) and bumped version to 0.1.5.
+- Expanded unit tests and bumped version to 0.1.5.
+- SQLite WAL/SHM integration tests added (real SQLite files).
+- Backup retention planning and CLI pruning support added.
+- CLI refresh-all and richer status output added.
+- CLI diagnostics and app-key rotation added.
+- CLI device-key rotation and manual address override added.
+- CLI supports multiple JSON adapters with per-adapter selection.
+- CLI adapter registry now supports JSON and SQLite adapters.
+- CLI adapter registry now supports logical record files.
+- App/device key export/import flows added to the CLI.
+- Auto-refresh now supports fallback addresses when discovery is unavailable.
+- E2EE lifecycle and threat model docs expanded.
+- API stability, quickstart, and debugging docs added.
+- FFI crate added with Swift/Kotlin starter bindings and samples.
+- SQLite logical mapping added with sidecar metadata for existing tables.
+- Swift/Kotlin binding docs now cover Local Network permissions and secure key storage.
+- LibreSyncAlwaysOn now supports system tray show/hide and trust UI (pairing + fingerprints).
+- Frankly demo now uses SQLite logical mapping for record-level sync.
+- Swift/Kotlin samples now default to logical record adapters.
 
 ## Current MVP behavior
 - Two devices on the same LAN can run `libresync`.
 - Devices auto-discover via mDNS and can be selected interactively.
 - Pairing requires consent on both devices and adds to the allowlist.
-- Sync exchanges a single JSON file and applies last-writer-wins via Lamport clocks.
+- Sync exchanges selected JSON or SQLite adapters and applies last-writer-wins via Lamport clocks.
 
 ## Known gaps
-- Device keys are self-signed and stored locally; no rotation/revocation or shared trust roots yet.
+- Device keys are self-signed and stored locally; rotation is CLI-only and needs SDK UX for verification.
 - Pairing uses fingerprint allowlisting (TOFU) without out-of-band verification prompts.
-- Single-file refresh only (one JSON file mapped to the `file` key).
-- No logical record adapter implementations shipped yet (scaffolding only).
-- SQLite WAL/SHM is synced as files; page-delta merge logic is still needed.
-- Background auto-refresh is polling-based and relies on mDNS discovery.
-- No always-on desktop device implementation yet (LibreSyncAlwaysOn app still pending).
+- Logical record sync is now the preferred path but still early for production apps.
+- SQLite logical mapping is available but still evolving for complex schemas.
+- Background auto-refresh is polling-based; discovery is mDNS-first with manual fallback addresses.
+- LibreSyncAlwaysOn still needs true OS-level daemon/service behavior.
+- Coverage is below the 75% target in several modules.
 
 ## Next steps
-- Ship logical record sync (mergeable/CRDT-ish) as the primary adapter path.
-- Add adapter capabilities for snapshot + delta + watch.
-- Implement SQLite page-delta merge logic on top of WAL.
-- Extend E2EE with key rotation and re-keying flows.
-- Plan FFI boundary + Swift/Kotlin wrapper approach for cross-platform adapters.
-- Build LibreSyncAlwaysOn (LAN-only, Rust + Tauri) as an always-on device.
-- Add key rotation/export, fingerprint display UX, and re-pairing flows.
+- Ship logical record sync as the default integration path in SDK samples.
+- Extend SQLite logical mapping with richer type/merge policy configs.
+- Build platform key storage integrations for SDK wrappers (not just helpers).
+- Implement true OS-level daemon/service behavior for LibreSyncAlwaysOn.
+- Add DB-backed logical adapters (SwiftData/Kotlin storage).
 
 ## Tests
 - `cargo test` covers core and CLI behavior.

@@ -1,0 +1,887 @@
+use std::collections::HashMap;
+use std::ffi::{CStr, CString};
+use std::os::raw::{c_char, c_uchar};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::net::SocketAddr;
+
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine as _;
+use libresync::{
+    AppKey, BackupManager, DataAdapterBackup, DeviceHandler, DeviceKeys, Engine, EngineConfig,
+    FileLogicalAdapter, FileSnapshotStore, Identity, JsonFileAdapter, RetentionPolicy,
+    SqliteFileAdapter, State,
+};
+use serde::{Deserialize, Serialize};
+
+const ABI_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, Deserialize)]
+struct FfiAllowlistEntry {
+    device_id: String,
+    fingerprint: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct FfiConfig {
+    device_id: String,
+    app_id: String,
+    user_id: String,
+    listen_addr: Option<String>,
+    app_key: String,
+    device_cert_der: String,
+    device_key_der: String,
+    #[serde(default)]
+    allowlist: Vec<FfiAllowlistEntry>,
+    #[serde(default)]
+    auto_accept: bool,
+}
+
+#[derive(Debug)]
+struct FfiHandler {
+    app_id: String,
+    app_key: Mutex<AppKey>,
+    device_keys: DeviceKeys,
+    allowlist: Mutex<HashMap<String, String>>,
+    auto_accept: AtomicBool,
+}
+
+impl DeviceHandler for FfiHandler {
+    fn app_id(&self) -> &str {
+        &self.app_id
+    }
+
+    fn is_paired(&self, identity: &Identity) -> bool {
+        self.allowlist
+            .lock()
+            .ok()
+            .map(|map| map.contains_key(&identity.device_id))
+            .unwrap_or(false)
+    }
+
+    fn approve_pair(&self, _identity: &Identity) -> libresync::Result<bool> {
+        Ok(self.auto_accept.load(Ordering::SeqCst))
+    }
+
+    fn app_key(&self) -> libresync::Result<AppKey> {
+        self.app_key
+            .lock()
+            .map(|key| key.clone())
+            .map_err(|_| libresync::Error::Protocol("app key lock poisoned".to_string()))
+    }
+
+    fn set_app_key(&self, app_key: &AppKey) -> libresync::Result<()> {
+        let mut guard = self
+            .app_key
+            .lock()
+            .map_err(|_| libresync::Error::Protocol("app key lock poisoned".to_string()))?;
+        *guard = app_key.clone();
+        Ok(())
+    }
+
+    fn device_keys(&self) -> libresync::Result<DeviceKeys> {
+        Ok(self.device_keys.clone())
+    }
+
+    fn is_paired_with_fingerprint(&self, identity: &Identity, fingerprint: &str) -> bool {
+        self.allowlist
+            .lock()
+            .ok()
+            .and_then(|map| map.get(&identity.device_id).cloned())
+            .map(|stored| stored == fingerprint)
+            .unwrap_or(false)
+    }
+
+    fn approve_pair_with_fingerprint(
+        &self,
+        _identity: &Identity,
+        _fingerprint: &str,
+    ) -> libresync::Result<bool> {
+        Ok(self.auto_accept.load(Ordering::SeqCst))
+    }
+}
+
+#[repr(C)]
+pub struct EngineHandle {
+    engine: Mutex<Engine>,
+    handler: Arc<FfiHandler>,
+    state_path: PathBuf,
+}
+
+#[derive(Serialize)]
+struct FfiDeviceInfo {
+    device_id: String,
+    user_id: String,
+    app_id: String,
+    address: Option<String>,
+    paired: bool,
+}
+
+#[derive(Serialize)]
+struct FfiDiffCounts {
+    new_entries: usize,
+    changed_entries: usize,
+    unchanged_entries: usize,
+    missing_entries: usize,
+}
+
+#[derive(Serialize)]
+struct FfiSnapshotSummary {
+    total_snapshot_entries: usize,
+    total_state_entries: usize,
+    overall: FfiDiffCounts,
+    by_group: HashMap<String, FfiDiffCounts>,
+}
+
+fn diff_counts_to_ffi(counts: libresync::DiffCounts) -> FfiDiffCounts {
+    FfiDiffCounts {
+        new_entries: counts.new_entries,
+        changed_entries: counts.changed_entries,
+        unchanged_entries: counts.unchanged_entries,
+        missing_entries: counts.missing_entries,
+    }
+}
+
+static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
+fn set_last_error(message: impl Into<String>) {
+    if let Ok(mut guard) = LAST_ERROR.lock() {
+        *guard = Some(message.into());
+    }
+}
+
+fn clear_last_error() {
+    if let Ok(mut guard) = LAST_ERROR.lock() {
+        *guard = None;
+    }
+}
+
+fn cstr_to_string(ptr: *const c_char) -> Result<String, String> {
+    if ptr.is_null() {
+        return Err("null pointer".to_string());
+    }
+    let cstr = unsafe { CStr::from_ptr(ptr) };
+    cstr.to_str()
+        .map(|value| value.to_string())
+        .map_err(|error| error.to_string())
+}
+
+fn build_engine(config: FfiConfig, state_path: PathBuf) -> Result<EngineHandle, String> {
+    let app_key_bytes = BASE64
+        .decode(config.app_key.as_bytes())
+        .map_err(|error| error.to_string())?;
+    let app_key = AppKey::from_slice(&app_key_bytes).map_err(|error| error.to_string())?;
+
+    let cert_der = BASE64
+        .decode(config.device_cert_der.as_bytes())
+        .map_err(|error| error.to_string())?;
+    let key_der = BASE64
+        .decode(config.device_key_der.as_bytes())
+        .map_err(|error| error.to_string())?;
+    let device_keys = DeviceKeys::from_der(cert_der, key_der).map_err(|error| error.to_string())?;
+
+    let allowlist = config
+        .allowlist
+        .into_iter()
+        .map(|entry| (entry.device_id, entry.fingerprint))
+        .collect::<HashMap<_, _>>();
+
+    let handler = Arc::new(FfiHandler {
+        app_id: config.app_id.clone(),
+        app_key: Mutex::new(app_key.clone()),
+        device_keys,
+        allowlist: Mutex::new(allowlist),
+        auto_accept: AtomicBool::new(config.auto_accept),
+    });
+
+    let identity = Identity::new(&config.device_id, &config.app_id, &config.user_id);
+    let mut engine_config = EngineConfig::new(identity);
+    if let Some(listen_addr) = config.listen_addr {
+        let addr = listen_addr
+            .parse::<SocketAddr>()
+            .map_err(|error| error.to_string())?;
+        engine_config = engine_config.with_listen_addr(addr);
+    }
+
+    let state = if state_path.exists() {
+        State::load_maybe_encrypted(&app_key, &state_path).unwrap_or_else(|_| {
+            State::new(config.device_id.clone())
+        })
+    } else {
+        State::new(config.device_id.clone())
+    };
+
+    let engine = Engine::new(engine_config, state, handler.clone());
+    Ok(EngineHandle {
+        engine: Mutex::new(engine),
+        handler,
+        state_path,
+    })
+}
+
+fn with_engine<F>(handle: *mut EngineHandle, f: F) -> bool
+where
+    F: FnOnce(&mut EngineHandle) -> Result<(), String>,
+{
+    clear_last_error();
+    if handle.is_null() {
+        set_last_error("engine handle is null");
+        return false;
+    }
+    let handle = unsafe { &mut *handle };
+    if let Err(error) = f(handle) {
+        set_last_error(error);
+        return false;
+    }
+    true
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_abi_version() -> u32 {
+    ABI_VERSION
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_last_error() -> *mut c_char {
+    if let Ok(mut guard) = LAST_ERROR.lock() {
+        if let Some(message) = guard.take() {
+            if let Ok(cstr) = CString::new(message) {
+                return cstr.into_raw();
+            }
+        }
+    }
+    std::ptr::null_mut()
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_string_free(ptr: *mut c_char) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        let _ = CString::from_raw(ptr);
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_engine_create(
+    config_json: *const c_char,
+    state_path: *const c_char,
+) -> *mut EngineHandle {
+    clear_last_error();
+    let config_json = match cstr_to_string(config_json) {
+        Ok(value) => value,
+        Err(error) => {
+            set_last_error(error);
+            return std::ptr::null_mut();
+        }
+    };
+    let state_path = match cstr_to_string(state_path) {
+        Ok(value) => value,
+        Err(error) => {
+            set_last_error(error);
+            return std::ptr::null_mut();
+        }
+    };
+
+    let config: FfiConfig = match serde_json::from_str(&config_json) {
+        Ok(value) => value,
+        Err(error) => {
+            set_last_error(error.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+
+    match build_engine(config, PathBuf::from(state_path)) {
+        Ok(handle) => Box::into_raw(Box::new(handle)),
+        Err(error) => {
+            set_last_error(error);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_engine_free(handle: *mut EngineHandle) {
+    if handle.is_null() {
+        return;
+    }
+    unsafe {
+        let _ = Box::from_raw(handle);
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_engine_set_auto_accept(
+    handle: *mut EngineHandle,
+    enabled: bool,
+) -> bool {
+    with_engine(handle, |handle| {
+        handle.handler.auto_accept.store(enabled, Ordering::SeqCst);
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_engine_register_json_adapter(
+    handle: *mut EngineHandle,
+    adapter_id: *const c_char,
+    path: *const c_char,
+) -> bool {
+    with_engine(handle, |handle| {
+        let adapter_id = cstr_to_string(adapter_id)?;
+        let path = cstr_to_string(path)?;
+        let adapter = JsonFileAdapter::new(adapter_id, path);
+        let mut engine = handle.engine.lock().map_err(|_| "engine lock".to_string())?;
+        engine
+            .register_adapter(Arc::new(adapter))
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_engine_register_logical_file_adapter(
+    handle: *mut EngineHandle,
+    adapter_id: *const c_char,
+    namespace: *const c_char,
+    path: *const c_char,
+) -> bool {
+    with_engine(handle, |handle| {
+        let adapter_id = cstr_to_string(adapter_id)?;
+        let namespace = cstr_to_string(namespace)?;
+        let path = cstr_to_string(path)?;
+        let adapter = FileLogicalAdapter::new(adapter_id, namespace, path);
+        let mut engine = handle.engine.lock().map_err(|_| "engine lock".to_string())?;
+        engine
+            .register_logical_adapter(Arc::new(adapter))
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_engine_register_sqlite_adapter(
+    handle: *mut EngineHandle,
+    adapter_id: *const c_char,
+    path: *const c_char,
+    page_delta: usize,
+) -> bool {
+    with_engine(handle, |handle| {
+        let adapter_id = cstr_to_string(adapter_id)?;
+        let path = cstr_to_string(path)?;
+        let adapter = if page_delta > 0 {
+            SqliteFileAdapter::new(adapter_id, path).with_page_delta(page_delta)
+        } else {
+            SqliteFileAdapter::new(adapter_id, path)
+        };
+        let mut engine = handle.engine.lock().map_err(|_| "engine lock".to_string())?;
+        engine
+            .register_adapter(Arc::new(adapter))
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_engine_start_listening(handle: *mut EngineHandle) -> bool {
+    with_engine(handle, |handle| {
+        let mut engine = handle.engine.lock().map_err(|_| "engine lock".to_string())?;
+        engine.start_listening().map_err(|error| error.to_string())?;
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_engine_stop_listening(handle: *mut EngineHandle) -> bool {
+    with_engine(handle, |handle| {
+        let mut engine = handle.engine.lock().map_err(|_| "engine lock".to_string())?;
+        engine.stop_listening().map_err(|error| error.to_string())?;
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_engine_discover(
+    handle: *mut EngineHandle,
+    timeout_ms: u64,
+) -> *mut c_char {
+    clear_last_error();
+    if handle.is_null() {
+        set_last_error("engine handle is null");
+        return std::ptr::null_mut();
+    }
+    let handle = unsafe { &mut *handle };
+    let engine = match handle.engine.lock() {
+        Ok(engine) => engine,
+        Err(_) => {
+            set_last_error("engine lock".to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    let devices = match engine.discover_devices_with_timeout(std::time::Duration::from_millis(timeout_ms)) {
+        Ok(devices) => devices,
+        Err(error) => {
+            set_last_error(error.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    let info = devices
+        .into_iter()
+        .map(|device| FfiDeviceInfo {
+            device_id: device.identity.device_id,
+            user_id: device.identity.user_id,
+            app_id: device.identity.app_id,
+            address: device.address.map(|addr| addr.to_string()),
+            paired: device.paired,
+        })
+        .collect::<Vec<_>>();
+    let json = match serde_json::to_string(&info) {
+        Ok(json) => json,
+        Err(error) => {
+            set_last_error(error.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    CString::new(json).map(|cstr| cstr.into_raw()).unwrap_or_else(|_| std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_allowlist_add(
+    handle: *mut EngineHandle,
+    device_id: *const c_char,
+    fingerprint: *const c_char,
+) -> bool {
+    with_engine(handle, |handle| {
+        let device_id = cstr_to_string(device_id)?;
+        let fingerprint = cstr_to_string(fingerprint)?;
+        let mut map = handle
+            .handler
+            .allowlist
+            .lock()
+            .map_err(|_| "allowlist lock".to_string())?;
+        map.insert(device_id, fingerprint);
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_allowlist_clear(handle: *mut EngineHandle) -> bool {
+    with_engine(handle, |handle| {
+        let mut map = handle
+            .handler
+            .allowlist
+            .lock()
+            .map_err(|_| "allowlist lock".to_string())?;
+        map.clear();
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_engine_pair(
+    handle: *mut EngineHandle,
+    address: *const c_char,
+) -> *mut c_char {
+    clear_last_error();
+    if handle.is_null() {
+        set_last_error("engine handle is null");
+        return std::ptr::null_mut();
+    }
+    let handle = unsafe { &mut *handle };
+    let address = match cstr_to_string(address) {
+        Ok(value) => value,
+        Err(error) => {
+            set_last_error(error);
+            return std::ptr::null_mut();
+        }
+    };
+    let addr = match address.parse::<SocketAddr>() {
+        Ok(addr) => addr,
+        Err(error) => {
+            set_last_error(error.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    let engine = match handle.engine.lock() {
+        Ok(engine) => engine,
+        Err(_) => {
+            set_last_error("engine lock".to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    let device = match engine.request_pair(addr) {
+        Ok(device) => device,
+        Err(error) => {
+            set_last_error(error.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    if let Some(fingerprint) = device.fingerprint.clone() {
+        if let Ok(mut map) = handle.handler.allowlist.lock() {
+            map.insert(device.identity.device_id.clone(), fingerprint);
+        }
+    }
+    let info = FfiDeviceInfo {
+        device_id: device.identity.device_id,
+        user_id: device.identity.user_id,
+        app_id: device.identity.app_id,
+        address: device.address.map(|addr| addr.to_string()),
+        paired: device.paired,
+    };
+    let json = match serde_json::to_string(&info) {
+        Ok(json) => json,
+        Err(error) => {
+            set_last_error(error.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    CString::new(json).map(|cstr| cstr.into_raw()).unwrap_or_else(|_| std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_engine_sync_now(
+    handle: *mut EngineHandle,
+    address: *const c_char,
+    adapter_id: *const c_char,
+) -> bool {
+    with_engine(handle, |handle| {
+        let address = cstr_to_string(address)?;
+        let adapter_id = cstr_to_string(adapter_id)?;
+        let addr = address
+            .parse::<SocketAddr>()
+            .map_err(|error| error.to_string())?;
+    let engine = handle.engine.lock().map_err(|_| "engine lock".to_string())?;
+        let device = engine
+            .sync_now(addr, &adapter_id)
+            .map_err(|error| error.to_string())?;
+        if let Some(fingerprint) = device.fingerprint.clone() {
+            let mut map = handle
+                .handler
+                .allowlist
+                .lock()
+                .map_err(|_| "allowlist lock".to_string())?;
+            map.insert(device.identity.device_id, fingerprint);
+        }
+        let app_key = handle
+            .handler
+            .app_key()
+            .map_err(|error| error.to_string())?;
+        let state = engine.state();
+        state
+            .lock()
+            .map_err(|_| "state lock".to_string())?
+            .save_encrypted(&app_key, &handle.state_path)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_engine_save_state(handle: *mut EngineHandle) -> bool {
+    with_engine(handle, |handle| {
+        let app_key = handle
+            .handler
+            .app_key()
+            .map_err(|error| error.to_string())?;
+        let engine = handle.engine.lock().map_err(|_| "engine lock".to_string())?;
+        let state = engine.state();
+        state
+            .lock()
+            .map_err(|_| "state lock".to_string())?
+            .save_encrypted(&app_key, &handle.state_path)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_backup_prune(
+    handle: *mut EngineHandle,
+    adapter_id: *const c_char,
+    max_snapshots: usize,
+    max_age_days: u64,
+) -> bool {
+    with_engine(handle, |handle| {
+        let adapter_id = cstr_to_string(adapter_id)?;
+        let app_key = handle
+            .handler
+            .app_key()
+            .map_err(|error| error.to_string())?;
+        let backup_dir = handle.state_path.parent().unwrap_or_else(|| std::path::Path::new(".")).join("backups");
+        let store = FileSnapshotStore::new(&backup_dir).map_err(|error| error.to_string())?;
+        let manager = BackupManager::new(app_key, Arc::new(store));
+        let policy = RetentionPolicy {
+            max_snapshots: if max_snapshots == 0 { None } else { Some(max_snapshots) },
+            max_age_secs: if max_age_days == 0 { None } else { Some(max_age_days.saturating_mul(24 * 60 * 60)) },
+        };
+        manager.prune_snapshots(&adapter_id, policy).map_err(|error| error.to_string())?;
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_backup_snapshot(
+    handle: *mut EngineHandle,
+    adapter_id: *const c_char,
+    note: *const c_char,
+) -> *mut c_char {
+    clear_last_error();
+    if handle.is_null() {
+        set_last_error("engine handle is null");
+        return std::ptr::null_mut();
+    }
+    let handle = unsafe { &mut *handle };
+    let adapter_id = match cstr_to_string(adapter_id) {
+        Ok(value) => value,
+        Err(error) => {
+            set_last_error(error);
+            return std::ptr::null_mut();
+        }
+    };
+    let note = if note.is_null() {
+        None
+    } else {
+        Some(cstr_to_string(note).unwrap_or_default())
+    };
+
+    let app_key = match handle.handler.app_key() {
+        Ok(key) => key,
+        Err(error) => {
+            set_last_error(error.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    let backup_dir = handle.state_path.parent().unwrap_or_else(|| std::path::Path::new(".")).join("backups");
+    let store = match FileSnapshotStore::new(&backup_dir) {
+        Ok(store) => store,
+        Err(error) => {
+            set_last_error(error.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    let manager = BackupManager::new(app_key, Arc::new(store));
+    let engine = match handle.engine.lock() {
+        Ok(engine) => engine,
+        Err(_) => {
+            set_last_error("engine lock".to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    let adapter = match engine.adapter(&adapter_id) {
+        Some(adapter) => adapter,
+        None => {
+            set_last_error("adapter not found".to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    let adapter = DataAdapterBackup::new(adapter);
+    let state = engine.state();
+    let state = match state.lock() {
+        Ok(state) => state,
+        Err(_) => {
+            set_last_error("state lock".to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    let metadata = match manager.create_snapshot(&adapter, &state, note) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            set_last_error(error.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    let json = match serde_json::to_string(&metadata) {
+        Ok(json) => json,
+        Err(error) => {
+            set_last_error(error.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    CString::new(json).map(|cstr| cstr.into_raw()).unwrap_or_else(|_| std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_backup_list(
+    handle: *mut EngineHandle,
+    adapter_id: *const c_char,
+) -> *mut c_char {
+    clear_last_error();
+    if handle.is_null() {
+        set_last_error("engine handle is null");
+        return std::ptr::null_mut();
+    }
+    let handle = unsafe { &mut *handle };
+    let adapter_id = match cstr_to_string(adapter_id) {
+        Ok(value) => value,
+        Err(error) => {
+            set_last_error(error);
+            return std::ptr::null_mut();
+        }
+    };
+
+    let app_key = match handle.handler.app_key() {
+        Ok(key) => key,
+        Err(error) => {
+            set_last_error(error.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    let backup_dir = handle.state_path.parent().unwrap_or_else(|| std::path::Path::new(".")).join("backups");
+    let store = match FileSnapshotStore::new(&backup_dir) {
+        Ok(store) => store,
+        Err(error) => {
+            set_last_error(error.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    let manager = BackupManager::new(app_key, Arc::new(store));
+    let snapshots = match manager.list_snapshots(&adapter_id) {
+        Ok(snapshots) => snapshots,
+        Err(error) => {
+            set_last_error(error.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    let json = match serde_json::to_string(&snapshots) {
+        Ok(json) => json,
+        Err(error) => {
+            set_last_error(error.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    CString::new(json).map(|cstr| cstr.into_raw()).unwrap_or_else(|_| std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_backup_preview(
+    handle: *mut EngineHandle,
+    adapter_id: *const c_char,
+    snapshot_id: *const c_char,
+) -> *mut c_char {
+    clear_last_error();
+    if handle.is_null() {
+        set_last_error("engine handle is null");
+        return std::ptr::null_mut();
+    }
+    let handle = unsafe { &mut *handle };
+    let adapter_id = match cstr_to_string(adapter_id) {
+        Ok(value) => value,
+        Err(error) => {
+            set_last_error(error);
+            return std::ptr::null_mut();
+        }
+    };
+    let snapshot_id = match cstr_to_string(snapshot_id) {
+        Ok(value) => value,
+        Err(error) => {
+            set_last_error(error);
+            return std::ptr::null_mut();
+        }
+    };
+
+    let app_key = match handle.handler.app_key() {
+        Ok(key) => key,
+        Err(error) => {
+            set_last_error(error.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    let backup_dir = handle.state_path.parent().unwrap_or_else(|| std::path::Path::new(".")).join("backups");
+    let store = match FileSnapshotStore::new(&backup_dir) {
+        Ok(store) => store,
+        Err(error) => {
+            set_last_error(error.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    let manager = BackupManager::new(app_key, Arc::new(store));
+    let engine = match handle.engine.lock() {
+        Ok(engine) => engine,
+        Err(_) => {
+            set_last_error("engine lock".to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    let state_handle = engine.state();
+    let state = match state_handle.lock() {
+        Ok(state) => state,
+        Err(_) => {
+            set_last_error("state lock".to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    let (_meta, entries) = match manager.load_snapshot_entries(&adapter_id, &snapshot_id) {
+        Ok(result) => result,
+        Err(error) => {
+            set_last_error(error.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    let summary = match libresync::summarize_snapshot_diff(&state, &entries) {
+        Ok(summary) => summary,
+        Err(error) => {
+            set_last_error(error.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    let ffi_summary = FfiSnapshotSummary {
+        total_snapshot_entries: summary.total_snapshot_entries,
+        total_state_entries: summary.total_state_entries,
+        overall: diff_counts_to_ffi(summary.overall),
+        by_group: summary
+            .by_group
+            .into_iter()
+            .map(|(key, counts)| (key, diff_counts_to_ffi(counts)))
+            .collect(),
+    };
+    let json = match serde_json::to_string(&ffi_summary) {
+        Ok(json) => json,
+        Err(error) => {
+            set_last_error(error.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+    CString::new(json).map(|cstr| cstr.into_raw()).unwrap_or_else(|_| std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_backup_restore(
+    handle: *mut EngineHandle,
+    adapter_id: *const c_char,
+    snapshot_id: *const c_char,
+) -> bool {
+    with_engine(handle, |handle| {
+        let adapter_id = cstr_to_string(adapter_id)?;
+        let snapshot_id = cstr_to_string(snapshot_id)?;
+        let app_key = handle
+            .handler
+            .app_key()
+            .map_err(|error| error.to_string())?;
+        let backup_dir = handle.state_path.parent().unwrap_or_else(|| std::path::Path::new(".")).join("backups");
+        let store = FileSnapshotStore::new(&backup_dir).map_err(|error| error.to_string())?;
+        let manager = BackupManager::new(app_key, Arc::new(store));
+        let engine = handle.engine.lock().map_err(|_| "engine lock".to_string())?;
+        let adapter = engine
+            .adapter(&adapter_id)
+            .ok_or("adapter not found".to_string())?;
+        let adapter = DataAdapterBackup::new(adapter);
+        let state = engine.state();
+        let mut state = state.lock().map_err(|_| "state lock".to_string())?;
+        manager
+            .restore_snapshot(&adapter, &mut state, &snapshot_id, libresync::RestoreOptions::confirmed())
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn libresync_bytes_free(ptr: *mut c_uchar, len: usize) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        let _ = Vec::from_raw_parts(ptr, len, len);
+    }
+}

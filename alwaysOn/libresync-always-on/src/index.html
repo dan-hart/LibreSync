@@ -100,6 +100,37 @@
         border-top: 1px solid var(--border);
         padding-top: 20px;
       }
+      .trust {
+        margin-top: 24px;
+        border-top: 1px solid var(--border);
+        padding-top: 20px;
+      }
+      .pair-controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 12px;
+      }
+      .paired-list {
+        display: grid;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      .paired-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 12px;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        background: #fff;
+        font-size: 12px;
+      }
+      .paired-meta {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
       .snapshots {
         margin-top: 24px;
         border-top: 1px solid var(--border);
@@ -184,6 +215,20 @@
         <button class="secondary" id="reload">Reload status</button>
       </div>
 
+      <section class="trust">
+        <div class="label">Trust</div>
+        <p class="muted" id="local-fingerprint">Local fingerprint: —</p>
+        <div class="toggle">
+          <input type="checkbox" id="auto-accept" />
+          <label for="auto-accept">Auto-accept pairing</label>
+        </div>
+        <div class="pair-controls">
+          <input type="text" id="pair-address" placeholder="Device address (ip:port)" />
+          <button class="secondary" id="pair-device">Pair device</button>
+        </div>
+        <div class="paired-list" id="paired-list">No paired devices.</div>
+      </section>
+
       <section class="backup">
         <div class="label">Backup policy (per app)</div>
         <p class="muted" id="backup-app">App: —</p>
@@ -195,6 +240,7 @@
           <input type="checkbox" id="backup-restore" />
           <label for="backup-restore">Allow restore (requires separate confirm)</label>
         </div>
+        <p class="muted" id="backup-retention">Retention: —</p>
       </section>
 
       <section class="snapshots">
@@ -202,9 +248,12 @@
         <div class="snapshot-list" id="snapshot-list">No snapshots loaded.</div>
         <div class="snapshot-preview" id="snapshot-preview">Select a snapshot to preview.</div>
         <div class="restore-controls">
+          <input type="text" id="snapshot-note" placeholder="Snapshot note (optional)" />
           <input type="text" id="confirm-id" placeholder="Confirm snapshot id" />
+          <button class="secondary" id="create-snapshot">Create snapshot</button>
           <button class="secondary" id="restore">Restore snapshot</button>
           <button class="secondary" id="reload-snapshots">Reload snapshots</button>
+          <button class="secondary" id="prune-snapshots">Prune snapshots</button>
         </div>
       </section>
 
@@ -214,17 +263,26 @@
     <script>
       const statusGrid = document.getElementById("status-grid");
       const statusBanner = document.getElementById("status-banner");
+      const localFingerprint = document.getElementById("local-fingerprint");
+      const autoAccept = document.getElementById("auto-accept");
+      const pairAddressInput = document.getElementById("pair-address");
+      const pairDeviceButton = document.getElementById("pair-device");
+      const pairedList = document.getElementById("paired-list");
       const backupEnabled = document.getElementById("backup-enabled");
       const backupRestore = document.getElementById("backup-restore");
       const backupApp = document.getElementById("backup-app");
+      const backupRetention = document.getElementById("backup-retention");
       let currentAppId = null;
       const refreshButton = document.getElementById("refresh");
       const reloadButton = document.getElementById("reload");
       const snapshotList = document.getElementById("snapshot-list");
       const snapshotPreview = document.getElementById("snapshot-preview");
+      const snapshotNoteInput = document.getElementById("snapshot-note");
       const confirmIdInput = document.getElementById("confirm-id");
+      const createSnapshotButton = document.getElementById("create-snapshot");
       const restoreButton = document.getElementById("restore");
       const reloadSnapshotsButton = document.getElementById("reload-snapshots");
+      const pruneSnapshotsButton = document.getElementById("prune-snapshots");
       let selectedSnapshotId = null;
 
       const invoke = (command, args = {}) => {
@@ -239,6 +297,42 @@
         if (!value) return "—";
         const date = new Date(value * 1000);
         return date.toLocaleString();
+      };
+
+      const renderPairedDevices = (devices) => {
+        if (!devices || !devices.length) {
+          pairedList.textContent = "No paired devices.";
+          return;
+        }
+        pairedList.innerHTML = "";
+        devices.forEach((device) => {
+          const item = document.createElement("div");
+          item.className = "paired-item";
+          const meta = document.createElement("div");
+          meta.className = "paired-meta";
+          const lastSeen = device.last_seen_unix_secs
+            ? new Date(device.last_seen_unix_secs * 1000).toLocaleString()
+            : "—";
+          meta.innerHTML = `
+            <strong>${device.device_id}</strong>
+            <span>${device.user_id}</span>
+            <span>fingerprint: ${device.fingerprint || "—"}</span>
+            <span>last seen: ${lastSeen}</span>
+          `;
+          const action = document.createElement("button");
+          action.className = "secondary";
+          action.textContent = "Unpair";
+          action.addEventListener("click", () => {
+            statusBanner.textContent = "Unpairing...";
+            invoke("unpair_device", { device_id: device.device_id })
+              .then(renderStatus)
+              .catch((error) => {
+                statusBanner.textContent = `Unpair error: ${error}`;
+              });
+          });
+          item.append(meta, action);
+          pairedList.appendChild(item);
+        });
       };
 
       const renderStatus = (status) => {
@@ -268,10 +362,16 @@
         });
 
         currentAppId = status.app_id;
+        localFingerprint.textContent = `Local fingerprint: ${status.local_fingerprint || "—"}`;
+        autoAccept.checked = Boolean(status.auto_accept_pairing);
+        renderPairedDevices(status.paired_devices || []);
         backupApp.textContent = `App: ${status.app_id}`;
         const policy = status.backup?.[status.app_id] || { enabled: false, allow_restore: false };
         backupEnabled.checked = policy.enabled;
         backupRestore.checked = policy.allow_restore;
+        const maxSnapshots = policy.max_snapshots ?? "—";
+        const maxAge = policy.max_age_days ?? "—";
+        backupRetention.textContent = `Retention: keep ${maxSnapshots}, max age ${maxAge} days`;
 
         statusBanner.textContent = "Always-on device ready";
       };
@@ -334,6 +434,19 @@
           });
       };
 
+      const pruneSnapshots = () => {
+        if (!currentAppId) return Promise.resolve();
+        statusBanner.textContent = "Pruning snapshots...";
+        return invoke("prune_snapshots", { app_id: currentAppId })
+          .then((deleted) => {
+            statusBanner.textContent = `Pruned ${deleted} snapshot(s).`;
+            return loadSnapshots();
+          })
+          .catch((error) => {
+            statusBanner.textContent = `Prune error: ${error}`;
+          });
+      };
+
       const previewSnapshot = (snapshotId) => {
         snapshotPreview.textContent = "Loading snapshot preview...";
         return invoke("preview_snapshot", { app_id: currentAppId, snapshot_id: snapshotId })
@@ -358,8 +471,52 @@
       });
 
       reloadButton.addEventListener("click", loadStatus);
+      autoAccept.addEventListener("change", () => {
+        statusBanner.textContent = "Updating pairing policy...";
+        invoke("set_auto_accept_pairing", { enabled: autoAccept.checked })
+          .then(renderStatus)
+          .catch((error) => {
+            statusBanner.textContent = `Auto-accept error: ${error}`;
+          });
+      });
+      pairDeviceButton.addEventListener("click", () => {
+        const address = pairAddressInput.value.trim();
+        if (!address) {
+          statusBanner.textContent = "Enter a device address to pair.";
+          return;
+        }
+        statusBanner.textContent = "Pairing...";
+        invoke("pair_device", { address })
+          .then((status) => {
+            pairAddressInput.value = "";
+            renderStatus(status);
+          })
+          .catch((error) => {
+            statusBanner.textContent = `Pair error: ${error}`;
+          });
+      });
       backupEnabled.addEventListener("change", updateBackup);
       backupRestore.addEventListener("change", updateBackup);
+      createSnapshotButton.addEventListener("click", () => {
+        if (!currentAppId) {
+          statusBanner.textContent = "No app selected.";
+          return;
+        }
+        const note = snapshotNoteInput.value.trim();
+        statusBanner.textContent = "Creating snapshot...";
+        invoke("create_snapshot", {
+          app_id: currentAppId,
+          note: note.length ? note : null,
+        })
+          .then((metadata) => {
+            statusBanner.textContent = `Snapshot ${metadata.id} created.`;
+            snapshotNoteInput.value = "";
+            return loadSnapshots();
+          })
+          .catch((error) => {
+            statusBanner.textContent = `Snapshot error: ${error}`;
+          });
+      });
       restoreButton.addEventListener("click", () => {
         if (!selectedSnapshotId) {
           statusBanner.textContent = "Select a snapshot first.";
@@ -381,6 +538,7 @@
           });
       });
       reloadSnapshotsButton.addEventListener("click", loadSnapshots);
+      pruneSnapshotsButton.addEventListener("click", pruneSnapshots);
 
       loadStatus().then(loadSnapshots);
     </script>

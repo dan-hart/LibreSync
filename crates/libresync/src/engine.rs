@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
@@ -144,6 +144,7 @@ pub struct AutoRefreshConfig {
     pub poll_interval: Duration,
     pub refresh_interval: Option<Duration>,
     pub discover_timeout: Duration,
+    pub fallback_addresses: Vec<SocketAddr>,
 }
 
 impl AutoRefreshConfig {
@@ -154,6 +155,7 @@ impl AutoRefreshConfig {
             poll_interval: Duration::from_millis(250),
             refresh_interval: Some(Duration::from_secs(5)),
             discover_timeout: Duration::from_secs(2),
+            fallback_addresses: Vec::new(),
         }
     }
 
@@ -174,6 +176,11 @@ impl AutoRefreshConfig {
 
     pub fn with_discover_timeout(mut self, discover_timeout: Duration) -> Self {
         self.discover_timeout = discover_timeout;
+        self
+    }
+
+    pub fn with_fallback_addresses(mut self, fallback_addresses: Vec<SocketAddr>) -> Self {
+        self.fallback_addresses = fallback_addresses;
         self
     }
 }
@@ -234,6 +241,10 @@ impl Engine {
 
     pub fn listener_addr(&self) -> Option<SocketAddr> {
         self.listener_addr
+    }
+
+    pub fn adapter(&self, adapter_id: &str) -> Option<Arc<dyn DataAdapter>> {
+        self.adapters.get(adapter_id).cloned()
     }
 
     pub fn set_event_sink(&mut self, sink: Arc<dyn EventSink>) {
@@ -313,7 +324,7 @@ impl Engine {
     }
 
     pub fn add_device(&self, _address: SocketAddr) -> Result<DeviceInfo> {
-        not_implemented()
+        self.request_pair(_address)
     }
 
     pub fn request_pair(&self, address: SocketAddr) -> Result<DeviceInfo> {
@@ -490,6 +501,7 @@ impl Engine {
         let poll_interval = config.poll_interval;
         let refresh_interval = config.refresh_interval;
         let discover_timeout = config.discover_timeout;
+        let fallback_addresses = config.fallback_addresses.clone();
         let adapter_id = config.adapter_id.clone();
         let device_keys = self.device_handler.device_keys()?;
         let app_key = self.device_handler.app_key()?;
@@ -561,7 +573,8 @@ impl Engine {
                     }
                 };
 
-                let mut synced = false;
+                let mut candidates = Vec::new();
+                let mut seen = HashSet::new();
                 for device in discovered {
                     if device.identity.device_id == identity.device_id {
                         continue;
@@ -569,12 +582,29 @@ impl Engine {
                     if !device_handler.is_paired(&device.identity) {
                         continue;
                     }
+                    if seen.insert(device.address) {
+                        candidates.push((Some(device.identity.clone()), device.address));
+                    }
+                }
+                for address in &fallback_addresses {
+                    if seen.insert(*address) {
+                        candidates.push((None, *address));
+                    }
+                }
 
+                let mut synced = false;
+                for (known_identity, address) in candidates {
+                    let base_identity = known_identity.clone().unwrap_or_else(|| {
+                        Identity::new("unknown", identity.app_id.clone(), "unknown")
+                    });
                     let device_info_base = DeviceInfo {
-                        identity: device.identity.clone(),
-                        address: Some(device.address),
+                        identity: base_identity,
+                        address: Some(address),
                         last_seen: Some(SystemTime::now()),
-                        paired: true,
+                        paired: known_identity
+                            .as_ref()
+                            .map(|identity| device_handler.is_paired(identity))
+                            .unwrap_or(false),
                         fingerprint: None,
                     };
 
@@ -615,7 +645,7 @@ impl Engine {
                         match sync_with_device(
                             &identity,
                             &mut state,
-                            device.address,
+                            address,
                             &device_keys,
                             &app_key,
                             |identity, fingerprint| {
@@ -942,11 +972,13 @@ mod tests {
         let config = AutoRefreshConfig::new("file", "state.json")
             .with_poll_interval(Duration::from_secs(1))
             .with_refresh_interval(Duration::from_secs(2))
-            .with_discover_timeout(Duration::from_secs(3));
+            .with_discover_timeout(Duration::from_secs(3))
+            .with_fallback_addresses(vec!["127.0.0.1:5555".parse().expect("addr")]);
         assert_eq!(config.adapter_id, "file");
         assert_eq!(config.poll_interval, Duration::from_secs(1));
         assert_eq!(config.refresh_interval, Some(Duration::from_secs(2)));
         assert_eq!(config.discover_timeout, Duration::from_secs(3));
+        assert_eq!(config.fallback_addresses.len(), 1);
 
         let config = AutoRefreshConfig::new("file", "state.json").disable_periodic_refresh();
         assert_eq!(config.refresh_interval, None);

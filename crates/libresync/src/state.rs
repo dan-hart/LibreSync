@@ -41,6 +41,10 @@ impl State {
         self.entries.get(key).map(|entry| entry.value.as_slice())
     }
 
+    pub fn remove(&mut self, key: &str) -> Option<Entry> {
+        self.entries.remove(key)
+    }
+
     pub fn apply_entry(&mut self, entry: Entry) -> bool {
         if entry.clock.counter > self.counter {
             self.counter = entry.clock.counter;

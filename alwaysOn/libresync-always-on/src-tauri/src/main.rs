@@ -11,20 +11,36 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use libresync::{
-    AppKey, AutoRefresh, AutoRefreshConfig, BackupManager, DataAdapter, DataAdapterBackup, DeviceKeys,
-    Engine, EngineConfig, Event, EventStream, FileSnapshotStore, Identity, JsonFileAdapter,
-    MdnsAdvertiser, RestoreOptions, SnapshotDiffSummary, SnapshotMetadata, State, summarize_snapshot_diff,
-    register_mdns,
+    AppKey, AutoRefresh, AutoRefreshConfig, BackupManager, DataAdapter, DataAdapterBackup, DeviceInfo,
+    DeviceKeys, Engine, EngineConfig, Event, EventStream, FileSnapshotStore, Identity,
+    JsonFileAdapter, MdnsAdvertiser, RestoreOptions, RetentionPolicy, SnapshotDiffSummary,
+    SnapshotMetadata, State, summarize_snapshot_diff, register_mdns,
 };
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State as TauriState};
+use tauri::{
+    AppHandle, CustomMenuItem, Manager, State as TauriState, SystemTray, SystemTrayEvent,
+    SystemTrayMenu, SystemTrayMenuItem, WindowEvent,
+};
 use uuid::Uuid;
 
 const FILE_KEY: &str = "file";
 const DEFAULT_LISTEN: &str = "0.0.0.0:52345";
 
 fn main() {
+    let show_item = CustomMenuItem::new("show".to_string(), "Show");
+    let hide_item = CustomMenuItem::new("hide".to_string(), "Hide");
+    let refresh_item = CustomMenuItem::new("refresh".to_string(), "Manual refresh");
+    let quit_item = CustomMenuItem::new("quit".to_string(), "Quit");
+    let tray_menu = SystemTrayMenu::new()
+        .add_item(show_item)
+        .add_item(hide_item)
+        .add_native_item(SystemTrayMenuItem::Separator)
+        .add_item(refresh_item)
+        .add_native_item(SystemTrayMenuItem::Separator)
+        .add_item(quit_item);
+
     tauri::Builder::default()
+        .system_tray(SystemTray::new().with_menu(tray_menu))
         .setup(|app| {
             let paths = app_paths(app).map_err(|error| error.to_string())?;
             let (mut config, keys) = load_or_init_config(&paths.config, &paths.data)
@@ -72,13 +88,26 @@ fn main() {
                 .map_err(|error| error.to_string())?;
 
             let auto_refresh = if config_arc.lock().expect("config lock").data_path.is_some() {
+                let fallback_addresses = config_arc
+                    .lock()
+                    .expect("config lock")
+                    .devices
+                    .values()
+                    .filter_map(|record| {
+                        record
+                            .last_seen_addr
+                            .as_deref()
+                            .and_then(|addr| addr.parse::<SocketAddr>().ok())
+                    })
+                    .collect::<Vec<_>>();
                 Some(
                     engine
                         .auto_refresh_with_config(
                             AutoRefreshConfig::new(FILE_KEY, paths.state)
                                 .with_poll_interval(Duration::from_millis(500))
                                 .with_refresh_interval(Duration::from_secs(10))
-                                .with_discover_timeout(Duration::from_secs(2)),
+                                .with_discover_timeout(Duration::from_secs(2))
+                                .with_fallback_addresses(fallback_addresses),
                         )
                         .map_err(|error| error.to_string())?,
                 )
@@ -105,13 +134,49 @@ fn main() {
 
             Ok(())
         })
+        .on_system_tray_event(|app, event| match event {
+            SystemTrayEvent::MenuItemClick { id, .. } => match id.as_str() {
+                "show" => {
+                    if let Some(window) = app.get_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+                "hide" => {
+                    if let Some(window) = app.get_window("main") {
+                        let _ = window.hide();
+                    }
+                }
+                "refresh" => {
+                    if let Some(state) = app.try_state::<AlwaysOnRuntime>() {
+                        let _ = manual_refresh_internal(&state);
+                    }
+                }
+                "quit" => {
+                    std::process::exit(0);
+                }
+                _ => {}
+            },
+            _ => {}
+        })
+        .on_window_event(|event| {
+            if let WindowEvent::CloseRequested { api, .. } = event.event() {
+                let _ = event.window().hide();
+                api.prevent_close();
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_status,
             manual_refresh,
+            pair_device,
+            unpair_device,
+            set_auto_accept_pairing,
             set_backup_policy,
+            create_snapshot,
             list_snapshots,
             preview_snapshot,
-            restore_snapshot
+            restore_snapshot,
+            prune_snapshots
         ])
         .run(tauri::generate_context!())
         .expect("error while running LibreSyncAlwaysOn");
@@ -135,6 +200,9 @@ struct AlwaysOnStatus {
     app_id: String,
     listen_addr: String,
     paired_count: usize,
+    paired_devices: Vec<DeviceRecord>,
+    local_fingerprint: String,
+    auto_accept_pairing: bool,
     last_sync_unix_secs: Option<u64>,
     last_error: Option<String>,
     backup: BTreeMap<String, BackupPolicy>,
@@ -149,12 +217,28 @@ impl AlwaysOnStatus {
             app_id: config.app_id.clone(),
             listen_addr: listen_addr.to_string(),
             paired_count: config.devices.len(),
+            paired_devices: config.devices.values().cloned().collect(),
+            local_fingerprint: config.device_keys.fingerprint.clone(),
+            auto_accept_pairing: config.auto_accept_pairing,
             last_sync_unix_secs: None,
             last_error: None,
             backup: config.backup.clone(),
             data_path: config.data_path.clone(),
         }
     }
+}
+
+fn sync_status_with_config(status: &mut AlwaysOnStatus, config: &AlwaysOnConfig) {
+    status.device_id = config.device_id.clone();
+    status.user_id = config.user_id.clone();
+    status.app_id = config.app_id.clone();
+    status.listen_addr = config.listen_addr.clone();
+    status.paired_devices = config.devices.values().cloned().collect();
+    status.paired_count = status.paired_devices.len();
+    status.local_fingerprint = config.device_keys.fingerprint.clone();
+    status.auto_accept_pairing = config.auto_accept_pairing;
+    status.backup = config.backup.clone();
+    status.data_path = config.data_path.clone();
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,21 +250,25 @@ struct RefreshSummary {
 
 #[tauri::command]
 fn get_status(state: TauriState<AlwaysOnRuntime>) -> Result<AlwaysOnStatus, String> {
-    let status = state.status.lock().map_err(|_| "status lock".to_string())?;
+    let config = state.config.lock().map_err(|_| "config lock".to_string())?;
+    let mut status = state.status.lock().map_err(|_| "status lock".to_string())?;
+    sync_status_with_config(&mut status, &config);
     Ok(status.clone())
 }
 
-#[tauri::command]
-fn manual_refresh(state: TauriState<AlwaysOnRuntime>) -> Result<RefreshSummary, String> {
+fn manual_refresh_internal(state: &AlwaysOnRuntime) -> Result<RefreshSummary, String> {
     let mut engine = state.engine.lock().map_err(|_| "engine lock".to_string())?;
-    let config = state.config.lock().map_err(|_| "config lock".to_string())?;
-
-    if config.data_path.is_none() {
-        return Err("no data path configured for always-on refresh".to_string());
-    }
-
-    let state_path = config.state_path.clone();
-    let app_key = config.app_key().map_err(|error| error.to_string())?;
+    let (state_path, app_key, fallback_records) = {
+        let config = state.config.lock().map_err(|_| "config lock".to_string())?;
+        if config.data_path.is_none() {
+            return Err("no data path configured for always-on refresh".to_string());
+        }
+        (
+            config.state_path.clone(),
+            config.app_key().map_err(|error| error.to_string())?,
+            config.devices.values().cloned().collect::<Vec<_>>(),
+        )
+    };
 
     let devices = engine
         .discover_devices_with_timeout(Duration::from_secs(2))
@@ -190,20 +278,45 @@ fn manual_refresh(state: TauriState<AlwaysOnRuntime>) -> Result<RefreshSummary, 
     let mut succeeded = 0;
     let mut last_error = None;
 
+    let mut address_book = Vec::new();
     for device in devices {
         if !device.paired {
             continue;
         }
         if let Some(addr) = device.address {
-            attempted += 1;
-            match engine.sync_now(addr, FILE_KEY) {
-                Ok(_) => succeeded += 1,
-                Err(error) => last_error = Some(error.to_string()),
+            address_book.push((device, addr));
+        }
+    }
+
+    if address_book.is_empty() {
+        for record in fallback_records {
+            if let Some(addr) = record.last_seen_addr.as_deref() {
+                if let Ok(parsed) = addr.parse::<SocketAddr>() {
+                    let device = DeviceInfo {
+                        identity: Identity::new(&record.device_id, &record.app_id, &record.user_id),
+                        address: Some(parsed),
+                        last_seen: None,
+                        paired: true,
+                        fingerprint: record.fingerprint.clone(),
+                    };
+                    address_book.push((device, parsed));
+                }
             }
         }
     }
 
-    drop(config);
+    for (device, addr) in address_book {
+        attempted += 1;
+        match engine.sync_now(addr, FILE_KEY) {
+            Ok(remote) => {
+                succeeded += 1;
+                let mut config = state.config.lock().map_err(|_| "config lock".to_string())?;
+                config.upsert_device(&remote.identity, Some(addr), remote.fingerprint.clone());
+                save_config(&state.config_path, &config)?;
+            }
+            Err(error) => last_error = Some(error.to_string()),
+        }
+    }
 
     if succeeded > 0 {
         let state_guard = engine.state();
@@ -228,6 +341,88 @@ fn manual_refresh(state: TauriState<AlwaysOnRuntime>) -> Result<RefreshSummary, 
 }
 
 #[tauri::command]
+fn manual_refresh(state: TauriState<AlwaysOnRuntime>) -> Result<RefreshSummary, String> {
+    manual_refresh_internal(&state)
+}
+
+#[tauri::command]
+fn pair_device(state: TauriState<AlwaysOnRuntime>, address: String) -> Result<AlwaysOnStatus, String> {
+    let addr = address
+        .parse::<SocketAddr>()
+        .map_err(|_| "invalid address".to_string())?;
+    let mut engine = state.engine.lock().map_err(|_| "engine lock".to_string())?;
+    let remote = engine
+        .request_pair(addr)
+        .map_err(|error| error.to_string())?;
+
+    let mut config = state.config.lock().map_err(|_| "config lock".to_string())?;
+    config.upsert_device(&remote.identity, Some(addr), remote.fingerprint.clone());
+    save_config(&state.config_path, &config)?;
+
+    let mut status = state.status.lock().map_err(|_| "status lock".to_string())?;
+    sync_status_with_config(&mut status, &config);
+    Ok(status.clone())
+}
+
+#[tauri::command]
+fn unpair_device(state: TauriState<AlwaysOnRuntime>, device_id: String) -> Result<AlwaysOnStatus, String> {
+    let mut config = state.config.lock().map_err(|_| "config lock".to_string())?;
+    config.devices.remove(&device_id);
+    save_config(&state.config_path, &config)?;
+
+    let mut status = state.status.lock().map_err(|_| "status lock".to_string())?;
+    sync_status_with_config(&mut status, &config);
+    Ok(status.clone())
+}
+
+#[tauri::command]
+fn set_auto_accept_pairing(
+    state: TauriState<AlwaysOnRuntime>,
+    enabled: bool,
+) -> Result<AlwaysOnStatus, String> {
+    let mut config = state.config.lock().map_err(|_| "config lock".to_string())?;
+    config.auto_accept_pairing = enabled;
+    save_config(&state.config_path, &config)?;
+
+    let mut status = state.status.lock().map_err(|_| "status lock".to_string())?;
+    sync_status_with_config(&mut status, &config);
+    Ok(status.clone())
+}
+
+#[tauri::command]
+fn create_snapshot(
+    state: TauriState<AlwaysOnRuntime>,
+    app_id: String,
+    note: Option<String>,
+) -> Result<SnapshotMetadata, String> {
+    let (manager, adapter, policy) = backup_manager_for_app(&state, &app_id)?;
+    let adapter_arc: Arc<dyn DataAdapter> = Arc::new(adapter.clone());
+    let backup_adapter = DataAdapterBackup::new(adapter_arc);
+    let mut engine = state.engine.lock().map_err(|_| "engine lock".to_string())?;
+    let mut state_lock = engine.state().lock().map_err(|_| "state lock".to_string())?;
+
+    adapter
+        .load_into_state(&mut state_lock)
+        .map_err(|error| error.to_string())?;
+
+    let metadata = manager
+        .create_snapshot(&backup_adapter, &state_lock, note)
+        .map_err(|error| error.to_string())?;
+
+    if !policy.retention_policy().is_empty() {
+        let _ = manager.prune_snapshots(FILE_KEY, policy.retention_policy());
+    }
+
+    let config = state.config.lock().map_err(|_| "config lock".to_string())?;
+    let app_key = config.app_key().map_err(|error| error.to_string())?;
+    state_lock
+        .save_encrypted(&app_key, &config.state_path)
+        .map_err(|error| error.to_string())?;
+
+    Ok(metadata)
+}
+
+#[tauri::command]
 fn set_backup_policy(
     state: TauriState<AlwaysOnRuntime>,
     app_id: String,
@@ -241,11 +436,17 @@ fn set_backup_policy(
         .or_insert_with(BackupPolicy::default);
     entry.enabled = enabled;
     entry.allow_restore = allow_restore;
+    if entry.max_snapshots.is_none() {
+        entry.max_snapshots = Some(20);
+    }
+    if entry.max_age_days.is_none() {
+        entry.max_age_days = Some(30);
+    }
 
     save_config(&state.config_path, &config)?;
 
     let mut status = state.status.lock().map_err(|_| "status lock".to_string())?;
-    status.backup = config.backup.clone();
+    sync_status_with_config(&mut status, &config);
     Ok(status.clone())
 }
 
@@ -320,6 +521,19 @@ fn restore_snapshot(
     let mut status = state.status.lock().map_err(|_| "status lock".to_string())?;
     status.last_sync_unix_secs = Some(now_unix_secs());
     Ok(status.clone())
+}
+
+#[tauri::command]
+fn prune_snapshots(state: TauriState<AlwaysOnRuntime>, app_id: String) -> Result<usize, String> {
+    let (manager, _adapter, policy) = backup_manager_for_app(&state, &app_id)?;
+    let retention = policy.retention_policy();
+    if retention.is_empty() {
+        return Ok(0);
+    }
+    let summary = manager
+        .prune_snapshots(FILE_KEY, retention)
+        .map_err(|error| error.to_string())?;
+    Ok(summary.deleted.len())
 }
 
 fn backup_manager_for_app(
@@ -400,7 +614,8 @@ impl libresync::DeviceHandler for AlwaysOnHandler {
     }
 
     fn approve_pair(&self, _identity: &libresync::Identity) -> libresync::Result<bool> {
-        Ok(false)
+        let config = self.config.lock().expect("config lock");
+        Ok(config.auto_accept_pairing)
     }
 
     fn device_keys(&self) -> libresync::Result<DeviceKeys> {
@@ -469,9 +684,13 @@ struct DeviceRecord {
     app_id: String,
     #[serde(default)]
     fingerprint: Option<String>,
+    #[serde(default)]
+    last_seen_addr: Option<String>,
+    #[serde(default)]
+    last_seen_unix_secs: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct BackupPolicy {
     #[serde(default)]
     enabled: bool,
@@ -479,6 +698,31 @@ struct BackupPolicy {
     allow_restore: bool,
     #[serde(default)]
     backup_dir: Option<PathBuf>,
+    #[serde(default)]
+    max_snapshots: Option<usize>,
+    #[serde(default)]
+    max_age_days: Option<u64>,
+}
+
+impl BackupPolicy {
+    fn retention_policy(&self) -> RetentionPolicy {
+        RetentionPolicy {
+            max_snapshots: self.max_snapshots,
+            max_age_secs: self.max_age_days.map(|days| days.saturating_mul(24 * 60 * 60)),
+        }
+    }
+}
+
+impl Default for BackupPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            allow_restore: false,
+            backup_dir: None,
+            max_snapshots: Some(20),
+            max_age_days: Some(30),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -493,6 +737,8 @@ struct AlwaysOnConfig {
     app_key: String,
     #[serde(default)]
     devices: BTreeMap<String, DeviceRecord>,
+    #[serde(default)]
+    auto_accept_pairing: bool,
     #[serde(default)]
     backup: BTreeMap<String, BackupPolicy>,
 }
@@ -521,6 +767,34 @@ impl AlwaysOnConfig {
         self.listen_addr
             .parse::<SocketAddr>()
             .map_err(|error| error.to_string())
+    }
+
+    fn upsert_device(
+        &mut self,
+        identity: &Identity,
+        addr: Option<SocketAddr>,
+        fingerprint: Option<String>,
+    ) {
+        let entry = self
+            .devices
+            .entry(identity.device_id.clone())
+            .or_insert(DeviceRecord {
+                device_id: identity.device_id.clone(),
+                user_id: identity.user_id.clone(),
+                app_id: identity.app_id.clone(),
+                fingerprint: None,
+                last_seen_addr: None,
+                last_seen_unix_secs: None,
+            });
+        entry.user_id = identity.user_id.clone();
+        entry.app_id = identity.app_id.clone();
+        if let Some(addr) = addr {
+            entry.last_seen_addr = Some(addr.to_string());
+            entry.last_seen_unix_secs = Some(now_unix_secs());
+        }
+        if let Some(fingerprint) = fingerprint {
+            entry.fingerprint = Some(fingerprint);
+        }
     }
 }
 
@@ -571,6 +845,7 @@ fn load_or_init_config(path: &Path, data_path: &Path) -> Result<(AlwaysOnConfig,
         device_keys: DeviceKeysRecord::from_keys(&keys),
         app_key: BASE64.encode(app_key.as_bytes()),
         devices: BTreeMap::new(),
+        auto_accept_pairing: false,
         backup: BTreeMap::new(),
     };
 
@@ -611,6 +886,12 @@ fn ensure_backup_policy(config: &mut AlwaysOnConfig, default_dir: &Path) -> Resu
         .or_insert_with(BackupPolicy::default);
     if entry.backup_dir.is_none() {
         entry.backup_dir = Some(default_dir.to_path_buf());
+    }
+    if entry.max_snapshots.is_none() {
+        entry.max_snapshots = Some(20);
+    }
+    if entry.max_age_days.is_none() {
+        entry.max_age_days = Some(30);
     }
     Ok(())
 }

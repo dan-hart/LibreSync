@@ -10,6 +10,8 @@ mod crypto;
 mod protocol;
 mod record;
 mod logical;
+#[cfg(feature = "sqlite-logical")]
+mod sqlite_logical;
 mod backup;
 mod state;
 mod sync;
@@ -34,13 +36,19 @@ pub use crypto::{
 };
 pub use protocol::{read_message, write_message, Message};
 pub use record::{
-    FieldValue, MergePolicy, RecordKeyParts, RecordState, RecordView, SyncRecord,
+    FieldValue, MergePolicy, RecordCompactionPolicy, RecordCompactionSummary, RecordKeyParts,
+    RecordState, RecordView, SyncRecord,
     entry_to_record, parse_record_key, record_entry_key, record_to_entry,
 };
-pub use logical::InMemoryLogicalAdapter;
+pub use logical::{FileLogicalAdapter, InMemoryLogicalAdapter};
+#[cfg(feature = "sqlite-logical")]
+pub use sqlite_logical::{
+    SqliteLogicalAdapter, SqliteLogicalEncoding, SqliteLogicalField, SqliteLogicalMapping,
+};
 pub use backup::{
-    BackupAdapter, BackupManager, DataAdapterBackup, DiffCounts, FileSnapshotStore, RestoreOptions,
-    Snapshot, SnapshotDiffSummary, SnapshotMetadata, SnapshotStore, summarize_snapshot_diff,
+    BackupAdapter, BackupManager, DataAdapterBackup, DiffCounts, FileSnapshotStore, PrunePlan,
+    PruneSummary, RetentionPolicy, RestoreOptions, Snapshot, SnapshotDiffSummary, SnapshotMetadata,
+    SnapshotStore, summarize_snapshot_diff,
 };
 pub use state::State;
 pub use sync::{pair_with_device, sync_with_device, SyncListener};

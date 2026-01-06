@@ -68,6 +68,19 @@ pub struct RecordView<'a> {
     namespace: String,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecordCompactionPolicy {
+    pub tombstone_max_age_secs: Option<u64>,
+    pub max_tombstones: Option<usize>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RecordCompactionSummary {
+    pub tombstones_total: usize,
+    pub tombstones_removed: usize,
+    pub tombstones_retained: usize,
+}
+
 impl<'a> RecordState<'a> {
     pub fn new(state: &'a mut State, namespace: impl Into<String>) -> Self {
         Self {
@@ -120,6 +133,70 @@ impl<'a> RecordState<'a> {
             }
         }
         Ok(applied)
+    }
+
+    pub fn compact(
+        &mut self,
+        policy: &RecordCompactionPolicy,
+        now_unix_secs: u64,
+    ) -> Result<RecordCompactionSummary> {
+        let view = RecordView::new(self.state, self.namespace.clone());
+        let snapshot = view.snapshot()?;
+
+        let mut tombstones = Vec::new();
+        for record in snapshot.iter().filter(|record| record.tombstone) {
+            let key = record_entry_key(
+                &self.namespace,
+                &record.schema,
+                &record.entity,
+                &record.id,
+            );
+            tombstones.push((key, record.updated_at));
+        }
+
+        let tombstones_total = tombstones.len();
+        let mut to_remove = Vec::new();
+
+        if let Some(max_age) = policy.tombstone_max_age_secs {
+            for (key, updated_at) in &tombstones {
+                if let Some(updated_at) = updated_at {
+                    if now_unix_secs.saturating_sub(*updated_at) >= max_age {
+                        to_remove.push(key.clone());
+                    }
+                }
+            }
+        }
+
+        if let Some(max_tombstones) = policy.max_tombstones {
+            let mut candidates: Vec<(String, u64)> = tombstones
+                .iter()
+                .filter_map(|(key, updated_at)| updated_at.map(|time| (key.clone(), time)))
+                .filter(|(key, _)| !to_remove.iter().any(|removed| removed == key))
+                .collect();
+            if candidates.len() > max_tombstones {
+                candidates.sort_by_key(|(_, time)| *time);
+                let overflow = candidates.len().saturating_sub(max_tombstones);
+                for (key, _) in candidates.into_iter().take(overflow) {
+                    to_remove.push(key);
+                }
+            }
+        }
+
+        to_remove.sort();
+        to_remove.dedup();
+
+        let mut tombstones_removed = 0;
+        for key in &to_remove {
+            if self.state.remove(key).is_some() {
+                tombstones_removed += 1;
+            }
+        }
+
+        Ok(RecordCompactionSummary {
+            tombstones_total,
+            tombstones_removed,
+            tombstones_retained: tombstones_total.saturating_sub(tombstones_removed),
+        })
     }
 }
 
@@ -275,6 +352,21 @@ fn unescape_component(input: &str) -> Result<String> {
 mod tests {
     use super::*;
 
+    fn tombstone_record(id: &str, updated_at: Option<u64>, counter: u64) -> SyncRecord {
+        SyncRecord {
+            schema: "schema".to_string(),
+            entity: "Todo".to_string(),
+            id: id.to_string(),
+            fields: BTreeMap::new(),
+            tombstone: true,
+            clock: LamportClock {
+                counter,
+                device_id: "device".to_string(),
+            },
+            updated_at,
+        }
+    }
+
     #[test]
     fn record_key_round_trip() {
         let key = record_entry_key("app", "schema/1", "Todo", "item:1");
@@ -357,5 +449,76 @@ mod tests {
         };
         let result = entry_to_record(&entry, "app");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn record_compaction_removes_old_tombstones() {
+        let mut state = State::new("device");
+        let mut records = RecordState::new(&mut state, "app");
+        records
+            .apply(tombstone_record("old", Some(10), 1))
+            .expect("apply old");
+        records
+            .apply(tombstone_record("new", Some(90), 2))
+            .expect("apply new");
+
+        let summary = records
+            .compact(
+                &RecordCompactionPolicy {
+                    tombstone_max_age_secs: Some(50),
+                    max_tombstones: None,
+                },
+                100,
+            )
+            .expect("compact");
+
+        assert_eq!(summary.tombstones_total, 2);
+        assert_eq!(summary.tombstones_removed, 1);
+        assert!(records
+            .get("schema", "Todo", "old")
+            .expect("get")
+            .is_none());
+        assert!(records
+            .get("schema", "Todo", "new")
+            .expect("get")
+            .is_some());
+    }
+
+    #[test]
+    fn record_compaction_respects_max_tombstones() {
+        let mut state = State::new("device");
+        let mut records = RecordState::new(&mut state, "app");
+        records
+            .apply(tombstone_record("a", Some(10), 1))
+            .expect("apply a");
+        records
+            .apply(tombstone_record("b", Some(20), 2))
+            .expect("apply b");
+        records
+            .apply(tombstone_record("c", Some(30), 3))
+            .expect("apply c");
+
+        let summary = records
+            .compact(
+                &RecordCompactionPolicy {
+                    tombstone_max_age_secs: None,
+                    max_tombstones: Some(2),
+                },
+                100,
+            )
+            .expect("compact");
+
+        assert_eq!(summary.tombstones_total, 3);
+        assert_eq!(summary.tombstones_removed, 1);
+        let remaining = ["b", "c"]
+            .iter()
+            .filter(|id| {
+                records
+                    .get("schema", "Todo", id)
+                    .expect("get")
+                    .is_some()
+            })
+            .count();
+        assert_eq!(remaining, 2);
     }
 }

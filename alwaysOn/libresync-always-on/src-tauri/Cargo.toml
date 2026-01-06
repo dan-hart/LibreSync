@@ -15,7 +15,7 @@ base64 = "0.22"
 uuid = { version = "1.6", features = ["v4"] }
 whoami = "1.5"
 libresync = { path = "../../../crates/libresync" }
-tauri = { version = "1", features = [] }
+tauri = { version = "1", features = ["system-tray"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

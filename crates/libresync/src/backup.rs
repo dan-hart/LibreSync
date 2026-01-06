@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -147,6 +147,32 @@ pub struct BackupManager {
     store: std::sync::Arc<dyn SnapshotStore>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct RetentionPolicy {
+    pub max_snapshots: Option<usize>,
+    pub max_age_secs: Option<u64>,
+}
+
+impl RetentionPolicy {
+    pub fn is_empty(&self) -> bool {
+        self.max_snapshots.is_none() && self.max_age_secs.is_none()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PrunePlan {
+    pub adapter_id: String,
+    pub total: usize,
+    pub to_delete: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PruneSummary {
+    pub adapter_id: String,
+    pub deleted: Vec<String>,
+    pub remaining: usize,
+}
+
 impl BackupManager {
     pub fn new(app_key: AppKey, store: std::sync::Arc<dyn SnapshotStore>) -> Self {
         Self { app_key, store }
@@ -210,6 +236,96 @@ impl BackupManager {
         let entries = reclock_entries_for_restore(state, entries);
         adapter.apply_snapshot(state, entries)?;
         Ok(snapshot.metadata)
+    }
+
+    pub fn plan_prune(
+        &self,
+        adapter_id: &str,
+        policy: RetentionPolicy,
+    ) -> Result<PrunePlan> {
+        let mut snapshots = self.store.list_snapshots(adapter_id)?;
+        snapshots.sort_by(|a, b| a.created_at_unix_secs.cmp(&b.created_at_unix_secs));
+
+        let total = snapshots.len();
+        if total == 0 || policy.is_empty() {
+            return Ok(PrunePlan {
+                adapter_id: adapter_id.to_string(),
+                total,
+                to_delete: Vec::new(),
+            });
+        }
+
+        let mut to_delete = HashSet::new();
+
+        if let Some(max_age) = policy.max_age_secs {
+            let cutoff = now_unix_secs().saturating_sub(max_age);
+            for snapshot in snapshots.iter() {
+                if snapshot.created_at_unix_secs < cutoff {
+                    to_delete.insert(snapshot.id.clone());
+                }
+            }
+        }
+
+        if let Some(max_keep) = policy.max_snapshots {
+            if total > max_keep {
+                let mut remaining = total.saturating_sub(to_delete.len());
+                for snapshot in snapshots.iter() {
+                    if remaining <= max_keep {
+                        break;
+                    }
+                    if to_delete.insert(snapshot.id.clone()) {
+                        remaining = remaining.saturating_sub(1);
+                    }
+                }
+            }
+        }
+
+        let mut to_delete = to_delete.into_iter().collect::<Vec<_>>();
+        to_delete.sort();
+
+        Ok(PrunePlan {
+            adapter_id: adapter_id.to_string(),
+            total,
+            to_delete,
+        })
+    }
+
+    pub fn prune_snapshots(
+        &self,
+        adapter_id: &str,
+        policy: RetentionPolicy,
+    ) -> Result<PruneSummary> {
+        let plan = self.plan_prune(adapter_id, policy)?;
+        for snapshot_id in &plan.to_delete {
+            self.store.delete_snapshot(adapter_id, snapshot_id)?;
+        }
+        let remaining = plan.total.saturating_sub(plan.to_delete.len());
+        Ok(PruneSummary {
+            adapter_id: adapter_id.to_string(),
+            deleted: plan.to_delete,
+            remaining,
+        })
+    }
+
+    pub fn reencrypt_snapshots(
+        &self,
+        adapter_id: &str,
+        new_key: &AppKey,
+    ) -> Result<usize> {
+        let snapshots = self.store.list_snapshots(adapter_id)?;
+        let mut updated = 0usize;
+        for metadata in snapshots {
+            let snapshot = self.store.load_snapshot(adapter_id, &metadata.id)?;
+            let entries = decrypt_entries(&self.app_key, snapshot.entries)?;
+            let encrypted = encrypt_entries(new_key, entries)?;
+            let updated_snapshot = Snapshot {
+                metadata: snapshot.metadata,
+                entries: encrypted,
+            };
+            self.store.save_snapshot(&updated_snapshot)?;
+            updated += 1;
+        }
+        Ok(updated)
     }
 }
 
@@ -441,5 +557,121 @@ mod tests {
 
         let summary = summarize_snapshot_diff(&state, &snapshot_entries).expect("summary");
         assert!(summary.by_group.contains_key("schema/1/Todo"));
+    }
+
+    #[test]
+    fn prune_plan_respects_age_and_count() {
+        let temp = tempdir().expect("tempdir");
+        let store = FileSnapshotStore::new(temp.path()).expect("store");
+        let app_key = AppKey::generate().expect("app key");
+        let manager = BackupManager::new(app_key, std::sync::Arc::new(store.clone()));
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        for (id, created_at) in [
+            ("snap-1", now.saturating_sub(1200)),
+            ("snap-2", now.saturating_sub(400)),
+            ("snap-3", now.saturating_sub(10)),
+        ] {
+            let metadata = SnapshotMetadata {
+                id: id.to_string(),
+                adapter_id: "file".to_string(),
+                created_at_unix_secs: created_at,
+                entry_count: 0,
+                created_by_device_id: None,
+                label: None,
+                note: None,
+            };
+            let snapshot = Snapshot {
+                metadata,
+                entries: Vec::new(),
+            };
+            store.save_snapshot(&snapshot).expect("save snapshot");
+        }
+
+        let plan = manager
+            .plan_prune(
+                "file",
+                RetentionPolicy {
+                    max_snapshots: Some(2),
+                    max_age_secs: Some(600),
+                },
+            )
+            .expect("plan");
+
+        assert_eq!(plan.total, 3);
+        assert_eq!(plan.to_delete.len(), 1);
+        assert!(plan.to_delete.contains(&"snap-1".to_string()));
+    }
+
+    #[test]
+    fn prune_snapshots_deletes_oldest() {
+        let temp = tempdir().expect("tempdir");
+        let store = FileSnapshotStore::new(temp.path()).expect("store");
+        let app_key = AppKey::generate().expect("app key");
+        let manager = BackupManager::new(app_key, std::sync::Arc::new(store.clone()));
+
+        for id in ["snap-a", "snap-b", "snap-c"] {
+            let metadata = SnapshotMetadata {
+                id: id.to_string(),
+                adapter_id: "file".to_string(),
+                created_at_unix_secs: now_unix_secs(),
+                entry_count: 0,
+                created_by_device_id: None,
+                label: None,
+                note: None,
+            };
+            let snapshot = Snapshot {
+                metadata,
+                entries: Vec::new(),
+            };
+            store.save_snapshot(&snapshot).expect("save snapshot");
+        }
+
+        let summary = manager
+            .prune_snapshots(
+                "file",
+                RetentionPolicy {
+                    max_snapshots: Some(2),
+                    max_age_secs: None,
+                },
+            )
+            .expect("prune");
+
+        assert_eq!(summary.deleted.len(), 1);
+        let remaining = manager.list_snapshots("file").expect("list");
+        assert_eq!(remaining.len(), 2);
+    }
+
+    #[test]
+    fn reencrypt_snapshots_rotates_keys() {
+        let temp = tempdir().expect("tempdir");
+        let store = FileSnapshotStore::new(temp.path()).expect("store");
+        let old_key = AppKey::generate().expect("app key");
+        let new_key = AppKey::generate().expect("app key");
+        let manager = BackupManager::new(old_key.clone(), std::sync::Arc::new(store.clone()));
+
+        let adapter = crate::JsonFileAdapter::new("file", temp.path().join("data.json"));
+        let adapter = DataAdapterBackup::new(std::sync::Arc::new(adapter));
+        let mut state = State::new("device");
+        state.set("file", b"{\"alpha\":1}".to_vec());
+        let metadata = manager
+            .create_snapshot(&adapter, &state, None)
+            .expect("snapshot");
+
+        let rotated = manager
+            .reencrypt_snapshots(adapter.id(), &new_key)
+            .expect("reencrypt");
+        assert_eq!(rotated, 1);
+
+        let manager_new = BackupManager::new(new_key, std::sync::Arc::new(store));
+        let mut restore_state = State::new("device");
+        manager_new
+            .restore_snapshot(&adapter, &mut restore_state, &metadata.id, RestoreOptions::confirmed())
+            .expect("restore");
+        assert_eq!(restore_state.get("file"), Some(b"{\"alpha\":1}".as_slice()));
     }
 }

@@ -1,9 +1,10 @@
 # Frankly
 
-Frankly is a small Tauri + Rust demo app that exercises LibreSync at the application level. It provides a single shared todo list backed by SQLite and syncs the database over LAN with other Frankly instances.
+Frankly is a small Tauri + Rust demo app that exercises LibreSync at the application level. It provides a single shared todo list backed by SQLite and syncs via LibreSync logical records mapped onto the SQLite table.
 
 ## What it does
 - Local-first todo list stored in SQLite.
+- SQLite logical mapping via a LibreSync metadata table for deterministic merges.
 - LAN device linking and sync using LibreSync.
 - Automatic listener + mDNS advertising on startup.
 
