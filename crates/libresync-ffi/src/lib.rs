@@ -885,3 +885,233 @@ pub extern "C" fn libresync_bytes_free(ptr: *mut c_uchar, len: usize) {
         let _ = Vec::from_raw_parts(ptr, len, len);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CString;
+    use tempfile::TempDir;
+
+    fn take_string(ptr: *mut c_char) -> Option<String> {
+        if ptr.is_null() {
+            return None;
+        }
+        let message = unsafe { CStr::from_ptr(ptr) }
+            .to_string_lossy()
+            .to_string();
+        libresync_string_free(ptr);
+        Some(message)
+    }
+
+    fn last_error() -> Option<String> {
+        take_string(libresync_last_error())
+    }
+
+    fn build_config(listen_addr: Option<&str>, auto_accept: bool) -> (CString, CString, TempDir) {
+        let tempdir = TempDir::new().expect("tempdir");
+        let state_path = tempdir.path().join("state.json");
+        let identity = Identity::new("device-1", "app-1", "user-1");
+        let device_keys = DeviceKeys::generate(&identity).expect("device keys");
+        let app_key = AppKey::generate().expect("app key");
+        let config = serde_json::json!({
+            "device_id": identity.device_id,
+            "app_id": identity.app_id,
+            "user_id": identity.user_id,
+            "listen_addr": listen_addr,
+            "app_key": BASE64.encode(app_key.as_bytes()),
+            "device_cert_der": BASE64.encode(device_keys.cert_der()),
+            "device_key_der": BASE64.encode(device_keys.key_der()),
+            "allowlist": [],
+            "auto_accept": auto_accept,
+        });
+        let config_json = CString::new(config.to_string()).expect("config json");
+        let state_cstr = CString::new(state_path.to_string_lossy().to_string())
+            .expect("state path");
+        (config_json, state_cstr, tempdir)
+    }
+
+    fn create_engine(listen_addr: Option<&str>) -> (TempDir, *mut EngineHandle) {
+        let (config_json, state_path, tempdir) = build_config(listen_addr, true);
+        let handle = libresync_engine_create(config_json.as_ptr(), state_path.as_ptr());
+        assert!(!handle.is_null(), "engine should be created");
+        (tempdir, handle)
+    }
+
+    #[test]
+    fn ffi_abi_and_last_error_paths() {
+        assert_eq!(libresync_abi_version(), ABI_VERSION);
+
+        assert!(last_error().is_none());
+
+        let handle = libresync_engine_create(std::ptr::null(), std::ptr::null());
+        assert!(handle.is_null());
+        let err = last_error().unwrap_or_default();
+        assert!(err.contains("null pointer"));
+
+        let bad_config = CString::new("not json").expect("cstr");
+        let state_path = CString::new("state.json").expect("state");
+        let handle = libresync_engine_create(bad_config.as_ptr(), state_path.as_ptr());
+        assert!(handle.is_null());
+        assert!(last_error().is_some());
+
+        let mut bytes = vec![1u8, 2u8, 3u8];
+        let ptr = bytes.as_mut_ptr();
+        let len = bytes.len();
+        std::mem::forget(bytes);
+        libresync_bytes_free(ptr, len);
+    }
+
+    #[test]
+    fn ffi_listener_cycle() {
+        let (_tempdir, handle) = create_engine(Some("127.0.0.1:0"));
+
+        assert!(libresync_engine_start_listening(handle));
+        assert!(libresync_engine_stop_listening(handle));
+
+        assert!(!libresync_engine_stop_listening(handle));
+        let err = last_error().unwrap_or_default();
+        assert!(err.contains("listener not running"));
+
+        libresync_engine_free(handle);
+    }
+
+    #[test]
+    fn ffi_registers_adapters_and_allowlist() {
+        let (tempdir, handle) = create_engine(None);
+        let json_path = tempdir.path().join("data.json");
+        let logical_path = tempdir.path().join("records.json");
+        let sqlite_path = tempdir.path().join("data.sqlite");
+
+        let adapter_id = CString::new("doc").expect("adapter id");
+        let json_path_c = CString::new(json_path.to_string_lossy().to_string()).expect("json path");
+        assert!(libresync_engine_register_json_adapter(
+            handle,
+            adapter_id.as_ptr(),
+            json_path_c.as_ptr()
+        ));
+
+        let logical_id = CString::new("logical").expect("logical id");
+        let namespace = CString::new("notes").expect("namespace");
+        let logical_path_c =
+            CString::new(logical_path.to_string_lossy().to_string()).expect("logical path");
+        assert!(libresync_engine_register_logical_file_adapter(
+            handle,
+            logical_id.as_ptr(),
+            namespace.as_ptr(),
+            logical_path_c.as_ptr(),
+        ));
+
+        let sqlite_id = CString::new("db").expect("sqlite id");
+        let sqlite_path_c =
+            CString::new(sqlite_path.to_string_lossy().to_string()).expect("sqlite path");
+        assert!(libresync_engine_register_sqlite_adapter(
+            handle,
+            sqlite_id.as_ptr(),
+            sqlite_path_c.as_ptr(),
+            512
+        ));
+
+        let sqlite_id_alt = CString::new("db2").expect("sqlite id");
+        assert!(libresync_engine_register_sqlite_adapter(
+            handle,
+            sqlite_id_alt.as_ptr(),
+            sqlite_path_c.as_ptr(),
+            0
+        ));
+
+        assert!(libresync_engine_set_auto_accept(handle, false));
+
+        assert!(!libresync_engine_register_json_adapter(
+            handle,
+            adapter_id.as_ptr(),
+            json_path_c.as_ptr()
+        ));
+        assert!(last_error().is_some());
+
+        let device_id = CString::new("device-2").expect("device id");
+        let fingerprint = CString::new("abc123").expect("fingerprint");
+        assert!(libresync_allowlist_add(
+            handle,
+            device_id.as_ptr(),
+            fingerprint.as_ptr()
+        ));
+        assert!(libresync_allowlist_clear(handle));
+
+        libresync_engine_free(handle);
+    }
+
+    #[test]
+    fn ffi_backup_flow() {
+        let (tempdir, handle) = create_engine(None);
+        let json_path = tempdir.path().join("data.json");
+
+        let adapter_id = CString::new("doc").expect("adapter id");
+        let json_path_c = CString::new(json_path.to_string_lossy().to_string()).expect("json path");
+        assert!(libresync_engine_register_json_adapter(
+            handle,
+            adapter_id.as_ptr(),
+            json_path_c.as_ptr()
+        ));
+
+        assert!(libresync_engine_save_state(handle));
+
+        let note = CString::new("initial").expect("note");
+        let snapshot_ptr = libresync_backup_snapshot(handle, adapter_id.as_ptr(), note.as_ptr());
+        let snapshot_json = take_string(snapshot_ptr).expect("snapshot json");
+        let metadata: libresync::SnapshotMetadata =
+            serde_json::from_str(&snapshot_json).expect("snapshot metadata");
+
+        let list_ptr = libresync_backup_list(handle, adapter_id.as_ptr());
+        let list_json = take_string(list_ptr).expect("list json");
+        let snapshots: Vec<libresync::SnapshotMetadata> =
+            serde_json::from_str(&list_json).expect("snapshot list");
+        assert!(!snapshots.is_empty());
+
+        let snapshot_id = CString::new(metadata.id.clone()).expect("snapshot id");
+        let preview_ptr =
+            libresync_backup_preview(handle, adapter_id.as_ptr(), snapshot_id.as_ptr());
+        let preview_json = take_string(preview_ptr).expect("preview json");
+        let preview_value: serde_json::Value =
+            serde_json::from_str(&preview_json).expect("preview value");
+        assert!(preview_value.is_object());
+
+        assert!(libresync_backup_restore(
+            handle,
+            adapter_id.as_ptr(),
+            snapshot_id.as_ptr()
+        ));
+
+        assert!(libresync_backup_prune(handle, adapter_id.as_ptr(), 1, 0));
+
+        libresync_engine_free(handle);
+    }
+
+    #[test]
+    fn ffi_error_paths_for_pair_and_sync() {
+        let (_tempdir, handle) = create_engine(None);
+
+        let bad_addr = CString::new("nope").expect("bad addr");
+        let result = libresync_engine_pair(handle, bad_addr.as_ptr());
+        assert!(result.is_null());
+        assert!(last_error().is_some());
+
+        let adapter_id = CString::new("missing").expect("adapter id");
+        assert!(!libresync_engine_sync_now(
+            handle,
+            bad_addr.as_ptr(),
+            adapter_id.as_ptr()
+        ));
+        assert!(last_error().is_some());
+
+        let discover_ptr = libresync_engine_discover(handle, 1);
+        if let Some(discover_json) = take_string(discover_ptr) {
+            let discover_value: serde_json::Value =
+                serde_json::from_str(&discover_json).expect("discover json parse");
+            assert!(discover_value.is_array());
+        } else {
+            assert!(last_error().is_some());
+        }
+
+        libresync_engine_free(handle);
+    }
+}

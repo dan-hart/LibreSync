@@ -13,6 +13,13 @@ On each device:
 cargo build
 ```
 
+## Automated checks
+For local coverage validation:
+```
+cargo test
+cargo llvm-cov --workspace --summary-only --fail-under-regions 75
+```
+
 ## 1) Initialize the config on each device
 On **Device A**:
 ```
