@@ -1,0 +1,10 @@
+# Releases
+
+## v0.1.5 (2026-01-06)
+- Engine-owned E2EE on the wire plus encrypted state/backups at rest.
+- Logical record adapter example with merge policies for records.
+- SQLite adapter now includes WAL/SHM and optional page-delta encoding.
+- LibreSyncAlwaysOn wiring with status dashboard, manual refresh, and backup controls.
+- Backup preview in CLI and explicit restore confirmation.
+- SDK surface document for Swift/Kotlin bindings.
+- CI coverage gate (>=75% regions).

@@ -9,6 +9,7 @@ mod keys;
 mod crypto;
 mod protocol;
 mod record;
+mod logical;
 mod backup;
 mod state;
 mod sync;
@@ -36,6 +37,7 @@ pub use record::{
     FieldValue, MergePolicy, RecordKeyParts, RecordState, RecordView, SyncRecord,
     entry_to_record, parse_record_key, record_entry_key, record_to_entry,
 };
+pub use logical::InMemoryLogicalAdapter;
 pub use backup::{
     BackupAdapter, BackupManager, DataAdapterBackup, DiffCounts, FileSnapshotStore, RestoreOptions,
     Snapshot, SnapshotDiffSummary, SnapshotMetadata, SnapshotStore, summarize_snapshot_diff,

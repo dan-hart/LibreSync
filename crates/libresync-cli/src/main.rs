@@ -432,8 +432,30 @@ enum BackupCommands {
         adapter_id: String,
     },
     #[command(
+        about = "Preview the diff between a snapshot and current state.",
+        long_about = "Shows a diff summary between a snapshot and the current state without restoring."
+    )]
+    Preview {
+        #[arg(
+            long,
+            help = "Path to the config JSON file (defaults to the OS config directory)."
+        )]
+        config: Option<PathBuf>,
+        #[arg(
+            long,
+            default_value = FILE_KEY,
+            help = "Adapter ID to preview (default: file)."
+        )]
+        adapter_id: String,
+        #[arg(
+            long,
+            help = "Snapshot ID to preview."
+        )]
+        snapshot_id: String,
+    },
+    #[command(
         about = "Restore an encrypted snapshot.",
-        long_about = "Restore a snapshot into the selected data. Requires backup allow-restore config and --confirm."
+        long_about = "Restore a snapshot into the selected data. Requires backup allow-restore config, --confirm, and --confirm-id."
     )]
     Restore {
         #[arg(
@@ -457,6 +479,11 @@ enum BackupCommands {
             help = "Confirm the restore action."
         )]
         confirm: bool,
+        #[arg(
+            long,
+            help = "Confirm snapshot ID (must match the snapshot_id)."
+        )]
+        confirm_id: Option<String>,
     },
 }
 
@@ -854,14 +881,23 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 let config = resolve_config_path(config);
                 list_backup_snapshots(&config, &adapter_id)?;
             }
+            BackupCommands::Preview {
+                config,
+                adapter_id,
+                snapshot_id,
+            } => {
+                let config = resolve_config_path(config);
+                preview_backup_snapshot(&config, &adapter_id, &snapshot_id)?;
+            }
             BackupCommands::Restore {
                 config,
                 adapter_id,
                 snapshot_id,
                 confirm,
+                confirm_id,
             } => {
                 let config = resolve_config_path(config);
-                restore_backup_snapshot(&config, &adapter_id, &snapshot_id, confirm)?;
+                restore_backup_snapshot(&config, &adapter_id, &snapshot_id, confirm, confirm_id)?;
             }
         },
         Commands::Status {
@@ -1046,10 +1082,42 @@ fn list_backup_snapshots(
             "{} | {} | entries: {}",
             snapshot.id, snapshot.created_at_unix_secs, snapshot.entry_count
         );
+        if let Some(device_id) = snapshot.created_by_device_id.as_deref() {
+            println!("  device: {device_id}");
+        }
+        if let Some(label) = snapshot.label.as_deref() {
+            println!("  label: {label}");
+        }
         if let Some(note) = snapshot.note {
             println!("  note: {note}");
         }
     }
+
+    Ok(())
+}
+
+fn preview_backup_snapshot(
+    path: &Path,
+    adapter_id: &str,
+    snapshot_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut config = load_config(path)?;
+    let backup_dir = ensure_backup_dir(path, &mut config)?;
+    if !config.backup_enabled {
+        return Err("backups are not enabled; run libresync backup configure --enable".into());
+    }
+
+    let app_key = config.app_key()?;
+    let store = FileSnapshotStore::new(&backup_dir)?;
+    let manager = BackupManager::new(app_key, Arc::new(store));
+    let (adapter, _backup_adapter) = backup_adapter_for_config(&config, adapter_id)?;
+
+    let mut state = load_or_init_state(&config)?;
+    adapter.load_into_state(&mut state)?;
+
+    let (_metadata, entries) = manager.load_snapshot_entries(adapter_id, snapshot_id)?;
+    let summary = summarize_snapshot_diff(&state, &entries)?;
+    print_snapshot_summary(adapter_id, snapshot_id, &summary);
 
     Ok(())
 }
@@ -1059,6 +1127,7 @@ fn restore_backup_snapshot(
     adapter_id: &str,
     snapshot_id: &str,
     confirm: bool,
+    confirm_id: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = load_config(path)?;
     let backup_dir = ensure_backup_dir(path, &mut config)?;
@@ -1085,6 +1154,13 @@ fn restore_backup_snapshot(
 
     if !confirm {
         return Err("restore requires --confirm".into());
+    }
+    if confirm_id
+        .as_deref()
+        .map(|id| id != snapshot_id)
+        .unwrap_or(true)
+    {
+        return Err("restore requires --confirm-id that matches snapshot_id".into());
     }
 
     manager.restore_snapshot(&backup_adapter, &mut state, snapshot_id, RestoreOptions::confirmed())?;
@@ -2341,8 +2417,17 @@ mod tests {
         };
         assert_eq!(snapshots.len(), 1);
 
+        preview_backup_snapshot(&config_path, FILE_KEY, &snapshots[0].id)
+            .expect("preview");
+
         std::fs::write(&data_path, b"{\"after\":true}").expect("write after");
-        restore_backup_snapshot(&config_path, FILE_KEY, &snapshots[0].id, true)
+        restore_backup_snapshot(
+            &config_path,
+            FILE_KEY,
+            &snapshots[0].id,
+            true,
+            Some(snapshots[0].id.clone()),
+        )
             .expect("restore");
 
         let restored = std::fs::read_to_string(&data_path).expect("read");
@@ -2359,7 +2444,27 @@ mod tests {
         select_file(&config_path, &data_path).expect("select");
         configure_backups(&config_path, true, false, None).expect("configure");
 
-        let result = restore_backup_snapshot(&config_path, FILE_KEY, "missing", true);
+        let result = restore_backup_snapshot(
+            &config_path,
+            FILE_KEY,
+            "missing",
+            true,
+            Some("missing".to_string()),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn backup_restore_requires_confirm_id() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        let data_path = temp.path().join("data.json");
+
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+        select_file(&config_path, &data_path).expect("select");
+        configure_backups(&config_path, true, true, None).expect("configure");
+
+        let result = restore_backup_snapshot(&config_path, FILE_KEY, "missing", true, None);
         assert!(result.is_err());
     }
 
@@ -2919,7 +3024,13 @@ mod tests {
         let config_path = temp.path().join("config.json");
         init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
 
-        let result = restore_backup_snapshot(&config_path, FILE_KEY, "missing", true);
+        let result = restore_backup_snapshot(
+            &config_path,
+            FILE_KEY,
+            "missing",
+            true,
+            Some("missing".to_string()),
+        );
         assert!(result.is_err());
     }
 

@@ -80,6 +80,14 @@ impl<'a> RecordState<'a> {
         &self.namespace
     }
 
+    pub fn get(&self, schema: &str, entity: &str, id: &str) -> Result<Option<SyncRecord>> {
+        let key = record_entry_key(&self.namespace, schema, entity, id);
+        match self.state.entries.get(&key) {
+            Some(entry) => entry_to_record(entry, &self.namespace),
+            None => Ok(None),
+        }
+    }
+
     pub fn set(&mut self, record: SyncRecord) -> Result<Entry> {
         let key = record_entry_key(&self.namespace, &record.schema, &record.entity, &record.id);
         let payload = RecordPayload {

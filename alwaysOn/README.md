@@ -11,6 +11,8 @@
 - Device list, last-sync status, and storage footprint UI.
 - LAN discovery + pairing with explicit consent.
 - Backups are opt-in per app; restores require an explicit confirmation setting.
+- Manual refresh control and status dashboard in the UI.
+- Snapshot list with preview and restore controls (restore gated by allow-restore).
 
 ## Code layout
 - `alwaysOn/libresync-always-on` contains the current app scaffold.

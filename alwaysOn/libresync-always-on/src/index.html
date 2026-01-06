@@ -5,49 +5,384 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>LibreSyncAlwaysOn</title>
     <style>
+      :root {
+        color-scheme: light;
+        --paper: #f6f1e7;
+        --ink: #1b1c17;
+        --accent: #1f3d2b;
+        --accent-light: #d7e4d5;
+        --muted: #6a6b64;
+        --panel: rgba(255, 255, 255, 0.92);
+        --border: #cfc6b2;
+      }
+      * {
+        box-sizing: border-box;
+      }
       body {
         margin: 0;
-        font-family: "IBM Plex Mono", "SFMono-Regular", ui-monospace, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-        background: linear-gradient(135deg, #f5f1e8 0%, #dfe8d7 100%);
-        color: #1c1c1c;
-        display: flex;
+        font-family: "IBM Plex Mono", "SFMono-Regular", ui-monospace, Menlo, Monaco, Consolas,
+          "Liberation Mono", "Courier New", monospace;
+        background: radial-gradient(circle at top, #f6f1e7 0%, #e2ead6 55%, #d2dcc1 100%);
+        color: var(--ink);
         min-height: 100vh;
+        display: flex;
         align-items: center;
         justify-content: center;
+        padding: 32px 20px;
       }
       main {
-        max-width: 640px;
+        width: min(960px, 100%);
+        background: var(--panel);
+        border: 1px solid var(--border);
+        box-shadow: 0 20px 50px rgba(34, 40, 28, 0.12);
         padding: 32px;
-        background: rgba(255, 255, 255, 0.8);
-        border: 1px solid #c9c2b3;
-        box-shadow: 0 18px 40px rgba(0, 0, 0, 0.08);
+      }
+      header {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
       }
       h1 {
-        margin: 0 0 12px;
+        margin: 0;
         font-size: 28px;
-        letter-spacing: 0.5px;
+        letter-spacing: 0.8px;
       }
       p {
-        margin: 0 0 12px;
-        line-height: 1.5;
+        margin: 0;
+        line-height: 1.6;
+        color: var(--muted);
       }
-      .status {
-        margin-top: 16px;
-        padding: 12px 16px;
-        background: #1b2a1b;
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 16px;
+        margin-top: 24px;
+      }
+      .card {
+        border: 1px solid var(--border);
+        padding: 16px;
+        background: #fff;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .label {
+        text-transform: uppercase;
+        font-size: 11px;
+        letter-spacing: 2px;
+        color: var(--muted);
+      }
+      .value {
+        font-size: 14px;
+        word-break: break-word;
+      }
+      .actions {
+        margin-top: 20px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+      button {
+        border: none;
+        background: var(--accent);
         color: #f2f5e9;
+        padding: 10px 18px;
         font-size: 12px;
         text-transform: uppercase;
         letter-spacing: 2px;
+        cursor: pointer;
+      }
+      button.secondary {
+        background: #2d2f27;
+      }
+      .backup {
+        margin-top: 24px;
+        border-top: 1px solid var(--border);
+        padding-top: 20px;
+      }
+      .snapshots {
+        margin-top: 24px;
+        border-top: 1px solid var(--border);
+        padding-top: 20px;
+      }
+      .snapshot-list {
+        display: grid;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      .snapshot-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        background: #fff;
+        font-size: 12px;
+      }
+      .snapshot-meta {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .snapshot-preview {
+        margin-top: 12px;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        background: #fff7e6;
+        font-size: 12px;
+      }
+      .restore-controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 12px;
+      }
+      .restore-controls input {
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        font-family: inherit;
+        font-size: 12px;
+        min-width: 220px;
+      }
+      .toggle {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      input[type="checkbox"] {
+        width: 18px;
+        height: 18px;
+        accent-color: var(--accent);
+      }
+      .status {
+        margin-top: 18px;
+        padding: 12px 16px;
+        background: var(--accent);
+        color: #f2f5e9;
+        font-size: 12px;
+        letter-spacing: 2px;
+        text-transform: uppercase;
+      }
+      .muted {
+        color: var(--muted);
       }
     </style>
   </head>
   <body>
     <main>
-      <h1>LibreSyncAlwaysOn</h1>
-      <p>Always-on device for LibreSync. LAN-only, no cloud, no surprises.</p>
-      <p>Engine wiring is stubbed; UI will show device status and sync health.</p>
-      <div class="status">Always-on device placeholder</div>
+      <header>
+        <h1>LibreSyncAlwaysOn</h1>
+        <p>Always-on device for LibreSync. LAN-only, no cloud, no surprises.</p>
+        <p class="muted">Status and manual refresh controls are active below.</p>
+      </header>
+
+      <section class="grid" id="status-grid"></section>
+
+      <div class="actions">
+        <button id="refresh">Manual refresh</button>
+        <button class="secondary" id="reload">Reload status</button>
+      </div>
+
+      <section class="backup">
+        <div class="label">Backup policy (per app)</div>
+        <p class="muted" id="backup-app">App: —</p>
+        <div class="toggle">
+          <input type="checkbox" id="backup-enabled" />
+          <label for="backup-enabled">Backups enabled</label>
+        </div>
+        <div class="toggle">
+          <input type="checkbox" id="backup-restore" />
+          <label for="backup-restore">Allow restore (requires separate confirm)</label>
+        </div>
+      </section>
+
+      <section class="snapshots">
+        <div class="label">Snapshots</div>
+        <div class="snapshot-list" id="snapshot-list">No snapshots loaded.</div>
+        <div class="snapshot-preview" id="snapshot-preview">Select a snapshot to preview.</div>
+        <div class="restore-controls">
+          <input type="text" id="confirm-id" placeholder="Confirm snapshot id" />
+          <button class="secondary" id="restore">Restore snapshot</button>
+          <button class="secondary" id="reload-snapshots">Reload snapshots</button>
+        </div>
+      </section>
+
+      <div class="status" id="status-banner">Connecting to always-on device...</div>
     </main>
+
+    <script>
+      const statusGrid = document.getElementById("status-grid");
+      const statusBanner = document.getElementById("status-banner");
+      const backupEnabled = document.getElementById("backup-enabled");
+      const backupRestore = document.getElementById("backup-restore");
+      const backupApp = document.getElementById("backup-app");
+      let currentAppId = null;
+      const refreshButton = document.getElementById("refresh");
+      const reloadButton = document.getElementById("reload");
+      const snapshotList = document.getElementById("snapshot-list");
+      const snapshotPreview = document.getElementById("snapshot-preview");
+      const confirmIdInput = document.getElementById("confirm-id");
+      const restoreButton = document.getElementById("restore");
+      const reloadSnapshotsButton = document.getElementById("reload-snapshots");
+      let selectedSnapshotId = null;
+
+      const invoke = (command, args = {}) => {
+        if (!window.__TAURI__?.tauri?.invoke) {
+          statusBanner.textContent = "Tauri bridge not available.";
+          return Promise.reject(new Error("No Tauri bridge"));
+        }
+        return window.__TAURI__.tauri.invoke(command, args);
+      };
+
+      const formatTimestamp = (value) => {
+        if (!value) return "—";
+        const date = new Date(value * 1000);
+        return date.toLocaleString();
+      };
+
+      const renderStatus = (status) => {
+        statusGrid.innerHTML = "";
+        const items = [
+          { label: "Device ID", value: status.device_id },
+          { label: "User", value: status.user_id },
+          { label: "App", value: status.app_id },
+          { label: "Listen", value: status.listen_addr },
+          { label: "Paired devices", value: String(status.paired_count) },
+          { label: "Last sync", value: formatTimestamp(status.last_sync_unix_secs) },
+          { label: "Data path", value: status.data_path || "—" },
+          { label: "Last error", value: status.last_error || "—" },
+        ];
+
+        items.forEach((item) => {
+          const card = document.createElement("div");
+          card.className = "card";
+          const label = document.createElement("div");
+          label.className = "label";
+          label.textContent = item.label;
+          const value = document.createElement("div");
+          value.className = "value";
+          value.textContent = item.value;
+          card.append(label, value);
+          statusGrid.appendChild(card);
+        });
+
+        currentAppId = status.app_id;
+        backupApp.textContent = `App: ${status.app_id}`;
+        const policy = status.backup?.[status.app_id] || { enabled: false, allow_restore: false };
+        backupEnabled.checked = policy.enabled;
+        backupRestore.checked = policy.allow_restore;
+
+        statusBanner.textContent = "Always-on device ready";
+      };
+
+      const loadStatus = () => {
+        return invoke("get_status")
+          .then(renderStatus)
+          .catch((error) => {
+            statusBanner.textContent = `Status error: ${error}`;
+          });
+      };
+
+      const updateBackup = () => {
+        return invoke("set_backup_policy", {
+          app_id: currentAppId,
+          enabled: backupEnabled.checked,
+          allow_restore: backupRestore.checked,
+        })
+          .then(renderStatus)
+          .catch((error) => {
+            statusBanner.textContent = `Backup update error: ${error}`;
+          });
+      };
+
+      const renderSnapshots = (snapshots) => {
+        if (!snapshots.length) {
+          snapshotList.textContent = "No snapshots available.";
+          return;
+        }
+        snapshotList.innerHTML = "";
+        snapshots.forEach((snapshot) => {
+          const item = document.createElement("div");
+          item.className = "snapshot-item";
+          const meta = document.createElement("div");
+          meta.className = "snapshot-meta";
+          meta.innerHTML = `
+            <strong>${snapshot.id}</strong>
+            <span>${new Date(snapshot.created_at_unix_secs * 1000).toLocaleString()}</span>
+            <span>entries: ${snapshot.entry_count}</span>
+          `;
+          const action = document.createElement("button");
+          action.className = "secondary";
+          action.textContent = "Preview";
+          action.addEventListener("click", () => {
+            selectedSnapshotId = snapshot.id;
+            confirmIdInput.value = "";
+            previewSnapshot(snapshot.id);
+          });
+          item.append(meta, action);
+          snapshotList.appendChild(item);
+        });
+      };
+
+      const loadSnapshots = () => {
+        if (!currentAppId) return Promise.resolve();
+        return invoke("list_snapshots", { app_id: currentAppId })
+          .then(renderSnapshots)
+          .catch((error) => {
+            snapshotList.textContent = `Snapshot error: ${error}`;
+          });
+      };
+
+      const previewSnapshot = (snapshotId) => {
+        snapshotPreview.textContent = "Loading snapshot preview...";
+        return invoke("preview_snapshot", { app_id: currentAppId, snapshot_id: snapshotId })
+          .then((summary) => {
+            snapshotPreview.textContent = `Snapshot ${snapshotId} | new ${summary.overall.new_entries} | changed ${summary.overall.changed_entries} | unchanged ${summary.overall.unchanged_entries} | missing ${summary.overall.missing_entries}`;
+          })
+          .catch((error) => {
+            snapshotPreview.textContent = `Preview error: ${error}`;
+          });
+      };
+
+      refreshButton.addEventListener("click", () => {
+        statusBanner.textContent = "Refreshing...";
+        invoke("manual_refresh")
+          .then((summary) => {
+            statusBanner.textContent = `Refresh complete: ${summary.succeeded}/${summary.attempted}`;
+            loadStatus();
+          })
+          .catch((error) => {
+            statusBanner.textContent = `Refresh error: ${error}`;
+          });
+      });
+
+      reloadButton.addEventListener("click", loadStatus);
+      backupEnabled.addEventListener("change", updateBackup);
+      backupRestore.addEventListener("change", updateBackup);
+      restoreButton.addEventListener("click", () => {
+        if (!selectedSnapshotId) {
+          statusBanner.textContent = "Select a snapshot first.";
+          return;
+        }
+        if (confirmIdInput.value !== selectedSnapshotId) {
+          statusBanner.textContent = "Confirm ID must match the snapshot id.";
+          return;
+        }
+        statusBanner.textContent = "Restoring snapshot...";
+        invoke("restore_snapshot", {
+          app_id: currentAppId,
+          snapshot_id: selectedSnapshotId,
+          confirm_id: confirmIdInput.value,
+        })
+          .then(renderStatus)
+          .catch((error) => {
+            statusBanner.textContent = `Restore error: ${error}`;
+          });
+      });
+      reloadSnapshotsButton.addEventListener("click", loadSnapshots);
+
+      loadStatus().then(loadSnapshots);
+    </script>
   </body>
 </html>

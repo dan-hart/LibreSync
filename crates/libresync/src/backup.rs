@@ -18,6 +18,10 @@ pub struct SnapshotMetadata {
     pub created_at_unix_secs: u64,
     pub entry_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by_device_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
 
@@ -156,11 +160,14 @@ impl BackupManager {
     ) -> Result<SnapshotMetadata> {
         let entries = adapter.export_snapshot(state)?;
         let encrypted = encrypt_entries(&self.app_key, entries)?;
+        let label = note.clone();
         let metadata = SnapshotMetadata {
             id: new_snapshot_id(),
             adapter_id: adapter.id().to_string(),
             created_at_unix_secs: now_unix_secs(),
             entry_count: encrypted.len(),
+            created_by_device_id: Some(state.device_id.clone()),
+            label,
             note,
         };
         let snapshot = Snapshot {

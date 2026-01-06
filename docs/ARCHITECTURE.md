@@ -1,6 +1,6 @@
 # Architecture overview
 
-LibreSync is a device-to-device (D2D) sync engine. Every instance is a device, and devices connect directly on the LAN. There is no client/server role in the protocol; a device may accept inbound connections and also initiate outbound connections at any time.
+LibreSync is a device-to-device (D2D) sync engine. Every instance is a device, and devices connect directly on the LAN. There is no client/host role in the protocol; a device may accept inbound connections and also initiate outbound connections at any time.
 
 ## Core principles
 - Devices are symmetric; any device can initiate a connection.
@@ -54,15 +54,17 @@ Both devices merge incoming entries using the Lamport clock rules to ensure conv
 - Each value has a Lamport clock (counter + device ID).
 - On merge, the entry with the higher clock wins. Ties resolve by device ID.
 
-## Logical record sync (planned primary path)
+## Logical record sync (primary path)
 - Logical adapters map app data into records (`schema`, `entity`, `id`, `fields`, `tombstone`).
 - Records are merged with field-level policies (LWW, set-union, counters, list append).
+- `InMemoryLogicalAdapter` provides a minimal record adapter for early integrations.
 - File adapters remain supported as a fallback for arbitrary files or whole-store snapshots.
 
 ## File adapters
 - `JsonFileAdapter` and `SqliteFileAdapter` map files into the state.
 - `WatchedFileAdapter` uses filesystem events for near-real-time local changes.
-- SQLite adapter syncs the main database file plus WAL/SHM sidecars for day-one delta support.
+- SQLite adapter syncs the main database file plus WAL/SHM sidecars.
+- Optional page-delta encoding can be enabled on SQLite adapters to reduce payload size when changes are small.
 
 ## File refresh (CLI)
 The CLI maps a single JSON file to a single key (`file`) in the state:
@@ -78,10 +80,11 @@ The CLI maps a single JSON file to a single key (`file`) in the state:
 - Pairing exchanges the app-level key inside the TLS channel.
 - Engine state files and backups are encrypted at rest with the app-level key.
 
-## LibreSyncAlwaysOn (planned)
+## LibreSyncAlwaysOn (in progress)
 - Always-on desktop device that keeps app data synced while primary apps are closed.
 - LAN-only, written in Rust + Tauri, targeting macOS, Windows, and Linux.
-- Optional per-app backups via encrypted snapshots, with explicit restore confirmation.
+- Status dashboard with manual refresh and per-app backup policy controls.
+- Snapshot preview and restore controls (restore gated by allow-restore).
 
 ## Future hardening
 - Device keypairs and signed app attestations.

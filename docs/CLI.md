@@ -16,7 +16,8 @@ The CLI is a thin wrapper around the core library. It exposes the minimal flow n
 - `backup configure`: opt in to encrypted backups (and optionally allow restores).
 - `backup snapshot`: create an encrypted snapshot.
 - `backup list`: list encrypted snapshots.
-- `backup restore`: restore an encrypted snapshot (requires allow-restore + `--confirm`).
+- `backup preview`: show a diff summary between a snapshot and current state.
+- `backup restore`: restore an encrypted snapshot (requires allow-restore + `--confirm` + `--confirm-id`).
 
 ## Config file
 The config is a JSON file that stores identity and trust state:
@@ -65,5 +66,5 @@ You can override the location with `--config` on any command.
 - `pair` and `refresh` will prompt for a device if multiple are discovered and no device is specified.
 - `watch` refreshes all paired devices and uses discovery unless `--no-discover` is set.
 - `watch` will start a local listener unless `--no-listen` is set.
-- `backup restore` requires two steps: `backup configure --allow-restore` plus `backup restore --confirm`.
+- `backup restore` requires two steps: `backup configure --allow-restore` plus `backup restore --confirm --confirm-id <snapshot-id>`.
 - Use `--verbose` to include debug details when errors occur.

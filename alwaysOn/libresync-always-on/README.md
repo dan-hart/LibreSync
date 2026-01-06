@@ -10,10 +10,9 @@ LibreSyncAlwaysOn is an always-on desktop device that keeps LibreSync data synce
 - Basic UI for device list, last sync, and storage footprint.
 
 ## Status
-- This folder contains the initial scaffolding for the app. The UI is minimal and the engine wiring is a stub.
+- Engine wiring is active with a status dashboard, manual refresh button, per-app backup toggles, and snapshot preview/restore controls.
 
 ## Next steps
-- Initialize Engine + adapters in `src-tauri/src/main.rs`.
 - Add a tray + background service behavior per OS.
-- Add device list, pairing, and status UI.
+- Add device list, pairing approvals, and trust management UI.
 - Make the app ID configurable so it can sync data for specific apps.

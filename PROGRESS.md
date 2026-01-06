@@ -26,7 +26,11 @@ LibreSync has a working device-to-device MVP for two CLI instances on a LAN. Dev
 - Mandatory app-level encryption for sync payloads (engine-owned E2EE on the wire).
 - Encrypted state files and backups at rest using the app-level key.
 - SQLite sync now includes WAL/SHM sidecar data alongside snapshots.
+- SQLite adapter supports optional page-delta encoding to reduce payload size.
+- In-memory logical adapter added for record-level merges and policy testing.
 - LibreSyncAlwaysOn planning docs added (always-on desktop device).
+- LibreSyncAlwaysOn now includes status dashboard, manual refresh, and snapshot controls.
+- SDK surface document added for Swift/Kotlin bindings.
 - Expanded unit test coverage (75%+) and bumped version to 0.1.5.
 
 ## Current MVP behavior

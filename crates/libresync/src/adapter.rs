@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     Entry, Error, MergePolicy, RecordState, RecordView, Result, State, SyncRecord,
@@ -267,6 +268,7 @@ pub struct SqliteFileAdapter {
     id: String,
     path: PathBuf,
     key: String,
+    page_delta: Option<usize>,
 }
 
 impl SqliteFileAdapter {
@@ -276,11 +278,17 @@ impl SqliteFileAdapter {
             key: id.clone(),
             id,
             path: path.into(),
+            page_delta: None,
         }
     }
 
     pub fn with_key(mut self, key: impl Into<String>) -> Self {
         self.key = key.into();
+        self
+    }
+
+    pub fn with_page_delta(mut self, page_size: usize) -> Self {
+        self.page_delta = Some(page_size.max(512));
         self
     }
 
@@ -314,6 +322,10 @@ impl SqliteFileAdapter {
         format!("{}:shm", self.key)
     }
 
+    fn delta_key(&self) -> String {
+        format!("{}:delta", self.key)
+    }
+
     fn ensure_file(&self) -> Result<()> {
         if self.path.exists() {
             return Ok(());
@@ -324,6 +336,114 @@ impl SqliteFileAdapter {
         fs::write(&self.path, b"")?;
         Ok(())
     }
+
+    fn update_state_with_sqlite_bytes(&self, state: &mut State, bytes: Vec<u8>) -> Result<()> {
+        let current = state.get(&self.key).map(|data| data.to_vec());
+        let delta_key = self.delta_key();
+        let delta_current = state.get(&delta_key).map(|data| data.to_vec());
+
+        if let (Some(page_size), Some(base)) = (self.page_delta, current.clone()) {
+            let delta = compute_page_delta(&base, &bytes, page_size);
+            if !delta.pages.is_empty() {
+                let delta_bytes = bincode::serialize(&delta)
+                    .map_err(|error| Error::Protocol(error.to_string()))?;
+                if delta_bytes.len() < bytes.len() {
+                    if delta_current.as_deref() != Some(delta_bytes.as_slice()) {
+                        state.set(delta_key, delta_bytes);
+                    }
+                } else {
+                    if current.as_deref() != Some(bytes.as_slice()) {
+                        state.set(self.key.clone(), bytes);
+                    }
+                    if delta_current.as_deref() != Some(&[]) {
+                        state.set(delta_key, Vec::new());
+                    }
+                }
+            } else if delta_current.as_deref() != Some(&[]) {
+                state.set(delta_key, Vec::new());
+            }
+        } else if current.as_deref() != Some(bytes.as_slice()) {
+            state.set(self.key.clone(), bytes);
+        }
+
+        Ok(())
+    }
+
+    fn bytes_from_state(&self, state: &State) -> Result<Option<Vec<u8>>> {
+        let base = state.get(&self.key).map(|data| data.to_vec());
+        let delta_key = self.delta_key();
+        if let Some(delta_bytes) = state.get(&delta_key) {
+            if !delta_bytes.is_empty() {
+                if let (Some(base), Ok(delta)) = (
+                    base.clone(),
+                    bincode::deserialize::<SqliteDelta>(delta_bytes),
+                ) {
+                    return Ok(Some(apply_page_delta(&base, &delta)));
+                }
+            }
+        }
+        Ok(base)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct SqliteDelta {
+    page_size: u32,
+    file_size: u64,
+    pages: Vec<PageDelta>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct PageDelta {
+    index: u32,
+    bytes: Vec<u8>,
+}
+
+fn compute_page_delta(base: &[u8], current: &[u8], page_size: usize) -> SqliteDelta {
+    let page_count = (current.len() + page_size - 1) / page_size;
+    let mut pages = Vec::new();
+
+    for index in 0..page_count {
+        let start = index * page_size;
+        let end = std::cmp::min(start + page_size, current.len());
+        let current_page = &current[start..end];
+        let base_page = if start < base.len() {
+            let base_end = std::cmp::min(start + page_size, base.len());
+            &base[start..base_end]
+        } else {
+            &[]
+        };
+
+        if base_page != current_page {
+            pages.push(PageDelta {
+                index: index as u32,
+                bytes: current_page.to_vec(),
+            });
+        }
+    }
+
+    SqliteDelta {
+        page_size: page_size as u32,
+        file_size: current.len() as u64,
+        pages,
+    }
+}
+
+fn apply_page_delta(base: &[u8], delta: &SqliteDelta) -> Vec<u8> {
+    let page_size = delta.page_size as usize;
+    let mut output = base.to_vec();
+    output.resize(delta.file_size as usize, 0);
+
+    for page in &delta.pages {
+        let start = page.index as usize * page_size;
+        let end = start + page.bytes.len();
+        if end > output.len() {
+            output.resize(end, 0);
+        }
+        output[start..end].copy_from_slice(&page.bytes);
+    }
+
+    output
 }
 
 impl DataAdapter for SqliteFileAdapter {
@@ -347,10 +467,7 @@ impl DataAdapter for SqliteFileAdapter {
     fn load_into_state(&self, state: &mut State) -> Result<()> {
         self.ensure_file()?;
         let bytes = fs::read(&self.path)?;
-        let current = state.get(&self.key).map(|data| data.to_vec());
-        if current.as_deref() != Some(bytes.as_slice()) {
-            state.set(self.key.clone(), bytes);
-        }
+        self.update_state_with_sqlite_bytes(state, bytes)?;
 
         let wal_path = self.wal_path();
         let wal_bytes = if wal_path.exists() {
@@ -379,7 +496,7 @@ impl DataAdapter for SqliteFileAdapter {
     }
 
     fn apply_from_state(&self, state: &State) -> Result<()> {
-        if let Some(bytes) = state.get(&self.key) {
+        if let Some(bytes) = self.bytes_from_state(state)? {
             self.ensure_file()?;
             let existing = fs::read(&self.path)?;
             if existing.as_slice() != bytes {
@@ -411,7 +528,7 @@ impl DataAdapter for SqliteFileAdapter {
 
     fn sync_tick(&self, state: &mut State, cache: &mut AdapterCache) -> Result<()> {
         self.ensure_file()?;
-        if let Some(bytes) = state.get(&self.key).map(|data| data.to_vec()) {
+        if let Some(bytes) = self.bytes_from_state(state)? {
             if cache.last_bytes.as_ref() != Some(&bytes) {
                 fs::write(&self.path, &bytes)?;
                 cache.last_bytes = Some(bytes);
@@ -445,10 +562,7 @@ impl DataAdapter for SqliteFileAdapter {
         }
 
         let file_bytes = fs::read(&self.path)?;
-        let current = state.get(&self.key).map(|data| data.to_vec());
-        if current.as_deref() != Some(file_bytes.as_slice()) {
-            state.set(self.key.clone(), file_bytes);
-        }
+        self.update_state_with_sqlite_bytes(state, file_bytes)?;
 
         let wal_path = self.wal_path();
         let wal_bytes = if wal_path.exists() {
@@ -726,5 +840,48 @@ mod tests {
 
         adapter.sync_tick(&mut state, &mut cache).expect("sync");
         assert_eq!(state.get("watch"), Some(b"{\"a\":1}".as_slice()));
+    }
+
+    #[test]
+    fn sqlite_adapter_creates_page_delta_when_smaller() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("db.sqlite");
+
+        let base = vec![0u8; 4096];
+        let mut current = base.clone();
+        current[10] = 42;
+        std::fs::write(&db_path, &current).expect("write db");
+
+        let adapter = SqliteFileAdapter::new("db", &db_path).with_page_delta(1024);
+        let mut state = State::new("device");
+        state.set("db", base);
+
+        adapter.load_into_state(&mut state).expect("load");
+
+        let delta = state.get("db:delta").expect("delta");
+        let decoded: super::SqliteDelta =
+            bincode::deserialize(delta).expect("decode delta");
+        assert!(!decoded.pages.is_empty());
+    }
+
+    #[test]
+    fn sqlite_adapter_apply_page_delta_updates_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("db.sqlite");
+
+        let base = vec![0u8; 2048];
+        let mut current = base.clone();
+        current[100] = 7;
+        let delta = super::compute_page_delta(&base, &current, 512);
+        let delta_bytes = bincode::serialize(&delta).expect("serialize");
+
+        let adapter = SqliteFileAdapter::new("db", &db_path).with_page_delta(512);
+        let mut state = State::new("device");
+        state.set("db", base);
+        state.set("db:delta", delta_bytes);
+
+        adapter.apply_from_state(&state).expect("apply");
+        let on_disk = std::fs::read(&db_path).expect("read");
+        assert_eq!(on_disk, current);
     }
 }

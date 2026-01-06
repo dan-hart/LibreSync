@@ -29,7 +29,7 @@ User experience:
 - E2EE by default, with clear trust indicators.
 
 ## Who is this for?
-- Developers who want to add data synchronization to their desktop or mobile app, but don't want to mess with a server.
+- Developers who want to add data synchronization to their desktop or mobile app, but don't want to run centralized infrastructure.
 - Privacy-conscious users looking for low-level structured data synchronization.
 - Researchers: this library can be used to keep several machine's data in sync.
 
@@ -48,6 +48,8 @@ User experience:
 ## Library (libresync)
 - Register an adapter, start a listener, and enable auto refresh.
 - Adapters can be logical (records) or file-based (JSON, SQLite, arbitrary files).
+- `InMemoryLogicalAdapter` provides a minimal record adapter for merge-policy testing.
+- SQLite adapters can enable page-delta encoding to reduce payload size when changes are small.
 - Auto refresh polls for local changes and syncs with paired devices discovered on the LAN.
 - Use `AutoRefreshConfig` to customize polling and refresh intervals.
 - Use `WatchedFileAdapter` for near-real-time local file change detection.
@@ -102,10 +104,11 @@ The CLI is a minimal device-to-device testing tool that uses LAN discovery, devi
 - Use `--verbose` to include debug details when errors occur.
 
 ## LibreSyncAlwaysOn
-- Planned always-on desktop app (LAN-only) written in Rust + Tauri.
+- Always-on desktop app (LAN-only) written in Rust + Tauri.
 - Runs as a device that keeps data synced even when the primary app is closed.
+- Status dashboard with manual refresh and per-app backup toggles.
+- Snapshot preview and restore controls (restore gated by allow-restore).
 - Intended targets: macOS, Windows, Linux.
-- Optional per-app backups with encrypted snapshots and explicit restore confirmation.
 
 ## Values
 - Privacy: a human right
@@ -131,4 +134,6 @@ AGPLv3 - Why? Because it's what we decided upon.
 - [Privacy](PRIVACY.md)
 - [Contributing](CONTRIBUTING.md)
 - [LibreSyncAlwaysOn](alwaysOn/README.md)
+- [SDK surface](docs/SDK.md)
+- [Releases](RELEASES.md)
 - [License](LICENSE)

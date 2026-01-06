@@ -20,6 +20,17 @@ LibreSync is designed for **local-only, device-to-device synchronization** with 
 - Engine state files and backups are encrypted at rest using the same app-level key.
 - Key rotation and re-keying flows are still pending.
 
+## App-key lifecycle (current + planned)
+**Current behavior**
+- The app-level key is generated on first init and stored locally per app config.
+- Pairing exchanges app keys; the local device adopts the remote app key when they differ.
+- The app-level key encrypts sync payloads and state/backup storage. It is never optional.
+
+**Planned behavior**
+- Provide explicit app-key export/import for device onboarding and recovery.
+- Add key rotation with re-encryption of stored state and backups.
+- Support re-keying on trust changes (e.g., removing a device) with a guided migration flow.
+
 ## Repository Security Controls
 - **.gitignore hardening**: sensitive files and build caches are excluded by default.
 - **git-secrets (required)**: install hooks to block secrets before commit.

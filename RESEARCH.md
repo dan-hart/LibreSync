@@ -6,7 +6,7 @@
 
 You are proposing an **embeddable, cross-platform, device-to-device structured-data sync framework** that:
 
-- **Auto-discovers peers** on the same local network (zero-config) and supports **manual peer add**.
+- **Auto-discovers devices** on the same local network (zero-config) and supports **manual device add**.
 - Operates with **no dependency on cloud or public internet** (direct device connections only).
 - Provides **real-time sync + eventual consistency**, with **fast, resilient conflict handling**.
 - Is **AGPLv3-only** and explicitly values **privacy and security as rights**.
@@ -29,7 +29,7 @@ The strongest approach is a **shared Rust core** with **thin native bindings**, 
 
 ### Product vision (summary)
 
-LibreSync should be the default choice when someone wants sync without servers.
+LibreSync should be the default choice when someone wants sync without centralized infrastructure.
 It must be:
 - **Easy to integrate** (small API, clear docs, reliable defaults).
 - **Easy to understand** (transparent pairing, visible trust, status you can trust).
@@ -52,12 +52,12 @@ Definitions:
 ### Goals (hard requirements)
 
 1. **Zero config**
-   - LAN peers are discovered automatically.
+   - LAN devices are discovered automatically.
    - Manual node addition exists and requires **mutual approval**.
 2. **No internet at all**
-   - No third-party servers.
+   - No third-party services.
    - No external rendezvous, no STUN/TURN, no telemetry by default.
-   - Direct peer connections only (LAN or explicitly configured overlay like Tailscale).
+   - Direct device connections only (LAN or explicitly configured overlay like Tailscale).
 3. **Fast + resilient conflict handling**
    - Real-time propagation while online.
    - Eventual consistency under partitions/offline edits.
@@ -85,14 +85,14 @@ Definitions:
 ### Main practical challenges:
 
 - **iOS LAN constraints**: Local Network permission prompts and background execution limits.
-- **Network topology quirks**: Some Wi-Fi networks isolate clients (AP isolation), breaking peer-to-peer.
+- **Network topology quirks**: Some Wi-Fi networks isolate clients (AP isolation), breaking device-to-device.
 - **Scaling and compaction**: CRDT metadata growth; large datasets; many nodes.
 
 ### Bottom line:
 
 Feasible, with careful scope management:
 
-- Start with **2–5 peers**, LAN discovery, one data adapter, and strong security primitives.
+- Start with **2–5 devices**, LAN discovery, one data adapter, and strong security primitives.
 - Expand to more complex adapters and topologies after core correctness is proven.
 
 ---
@@ -103,7 +103,7 @@ Feasible, with careful scope management:
 
 - **Syncthing / Resilio**: decentralized *file* sync; not embeddable structured-data sync.
 - **Automerge / Yjs**: excellent CRDT engines for JSON/text, but not a full P2P discovery + secure transport + multi-platform SDK.
-- **Database sync products**: often cloud-mediated, proprietary, or oriented around client↔server, not pure LAN peer sync.
+- **Database sync products**: often cloud-mediated, proprietary, or oriented around client↔central service, not pure LAN device sync.
 
 Your opportunity: combine **LAN discovery + secure transport + structured-data convergence** into a reusable, embeddable library under AGPL.
 
@@ -217,7 +217,7 @@ Start with UniFFI unless it blocks a required API. If it does, fall back to a ma
 
 ### FFI design principles
 
-- **Opaque handles** for long-lived objects (engine, adapter, peer).
+- **Opaque handles** for long-lived objects (engine, adapter, device).
 - **Explicit ownership**: caller frees strings and buffers.
 - **Stable enums** for event types and error codes.
 - **Async surfaced as callbacks** or **pollable queues** (no cross-thread FFI calls from Rust).
@@ -236,6 +236,7 @@ Start with UniFFI unless it blocks a required API. If it does, fall back to a ma
 2) **SQLite adapter** (scoped)  
    - Start with primary-keyed tables and deterministic per-column merge.
    - Expose `register_table()`, `export_changes()`, `apply_changes()`.
+   - Optional page-delta encoding can reduce payload size for file-based SQLite sync.
 
 ### App-level API (intent focused)
 
@@ -302,13 +303,13 @@ Adapters should hide the op-log and merge semantics from app code.
 
 ### 1) Discovery layer (Zero config + manual)
 
-**Goal:** find peers on LAN without setup, and allow manual addition.
+**Goal:** find devices on LAN without setup, and allow manual addition.
 
 Recommended structure:
 
 - `DiscoveryProvider` trait with pluggable implementations:
   - `MdnsDiscovery` (LAN)
-  - `StaticDiscovery` (manual addresses / “known peers”)
+  - `StaticDiscovery` (manual addresses / “known devices”)
   - `OverlayDiscovery` (Tailscale/Headscale mode: not broadcast; see later)
 
 mDNS is the most natural for “zero config” on LAN.
@@ -340,14 +341,14 @@ Recommended:
 - Device ID = hash of public key.
 - Pairing workflow:
   - show QR code / short code containing device ID + ephemeral handshake info
-  - peer scans/enters code
+  - device scans/enters code
   - both sides prompt: “Approve this device?”
 - Store allow-list of trusted device IDs.
-- All sessions require mutual auth; unknown peers are rejected.
+- All sessions require mutual auth; unknown devices are rejected.
 
 Add revocation:
 
-- remove peer from allow-list
+- remove device from allow-list
 - optionally rotate cluster keys or data keys if needed for stronger revocation semantics
 
 ### 4) Sync protocol
@@ -423,7 +424,7 @@ This is the hardest part to do “generically.” For v1, consider scoping SQLit
 
 ### Major scaling dimensions
 
-- Number of peers (N)
+- Number of devices (N)
 - Change rate (ops/sec)
 - Dataset size
 - History length (CRDT/op log growth)
@@ -434,16 +435,16 @@ This is the hardest part to do “generically.” For v1, consider scoping SQLit
 - **Chunking**: send deltas in bounded batches; support streaming.
 - **Compression**: optional on large batches; avoid per-message compression overhead.
 - **Compaction/GC**:
-  - CRDT engines usually support compaction once all peers have seen history (or by snapshotting).
-  - For op logs, prune entries below the “minimum acknowledged watermark” across peers.
-- **Backpressure**: if one peer is slow, don’t stall others; queue with limits.
+  - CRDT engines usually support compaction once all devices have seen history (or by snapshotting).
+  - For op logs, prune entries below the “minimum acknowledged watermark” across devices.
+- **Backpressure**: if one device is slow, don’t stall others; queue with limits.
 - **Topology**:
   - For small N (≤10), full mesh is fine.
   - For larger N, consider selective forwarding or pub-sub (but that increases complexity).
 
 ### Practical v1 target
 
-- 2–5 peers
+- 2–5 devices
 - <10k objects / moderate SQLite DB
 - real-time changes propagate within <200ms on typical LAN
 
@@ -466,7 +467,7 @@ Approach:
 ### macOS
 
 - easier: background daemons possible, long-lived processes acceptable
-- can act as an “always-on” peer for faster convergence in your ecosystem
+- can act as an “always-on” device for faster convergence in your ecosystem
 
 ---
 
@@ -524,9 +525,9 @@ Recommended design:
 
 - Keep discovery **pluggable**.
 - For overlay mode, offer:
-  1) manual peer add (enter tailnet hostname/IP)
-  2) optional “peer list provider” integration (advanced; depends on availability of tailnet enumeration APIs)
-  3) “introducer peer” concept: one always-on node shares known peers to newly added devices *after trust is established*.
+  1) manual device add (enter tailnet hostname/IP)
+  2) optional “device list provider” integration (advanced; depends on availability of tailnet enumeration APIs)
+  3) “introducer device” concept: one always-on node shares known devices to newly added devices *after trust is established*.
 
 Security note:
 
@@ -534,8 +535,8 @@ Security note:
 
 User experience:
 
-- LAN: “it just finds peers.”
-- Tailscale: “add peers by name once; then it behaves similarly.”
+- LAN: “it just finds devices.”
+- Tailscale: “add devices by name once; then it behaves similarly.”
 
 ---
 
@@ -573,7 +574,7 @@ Candidate directions:
 - **MeshSync**
 - **Lattice**
 - **Converge**
-- **PeerWeave**
+- **DeviceWeave**
 - **Lantern** (local beacon + guidance; could be tasteful)
 - **Synapse** (connection + signaling; check trademark conflicts)
 
@@ -609,12 +610,12 @@ To avoid boiling the ocean:
 - One transport (TCP+TLS or QUIC)
 - One adapter: JSON CRDT OR simple key-value with deterministic merge
 - iOS + macOS SDKs
-- CLI debug tool (“list peers”, “pair”, “sync status”, “dump state”)
+- CLI debug tool (“list devices”, “pair”, “sync status”, “dump state”)
 
 ### v1 non-goals
 
 - full SQLite general replication
-- large multi-peer pub-sub / gossip
+- large multi-device pub-sub / gossip
 - background-sync perfection on iOS
 
 ---
@@ -624,10 +625,10 @@ To avoid boiling the ocean:
 You should explicitly define:
 
 - Attacker on the same Wi-Fi network (eavesdropping, spoofing)
-- Malicious peer attempting to join cluster
+- Malicious device attempting to join cluster
 - Replay attacks
 - Device theft
-- Metadata leakage (peer IDs, service names, discovery beacons)
+- Metadata leakage (device IDs, service names, discovery beacons)
 
 Mitigations:
 
@@ -644,7 +645,7 @@ Mitigations:
 
 - **Data philosophy**: Do you aim to be “CRDT-first” (best merges) or “log/clock-first” (simpler, more generic)?
 - **Adapter API**: What is the minimal contract to support JSON + SQLite cleanly?
-- **Peer topology**: Mesh only, or hub option?
+- **Device topology**: Mesh only, or hub option?
 - **Compaction semantics**: When and how do you safely GC history?
 - **UX for trust**: pairing codes vs QR, and how to handle re-keying.
 
