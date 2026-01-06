@@ -13,7 +13,7 @@ const FILE_KEY: &str = "file";
 
 struct TestHandler {
     app_id: String,
-    paired: Mutex<HashSet<String>>,
+    linked: Mutex<HashSet<String>>,
     keys: DeviceKeys,
     app_key: AppKey,
 }
@@ -22,7 +22,7 @@ impl TestHandler {
     fn new(app_id: &str, keys: DeviceKeys, app_key: AppKey) -> Self {
         Self {
             app_id: app_id.to_string(),
-            paired: Mutex::new(HashSet::new()),
+            linked: Mutex::new(HashSet::new()),
             keys,
             app_key,
         }
@@ -34,17 +34,17 @@ impl DeviceHandler for TestHandler {
         &self.app_id
     }
 
-    fn is_paired(&self, identity: &Identity) -> bool {
-        self.paired
+    fn is_linked(&self, identity: &Identity) -> bool {
+        self.linked
             .lock()
-            .expect("paired lock")
+            .expect("linked lock")
             .contains(&identity.device_id)
     }
 
-    fn approve_pair(&self, identity: &Identity) -> Result<bool> {
-        self.paired
+    fn approve_link(&self, identity: &Identity) -> Result<bool> {
+        self.linked
             .lock()
-            .expect("paired lock")
+            .expect("linked lock")
             .insert(identity.device_id.clone());
         Ok(true)
     }
@@ -95,7 +95,7 @@ fn cli_init_and_select_sets_paths() {
 }
 
 #[test]
-fn cli_pair_and_refresh_updates_file() {
+fn cli_link_and_refresh_updates_file() {
     let temp = tempfile::tempdir().expect("tempdir");
     let config_path = temp.path().join("device.json");
     let data_path = temp.path().join("data.json");
@@ -156,7 +156,7 @@ fn cli_pair_and_refresh_updates_file() {
 
     cargo_bin_cmd!("libresync")
         .args([
-            "pair",
+            "link",
             "--config",
             config_path.to_str().unwrap(),
             "--device",
@@ -194,7 +194,7 @@ fn cli_help_mentions_commands() {
         .success()
         .stdout(contains("init"))
         .stdout(contains("discover"))
-        .stdout(contains("pair"))
+        .stdout(contains("link"))
         .stdout(contains("listen"))
         .stdout(contains("watch"))
         .stdout(contains("stop"))
@@ -230,5 +230,5 @@ fn cli_status_runs_without_discovery() {
         .assert()
         .success()
         .stdout(contains("Device ID"))
-        .stdout(contains("Paired devices"));
+        .stdout(contains("Linked devices"));
 }

@@ -8,8 +8,8 @@ LibreSync is a **local-first** synchronization framework. The core goal is to ke
 - **Local storage**: each device keeps its own local copy of data.
 
 ## Network Modes
-- **LAN mode**: peers auto-discover on the local network.
-- **Overlay mode (optional)**: peers connect over a private overlay (e.g., Tailscale/Headscale), still device-to-device with no third-party relay.
+- **LAN mode**: devices auto-discover on the local network.
+- **Overlay mode (optional)**: devices connect over a private overlay (e.g., Tailscale/Headscale), still device-to-device with no third-party relay.
 
 ## Repository Privacy Rules
 - Do not commit PII (real names, emails, phone numbers, addresses, or identifiers).

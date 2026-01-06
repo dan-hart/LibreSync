@@ -65,8 +65,8 @@ fn pid_path_for_config(config_path: &Path) -> PathBuf {
     name = "libresync",
     version,
     about = "Local-only device-to-device sync CLI for LibreSync.",
-    long_about = "A practical CLI for the LibreSync core. Use it to create configs, select logical/JSON/SQLite adapters,\ndiscover devices on LAN, pair devices, refresh/watch adapters, and manage encrypted backups and keys.",
-    after_help = "Examples:\n  libresync init --app-id com.example.notes\n  libresync select --file ./data.json\n  libresync select --id settings --file ./settings.json\n  libresync select --id db --kind sqlite --page-delta 4096 --file ./app.db\n  libresync select --id records --kind logical-file --file ./records.json\n  libresync listen\n  libresync pair\n  libresync refresh --all\n  libresync refresh --all-adapters\n  libresync watch --interval-secs 5\n  libresync device set-address --device-id amber-river-summit --address 192.168.1.10:52345\n  libresync backup configure --enable\n  libresync backup snapshot --note \"before import\"\n  libresync backup list\n  libresync backup restore --snapshot-id <id> --confirm --confirm-id <id>\n  libresync status\n\nOutput hints:\n  - Most commands print the config path in use and adapter IDs affected.\n  - Pair/refresh output includes local and remote fingerprints for trust checks.\n  - Snapshot/export commands print the snapshot ID or output file path."
+    long_about = "A practical CLI for the LibreSync core. Use it to create configs, select logical/JSON/SQLite adapters,\ndiscover devices on LAN, link devices, refresh/watch adapters, and manage encrypted backups and keys.",
+    after_help = "Examples:\n  libresync init --app-id com.example.notes\n  libresync select --file ./data.json\n  libresync select --id settings --file ./settings.json\n  libresync select --id db --kind sqlite --page-delta 4096 --file ./app.db\n  libresync select --id records --kind logical-file --file ./records.json\n  libresync listen\n  libresync link\n  libresync refresh --all\n  libresync refresh --all-adapters\n  libresync watch --interval-secs 5\n  libresync device set-address --device-id amber-river-summit --address 192.168.1.10:52345\n  libresync backup configure --enable\n  libresync backup snapshot --note \"before import\"\n  libresync backup list\n  libresync backup restore --snapshot-id <id> --confirm --confirm-id <id>\n  libresync status\n\nOutput hints:\n  - Most commands print the config path in use and adapter IDs affected.\n  - Link/refresh output includes local and remote fingerprints for trust checks.\n  - Snapshot/export commands print the snapshot ID or output file path."
 )]
 struct Cli {
     #[arg(
@@ -85,7 +85,7 @@ struct Cli {
 enum Commands {
     #[command(
         about = "Create a new LibreSync config with device/app/user identity.",
-        long_about = "Creates a config file that stores the device ID, user ID, app ID, allowlisted devices, and internal state paths. This is required before discovery, pairing, or refresh. Use --force to overwrite an existing config.",
+        long_about = "Creates a config file that stores the device ID, user ID, app ID, allowlisted devices, and internal state paths. This is required before discovery, linking, or refresh. Use --force to overwrite an existing config.",
         after_help = "Examples:\n  libresync init\n  libresync init --app-id com.example.notes\n  libresync init --config ./libresync.json\n\nOutput:\n  - prints the config path\n  - prints device ID, user ID, app ID, and fingerprint"
     )]
     Init {
@@ -99,7 +99,7 @@ enum Commands {
             long,
             default_value = APP_ID_DEFAULT,
             help = "App bundle identifier used to scope discovery and trust.",
-            long_help = "App bundle identifier used to scope discovery and trust. Devices only pair and refresh when app IDs match."
+            long_help = "App bundle identifier used to scope discovery and trust. Devices only link and refresh when app IDs match."
         )]
         app_id: String,
         #[arg(
@@ -111,7 +111,7 @@ enum Commands {
         #[arg(
             long,
             help = "User ID override (two words separated by a dash).",
-            long_help = "Override the generated user ID. Use an adjective-noun pair separated by a dash (e.g. calm-forest)."
+            long_help = "Override the generated user ID. Use an adjective-noun link separated by a dash (e.g. calm-forest)."
         )]
         user_id: Option<String>,
         #[arg(
@@ -184,55 +184,55 @@ enum Commands {
         timeout_secs: u64,
     },
     #[command(
-        about = "Pair with a device by address (requires device consent).",
-        long_about = "Pair establishes trust only. It does not refresh any data. The remote device must accept the pairing request, and you must confirm locally unless --yes is set.",
-        after_help = "Examples:\n  libresync pair --device 192.168.1.10:52345\n  libresync pair --device-id amber-river-summit\n  libresync pair --yes\n\nOutput:\n  - local and remote fingerprints\n  - pairing result and stored allowlist entry"
+        about = "Link with a device by address (requires device consent).",
+        long_about = "Link establishes trust only. It does not refresh any data. The remote device must accept the linking request, and you must confirm locally unless --yes is set.",
+        after_help = "Examples:\n  libresync link --device 192.168.1.10:52345\n  libresync link --device-id amber-river-summit\n  libresync link --yes\n\nOutput:\n  - local and remote fingerprints\n  - linking result and stored allowlist entry"
     )]
-    Pair {
+    Link {
         #[arg(
             long,
             help = "Path to the config JSON file (defaults to the OS config directory).",
-            long_help = "Config file to store the paired device entry and trust state. Defaults to the OS config directory when omitted."
+            long_help = "Config file to store the linked device entry and trust state. Defaults to the OS config directory when omitted."
         )]
         config: Option<PathBuf>,
         #[arg(
             long,
             help = "Device address to connect to (e.g. 192.168.1.10:52345).",
-            long_help = "Socket address for the device listener you want to pair with. If omitted, LibreSync will try to discover devices on the LAN."
+            long_help = "Socket address for the device listener you want to link with. If omitted, LibreSync will try to discover devices on the LAN."
         )]
         device: Option<SocketAddr>,
         #[arg(
             long,
             conflicts_with = "device",
-            help = "Device ID to pair with (uses discovery).",
-            long_help = "Device ID to pair with. LibreSync will discover devices on the LAN and connect to the matching device ID."
+            help = "Device ID to link with (uses discovery).",
+            long_help = "Device ID to link with. LibreSync will discover devices on the LAN and connect to the matching device ID."
         )]
         device_id: Option<String>,
         #[arg(
             long,
-            help = "Auto-accept the local pairing prompt.",
+            help = "Auto-accept the local linking prompt.",
             long_help = "Skip the local confirmation prompt after the remote device accepts."
         )]
         yes: bool,
     },
     #[command(
-        about = "Manage paired device metadata.",
-        long_about = "Set or update stored addresses for paired devices."
+        about = "Manage linked device metadata.",
+        long_about = "Set or update stored addresses for linked devices."
     )]
     Device {
         #[command(subcommand)]
         command: DeviceCommands,
     },
     #[command(
-        about = "Revoke pairing with a device.",
-        long_about = "Removes a paired device from the local allowlist. The device will need to pair again before any future refresh.",
-        after_help = "Examples:\n  libresync unpair --device-id amber-river-summit\n\nOutput:\n  - confirmation that the device was removed"
+        about = "Revoke linking with a device.",
+        long_about = "Removes a linked device from the local allowlist. The device will need to link again before any future refresh.",
+        after_help = "Examples:\n  libresync unlink --device-id amber-river-summit\n\nOutput:\n  - confirmation that the device was removed"
     )]
-    Unpair {
+    Unlink {
         #[arg(
             long,
             help = "Path to the config JSON file (defaults to the OS config directory).",
-            long_help = "Config file that includes the paired devices allowlist. Defaults to the OS config directory when omitted."
+            long_help = "Config file that includes the linked devices allowlist. Defaults to the OS config directory when omitted."
         )]
         config: Option<PathBuf>,
         #[arg(
@@ -265,8 +265,8 @@ enum Commands {
         listen: SocketAddr,
         #[arg(
             long,
-            help = "Auto-accept incoming pairing requests.",
-            long_help = "Automatically approve pairing requests from devices with the same app ID."
+            help = "Auto-accept incoming linking requests.",
+            long_help = "Automatically approve linking requests from devices with the same app ID."
         )]
         auto_accept: bool,
         #[arg(
@@ -287,8 +287,8 @@ enum Commands {
     #[command(
         name = "refresh",
         alias = "sync",
-        about = "Refresh selected adapters with a paired device.",
-        long_about = "Refresh exchanges data only after trust is established. It requires prior pairing. Adapter data is loaded into local state before refresh and written back after refresh.",
+        about = "Refresh selected adapters with a linked device.",
+        long_about = "Refresh exchanges data only after trust is established. It requires prior linking. Adapter data is loaded into local state before refresh and written back after refresh.",
         after_help = "Examples:\n  libresync refresh --device 192.168.1.10:52345\n  libresync refresh --device-id amber-river-summit\n  libresync refresh --all\n  libresync refresh --all --no-discover\n  libresync refresh --all-adapters\n\nOutput:\n  - per-device refresh summary\n  - adapter IDs updated and error hints"
     )]
     Refresh {
@@ -311,8 +311,8 @@ enum Commands {
         #[arg(
             long,
             conflicts_with_all = ["device", "device_id"],
-            help = "Refresh all paired devices (uses discovery by default).",
-            long_help = "Refresh all paired devices instead of a single device. Uses LAN discovery by default; add --no-discover to only use stored addresses."
+            help = "Refresh all linked devices (uses discovery by default).",
+            long_help = "Refresh all linked devices instead of a single device. Uses LAN discovery by default; add --no-discover to only use stored addresses."
         )]
         all: bool,
         #[arg(
@@ -337,8 +337,8 @@ enum Commands {
         device_id: Option<String>,
     },
     #[command(
-        about = "Watch selected adapters and refresh all paired devices.",
-        long_about = "Watch selected adapter files for local changes and refresh with all paired devices. Refresh pulls and pushes data, providing best-effort bidirectional updates.",
+        about = "Watch selected adapters and refresh all linked devices.",
+        long_about = "Watch selected adapter files for local changes and refresh with all linked devices. Refresh pulls and pushes data, providing best-effort bidirectional updates.",
         after_help = "Examples:\n  libresync watch\n  libresync watch --interval-secs 5\n  libresync watch --all-adapters --no-discover\n\nOutput:\n  - watch start banner with interval and debounce\n  - refresh summaries per cycle"
     )]
     Watch {
@@ -369,7 +369,7 @@ enum Commands {
             long,
             default_value_t = 1,
             help = "Seconds between background refresh cycles.",
-            long_help = "Interval in seconds to refresh with paired devices even if no local change is detected."
+            long_help = "Interval in seconds to refresh with linked devices even if no local change is detected."
         )]
         interval_secs: u64,
         #[arg(
@@ -381,7 +381,7 @@ enum Commands {
         debounce_ms: u64,
         #[arg(
             long,
-            help = "Disable LAN discovery when resolving paired devices.",
+            help = "Disable LAN discovery when resolving linked devices.",
             long_help = "Skip LAN discovery and only use the last seen addresses stored in the config."
         )]
         no_discover: bool,
@@ -415,21 +415,21 @@ enum Commands {
         command: BackupCommands,
     },
     #[command(
-        about = "Show device status, paired devices, and recent discovery info.",
-        long_about = "Show local identity, selected file, backup settings, listener status, paired devices, and (by default) devices discovered on the LAN. Discovered devices are treated as connected now. Use --no-discover to skip LAN discovery.",
-        after_help = "Examples:\n  libresync status\n  libresync status --no-discover\n\nOutput:\n  - identity, adapters, backups, listener status\n  - paired devices with last seen address"
+        about = "Show device status, linked devices, and recent discovery info.",
+        long_about = "Show local identity, selected file, backup settings, listener status, linked devices, and (by default) devices discovered on the LAN. Discovered devices are treated as connected now. Use --no-discover to skip LAN discovery.",
+        after_help = "Examples:\n  libresync status\n  libresync status --no-discover\n\nOutput:\n  - identity, adapters, backups, listener status\n  - linked devices with last seen address"
     )]
     Status {
         #[arg(
             long,
             help = "Path to the config JSON file (defaults to the OS config directory).",
-            long_help = "Config file that includes identity, selected file, and paired devices. Defaults to the OS config directory when omitted."
+            long_help = "Config file that includes identity, selected file, and linked devices. Defaults to the OS config directory when omitted."
         )]
         config: Option<PathBuf>,
         #[arg(
             long,
             help = "Disable LAN discovery for this status check.",
-            long_help = "Skip mDNS discovery and only show stored paired device information."
+            long_help = "Skip mDNS discovery and only show stored linked device information."
         )]
         no_discover: bool,
         #[arg(
@@ -442,7 +442,7 @@ enum Commands {
     },
     #[command(
         about = "Run diagnostics for the current config.",
-        long_about = "Check config, keys, state file, selected file, and backup settings. Useful for troubleshooting before pairing or refresh.",
+        long_about = "Check config, keys, state file, selected file, and backup settings. Useful for troubleshooting before linking or refresh.",
         after_help = "Examples:\n  libresync diagnose\n  libresync diagnose --config ./libresync.json\n\nOutput:\n  - checklist with pass/fail hints"
     )]
     Diagnose {
@@ -466,7 +466,7 @@ enum Commands {
 enum KeyCommands {
     #[command(
         about = "Rotate the app-level key.",
-        long_about = "Re-encrypts state and backups with a new app key. Clears paired devices by default, requiring re-pairing.",
+        long_about = "Re-encrypts state and backups with a new app key. Clears linked devices by default, requiring re-linking.",
         after_help = "Examples:\n  libresync key rotate --confirm\n  libresync key rotate --confirm --keep-allowlist\n\nOutput:\n  - reports re-encryption status and allowlist behavior"
     )]
     Rotate {
@@ -477,7 +477,7 @@ enum KeyCommands {
         config: Option<PathBuf>,
         #[arg(
             long,
-            help = "Keep the existing allowlist (skip forced re-pairing)."
+            help = "Keep the existing allowlist (skip forced re-linking)."
         )]
         keep_allowlist: bool,
         #[arg(
@@ -521,7 +521,7 @@ enum KeyCommands {
         input: PathBuf,
         #[arg(
             long,
-            help = "Clear the allowlist to force re-pairing."
+            help = "Clear the allowlist to force re-linking."
         )]
         clear_allowlist: bool,
         #[arg(
@@ -565,7 +565,7 @@ enum KeyCommands {
         input: PathBuf,
         #[arg(
             long,
-            help = "Clear the allowlist to force re-pairing."
+            help = "Clear the allowlist to force re-linking."
         )]
         clear_allowlist: bool,
         #[arg(
@@ -576,7 +576,7 @@ enum KeyCommands {
     },
     #[command(
         about = "Rotate the device identity keys.",
-        long_about = "Generates new device TLS keys and fingerprint. Remote devices must re-pair to trust the new fingerprint.",
+        long_about = "Generates new device TLS keys and fingerprint. Remote devices must re-link to trust the new fingerprint.",
         after_help = "Examples:\n  libresync key rotate-device --confirm\n  libresync key rotate-device --confirm --clear-allowlist\n\nOutput:\n  - prints the new fingerprint and allowlist behavior"
     )]
     RotateDevice {
@@ -587,7 +587,7 @@ enum KeyCommands {
         config: Option<PathBuf>,
         #[arg(
             long,
-            help = "Clear the local allowlist to force re-pairing."
+            help = "Clear the local allowlist to force re-linking."
         )]
         clear_allowlist: bool,
         #[arg(
@@ -601,8 +601,8 @@ enum KeyCommands {
 #[derive(Subcommand)]
 enum DeviceCommands {
     #[command(
-        about = "Store a manual address for a paired device.",
-        long_about = "Overrides the stored address for a paired device to enable manual refresh when discovery fails.",
+        about = "Store a manual address for a linked device.",
+        long_about = "Overrides the stored address for a linked device to enable manual refresh when discovery fails.",
         after_help = "Examples:\n  libresync device set-address --device-id amber-river-summit --address 192.168.1.10:52345\n\nOutput:\n  - confirms the stored address and updates last seen"
     )]
     SetAddress {
@@ -613,7 +613,7 @@ enum DeviceCommands {
         config: Option<PathBuf>,
         #[arg(
             long,
-            help = "Paired device ID to update."
+            help = "Linked device ID to update."
         )]
         device_id: String,
         #[arg(
@@ -1015,7 +1015,7 @@ impl Config {
         Ok(keys)
     }
 
-    fn is_paired(&self, device_id: &str) -> bool {
+    fn is_linked(&self, device_id: &str) -> bool {
         self.devices.contains_key(device_id)
     }
 
@@ -1060,13 +1060,13 @@ impl DeviceHandler for ConfigHandler {
         &self.app_id
     }
 
-    fn is_paired(&self, identity: &Identity) -> bool {
+    fn is_linked(&self, identity: &Identity) -> bool {
         let config = self.config.lock().expect("config lock");
-        config.is_paired(&identity.device_id)
+        config.is_linked(&identity.device_id)
     }
 
-    fn approve_pair(&self, identity: &Identity) -> libresync::Result<bool> {
-        self.approve_pair_with_fingerprint(identity, "")
+    fn approve_link(&self, identity: &Identity) -> libresync::Result<bool> {
+        self.approve_link_with_fingerprint(identity, "")
     }
 
     fn device_keys(&self) -> libresync::Result<DeviceKeys> {
@@ -1097,9 +1097,9 @@ impl DeviceHandler for ConfigHandler {
             .map_err(|error| libresync::Error::Protocol(error.to_string()))
     }
 
-    fn is_paired_with_fingerprint(&self, identity: &Identity, fingerprint: &str) -> bool {
+    fn is_linked_with_fingerprint(&self, identity: &Identity, fingerprint: &str) -> bool {
         if fingerprint.is_empty() {
-            return self.is_paired(identity);
+            return self.is_linked(identity);
         }
         let config = self.config.lock().expect("config lock");
         config
@@ -1110,7 +1110,7 @@ impl DeviceHandler for ConfigHandler {
             .unwrap_or(false)
     }
 
-    fn approve_pair_with_fingerprint(
+    fn approve_link_with_fingerprint(
         &self,
         identity: &Identity,
         fingerprint: &str,
@@ -1122,7 +1122,7 @@ impl DeviceHandler for ConfigHandler {
             true
         } else {
             prompt_yes_no(&format!(
-                "Pair with {} ({})? [y/N]: ",
+                "Link with {} ({})? [y/N]: ",
                 identity.device_id, identity.user_id
             ))
             .unwrap_or(false)
@@ -1156,11 +1156,11 @@ impl DeviceHandler for StaticHandler {
         &self.app_id
     }
 
-    fn is_paired(&self, identity: &Identity) -> bool {
+    fn is_linked(&self, identity: &Identity) -> bool {
         self.allowed.contains_key(&identity.device_id)
     }
 
-    fn approve_pair(&self, _identity: &Identity) -> libresync::Result<bool> {
+    fn approve_link(&self, _identity: &Identity) -> libresync::Result<bool> {
         Ok(false)
     }
 
@@ -1172,7 +1172,7 @@ impl DeviceHandler for StaticHandler {
         Ok(self.app_key.clone())
     }
 
-    fn is_paired_with_fingerprint(&self, identity: &Identity, fingerprint: &str) -> bool {
+    fn is_linked_with_fingerprint(&self, identity: &Identity, fingerprint: &str) -> bool {
         self.allowed
             .get(&identity.device_id)
             .map(|stored| stored == fingerprint)
@@ -1250,14 +1250,14 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let config = resolve_config_path(config);
             discover_devices(&config, timeout_secs)?;
         }
-        Commands::Pair {
+        Commands::Link {
             config,
             device,
             device_id,
             yes,
         } => {
             let config = resolve_config_path(config);
-            pair_device(&config, device, device_id, yes)?;
+            link_device(&config, device, device_id, yes)?;
         }
         Commands::Device { command } => match command {
             DeviceCommands::SetAddress {
@@ -1269,13 +1269,13 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 set_device_address(&config, &device_id, address)?;
             }
         },
-        Commands::Unpair {
+        Commands::Unlink {
             config,
             device_id,
             yes,
         } => {
             let config = resolve_config_path(config);
-            unpair_device(&config, &device_id, yes)?;
+            unlink_device(&config, &device_id, yes)?;
         }
         Commands::Listen {
             config,
@@ -1839,9 +1839,9 @@ fn rotate_app_key(
         println!("Re-encrypted {rotated} snapshot(s).");
     }
     if keep_allowlist {
-        println!("Allowlist kept; re-pairing not required.");
+        println!("Allowlist kept; re-linking not required.");
     } else {
-        println!("Allowlist cleared; re-pair devices before refresh.");
+        println!("Allowlist cleared; re-link devices before refresh.");
     }
 
     Ok(())
@@ -1868,9 +1868,9 @@ fn rotate_device_keys(
     println!("Rotated device keys.");
     println!("New fingerprint: {}", new_keys.fingerprint());
     if clear_allowlist {
-        println!("Allowlist cleared; re-pair devices before refresh.");
+        println!("Allowlist cleared; re-link devices before refresh.");
     } else {
-        println!("Remote devices must re-pair to trust this fingerprint.");
+        println!("Remote devices must re-link to trust this fingerprint.");
     }
     println!("Restart listeners to apply the new keys.");
     Ok(())
@@ -1941,7 +1941,7 @@ fn import_app_key(
         println!("Re-encrypted {rotated} snapshot(s).");
     }
     if clear_allowlist {
-        println!("Allowlist cleared; re-pair devices before refresh.");
+        println!("Allowlist cleared; re-link devices before refresh.");
     }
     Ok(())
 }
@@ -1984,7 +1984,7 @@ fn import_device_keys(
     println!("Imported device keys.");
     println!("Fingerprint: {}", keys.fingerprint());
     if clear_allowlist {
-        println!("Allowlist cleared; re-pair devices before refresh.");
+        println!("Allowlist cleared; re-link devices before refresh.");
     }
     println!("Restart listeners to apply the new keys.");
     Ok(())
@@ -2059,7 +2059,7 @@ fn discover_devices(path: &Path, timeout_secs: u64) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-fn pair_device(
+fn link_device(
     path: &Path,
     device: Option<SocketAddr>,
     device_id: Option<String>,
@@ -2068,7 +2068,7 @@ fn pair_device(
     let mut config = load_config(path)?;
     let device = resolve_device_address(&config, device, device_id.as_deref())?;
     let engine = engine_for_config(&config);
-    let remote_device = engine.request_pair(device)?;
+    let remote_device = engine.request_link(device)?;
     let remote_identity = remote_device.identity;
     if let Some(keys) = config.device_keys.as_ref() {
         println!("Your fingerprint:   {}", keys.fingerprint);
@@ -2083,14 +2083,14 @@ fn pair_device(
         true
     } else {
         prompt_yes_no(&format!(
-            "Confirm pairing with {} ({})? [y/N]: ",
+            "Confirm linking with {} ({})? [y/N]: ",
             remote_identity.device_id, remote_identity.user_id
         ))
         .unwrap_or(false)
     };
 
     if !local_accept {
-        return Err("pairing aborted locally".into());
+        return Err("linking aborted locally".into());
     }
 
     config.upsert_device(
@@ -2101,40 +2101,40 @@ fn pair_device(
     save_config(path, &config)?;
 
     println!(
-        "Paired with {} ({})",
+        "Linked with {} ({})",
         remote_identity.device_id, remote_identity.user_id
     );
 
     Ok(())
 }
 
-fn unpair_device(
+fn unlink_device(
     path: &Path,
     device_id: &str,
     auto_accept: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = load_config(path)?;
     if !config.devices.contains_key(device_id) {
-        return Err(format!("device not paired: {device_id}").into());
+        return Err(format!("device not linked: {device_id}").into());
     }
 
     let confirmed = if auto_accept {
         true
     } else {
         prompt_yes_no(&format!(
-            "Revoke pairing with {device_id}? [y/N]: "
+            "Revoke linking with {device_id}? [y/N]: "
         ))
         .unwrap_or(false)
     };
 
     if !confirmed {
-        return Err("unpair aborted locally".into());
+        return Err("unlink aborted locally".into());
     }
 
     config.devices.remove(device_id);
     save_config(path, &config)?;
 
-    println!("Unpaired {device_id}");
+    println!("Unlinked {device_id}");
     Ok(())
 }
 
@@ -2147,7 +2147,7 @@ fn set_device_address(
     let record = config
         .devices
         .get_mut(device_id)
-        .ok_or_else(|| format!("device not paired: {device_id}"))?;
+        .ok_or_else(|| format!("device not linked: {device_id}"))?;
     record.last_seen_addr = Some(address.to_string());
     record.last_seen_unix_secs = Some(now_unix_secs());
     save_config(path, &config)?;
@@ -2413,7 +2413,7 @@ fn refresh_all(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = load_config(path)?;
     if config.devices.is_empty() {
-        println!("No paired devices to refresh.");
+        println!("No linked devices to refresh.");
         return Ok(());
     }
 
@@ -2485,8 +2485,8 @@ fn status(
             println!("  (none)");
         } else {
             for device in discovered_map.values() {
-                let paired = config.devices.contains_key(&device.identity.device_id);
-                let status = if paired { "paired" } else { "unpaired" };
+                let linked = config.devices.contains_key(&device.identity.device_id);
+                let status = if linked { "linked" } else { "unlinked" };
                 let address = device
                     .address
                     .map(|addr| addr.to_string())
@@ -2503,9 +2503,9 @@ fn status(
     }
 
     if !config.devices.is_empty() {
-        println!("\nPaired devices:");
+        println!("\nLinked devices:");
     } else {
-        println!("\nPaired devices: (none)");
+        println!("\nLinked devices: (none)");
     }
 
     for record in config.devices.values_mut() {
@@ -2601,9 +2601,9 @@ fn diagnose(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if config.devices.is_empty() {
-        println!("Paired devices: (none)");
+        println!("Linked devices: (none)");
     } else {
-        println!("Paired devices: {}", config.devices.len());
+        println!("Linked devices: {}", config.devices.len());
     }
 
     Ok(())
@@ -3026,7 +3026,7 @@ fn stored_device_infos(config: &Config) -> Vec<DeviceInfo> {
                 last_seen: record.last_seen_unix_secs.map(|secs| {
                     SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
                 }),
-                paired: true,
+                linked: true,
                 fingerprint: record.fingerprint.clone(),
             })
         })
@@ -3271,7 +3271,7 @@ fn watch_file(
         }
     }
     println!(
-        "Paired devices: {}",
+        "Linked devices: {}",
         if config.devices.is_empty() {
             "none".to_string()
         } else {
@@ -3324,7 +3324,7 @@ fn watch_file(
         if local_changed || interval_due {
             if local_changed {
                 let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
-                println!("Change detected at {timestamp}; refreshing paired devices.");
+                println!("Change detected at {timestamp}; refreshing linked devices.");
             }
             let refresh_result =
                 refresh_all_devices(path, &mut config, !no_discover, &adapter_ids);
@@ -4516,7 +4516,7 @@ mod tests {
     }
 
     #[test]
-    fn unpair_device_removes_and_errors_when_missing() {
+    fn unlink_device_removes_and_errors_when_missing() {
         let temp = tempdir().expect("tempdir");
         let config_path = temp.path().join("config.json");
         init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
@@ -4535,11 +4535,11 @@ mod tests {
         );
         save_config(&config_path, &config).expect("save");
 
-        unpair_device(&config_path, "remote-device", true).expect("unpair");
+        unlink_device(&config_path, "remote-device", true).expect("unlink");
         let config = load_config(&config_path).expect("reload");
         assert!(!config.devices.contains_key("remote-device"));
 
-        let result = unpair_device(&config_path, "remote-device", true);
+        let result = unlink_device(&config_path, "remote-device", true);
         assert!(result.is_err());
     }
 
@@ -4786,7 +4786,7 @@ mod tests {
     }
 
     #[test]
-    fn run_unpair_command() {
+    fn run_unlink_command() {
         let temp = tempdir().expect("tempdir");
         let config_path = temp.path().join("config.json");
         init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
@@ -4807,13 +4807,13 @@ mod tests {
 
         run(Cli {
             verbose: false,
-            command: Commands::Unpair {
+            command: Commands::Unlink {
                 config: Some(config_path.clone()),
                 device_id: "remote-device".to_string(),
                 yes: true,
             },
         })
-        .expect("run unpair");
+        .expect("run unlink");
 
         let config = load_config(&config_path).expect("load");
         assert!(!config.devices.contains_key("remote-device"));

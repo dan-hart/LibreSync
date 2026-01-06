@@ -100,7 +100,7 @@ where
     Ok((remote_identity, fingerprint))
 }
 
-pub fn pair_with_device(
+pub fn link_with_device(
     identity: &Identity,
     device_keys: &DeviceKeys,
     app_key: &AppKey,
@@ -115,37 +115,37 @@ pub fn pair_with_device(
 
     write_message(
         reader.get_mut(),
-        &Message::PairRequest {
+        &Message::LinkRequest {
             identity: identity.clone(),
             app_key: Some(app_key.as_bytes().to_vec()),
         },
     )?;
 
     let response = read_message(&mut reader)?;
-    let fingerprint = peer_fingerprint(reader.get_mut().conn.peer_certificates())?;
+    let fingerprint = device_fingerprint(reader.get_mut().conn.peer_certificates())?;
     let (remote_identity, accepted, remote_app_key) = match response {
-        Message::PairResponse {
+        Message::LinkResponse {
             identity,
             accepted,
             app_key,
         } => (identity, accepted, app_key),
-        _ => return Err(Error::Protocol("unexpected pairing response".to_string())),
+        _ => return Err(Error::Protocol("unexpected linking response".to_string())),
     };
 
     if !accepted {
         return Err(Error::Protocol(format!(
-            "pairing rejected by {}",
+            "linking rejected by {}",
             remote_identity.device_id
         )));
     }
 
     let key_bytes = remote_app_key.ok_or_else(|| {
-        Error::Protocol("pairing response missing app key".to_string())
+        Error::Protocol("linking response missing app key".to_string())
     })?;
     let remote_app_key = AppKey::from_slice(&key_bytes)?;
 
     if remote_identity.app_id != identity.app_id {
-        return Err(Error::Protocol("app id mismatch during pairing".to_string()));
+        return Err(Error::Protocol("app id mismatch during linking".to_string()));
     }
 
     Ok((remote_identity, fingerprint, remote_app_key))
@@ -166,16 +166,16 @@ fn handle_connection(
     let mut reader = BufReader::new(stream);
 
     let message = read_message(&mut reader)?;
-    let fingerprint = peer_fingerprint(reader.get_mut().conn.peer_certificates())?;
+    let fingerprint = device_fingerprint(reader.get_mut().conn.peer_certificates())?;
     let app_key = handler.app_key()?;
 
     match message {
-        Message::PairRequest {
+        Message::LinkRequest {
             identity: device_identity,
             app_key: remote_app_key,
         } => {
             if !device_identity.matches_app(handler.app_id()) {
-                write_message(reader.get_mut(), &Message::PairResponse {
+                write_message(reader.get_mut(), &Message::LinkResponse {
                     identity: identity.clone(),
                     accepted: false,
                     app_key: None,
@@ -183,11 +183,11 @@ fn handle_connection(
                 return Ok(());
             }
             let incoming_key = remote_app_key.ok_or_else(|| {
-                Error::Protocol("pairing request missing app key".to_string())
+                Error::Protocol("linking request missing app key".to_string())
             })?;
             let incoming_key = AppKey::from_slice(&incoming_key)?;
             let accepted =
-                handler.approve_pair_with_fingerprint(&device_identity, &fingerprint)?;
+                handler.approve_link_with_fingerprint(&device_identity, &fingerprint)?;
             if accepted && incoming_key != app_key {
                 handler.set_app_key(&incoming_key)?;
             }
@@ -196,7 +196,7 @@ fn handle_connection(
             } else {
                 None
             };
-            write_message(reader.get_mut(), &Message::PairResponse {
+            write_message(reader.get_mut(), &Message::LinkResponse {
                 identity: identity.clone(),
                 accepted,
                 app_key: response_key,
@@ -206,8 +206,8 @@ fn handle_connection(
             if !device_identity.matches_app(handler.app_id()) {
                 return Err(Error::Protocol("app id mismatch".to_string()));
             }
-            if !handler.is_paired_with_fingerprint(&device_identity, &fingerprint) {
-                return Err(Error::Protocol("device not paired".to_string()));
+            if !handler.is_linked_with_fingerprint(&device_identity, &fingerprint) {
+                return Err(Error::Protocol("device not linked".to_string()));
             }
             write_message(reader.get_mut(), &Message::Hello { identity: identity.clone() })?;
 
@@ -232,7 +232,7 @@ fn handle_connection(
                 }
             }
         }
-        _ => return Err(Error::Protocol("expected hello or pair request".to_string())),
+        _ => return Err(Error::Protocol("expected hello or link request".to_string())),
     }
 
     Ok(())
@@ -258,7 +258,7 @@ where
 
     write_message(reader.get_mut(), &Message::Hello { identity: identity.clone() })?;
     let remote_identity = read_hello(&mut reader, identity)?;
-    let fingerprint = peer_fingerprint(reader.get_mut().conn.peer_certificates())?;
+    let fingerprint = device_fingerprint(reader.get_mut().conn.peer_certificates())?;
     device_check(&remote_identity, &fingerprint)?;
 
     let snapshot = encrypt_entries(app_key, state.snapshot())?;
@@ -293,7 +293,7 @@ pub(crate) fn pull_snapshot(
     if remote_identity != *expected_remote {
         return Err(Error::Protocol("device identity changed".to_string()));
     }
-    let fingerprint = peer_fingerprint(reader.get_mut().conn.peer_certificates())?;
+    let fingerprint = device_fingerprint(reader.get_mut().conn.peer_certificates())?;
     if fingerprint != expected_fingerprint {
         return Err(Error::Protocol("device fingerprint changed".to_string()));
     }
@@ -367,10 +367,10 @@ fn server_config(device_keys: &DeviceKeys) -> Result<Arc<ServerConfig>> {
     Ok(Arc::new(config))
 }
 
-fn peer_fingerprint(certs: Option<&[Certificate]>) -> Result<String> {
+fn device_fingerprint(certs: Option<&[Certificate]>) -> Result<String> {
     let cert = certs
         .and_then(|certs| certs.first())
-        .ok_or_else(|| Error::Protocol("missing peer certificate".to_string()))?;
+        .ok_or_else(|| Error::Protocol("missing device certificate".to_string()))?;
     Ok(crate::keys::fingerprint_cert(&cert.0))
 }
 
@@ -449,11 +449,11 @@ mod tests {
             &self.app_id
         }
 
-        fn is_paired(&self, _identity: &Identity) -> bool {
+        fn is_linked(&self, _identity: &Identity) -> bool {
             true
         }
 
-        fn approve_pair(&self, _identity: &Identity) -> Result<bool> {
+        fn approve_link(&self, _identity: &Identity) -> Result<bool> {
             Ok(true)
         }
 
@@ -468,7 +468,7 @@ mod tests {
 
     struct RecordingHandler {
         app_id: String,
-        paired: Mutex<HashSet<String>>,
+        linked: Mutex<HashSet<String>>,
         approve: bool,
         keys: crate::DeviceKeys,
         fingerprints: Mutex<HashMap<String, String>>,
@@ -480,7 +480,7 @@ mod tests {
             let app_key = AppKey::generate().expect("app key");
             Self {
                 app_id: app_id.to_string(),
-                paired: Mutex::new(HashSet::new()),
+                linked: Mutex::new(HashSet::new()),
                 approve,
                 keys,
                 fingerprints: Mutex::new(HashMap::new()),
@@ -494,18 +494,18 @@ mod tests {
             &self.app_id
         }
 
-        fn is_paired(&self, identity: &Identity) -> bool {
-            self.paired
+        fn is_linked(&self, identity: &Identity) -> bool {
+            self.linked
                 .lock()
-                .expect("paired lock")
+                .expect("linked lock")
                 .contains(&identity.device_id)
         }
 
-        fn approve_pair(&self, identity: &Identity) -> Result<bool> {
+        fn approve_link(&self, identity: &Identity) -> Result<bool> {
             if self.approve {
-                self.paired
+                self.linked
                     .lock()
-                    .expect("paired lock")
+                    .expect("linked lock")
                     .insert(identity.device_id.clone());
                 Ok(true)
             } else {
@@ -526,8 +526,8 @@ mod tests {
             Ok(())
         }
 
-        fn is_paired_with_fingerprint(&self, identity: &Identity, fingerprint: &str) -> bool {
-            if !self.is_paired(identity) {
+        fn is_linked_with_fingerprint(&self, identity: &Identity, fingerprint: &str) -> bool {
+            if !self.is_linked(identity) {
                 return false;
             }
             self.fingerprints
@@ -538,15 +538,15 @@ mod tests {
                 .unwrap_or(false)
         }
 
-        fn approve_pair_with_fingerprint(
+        fn approve_link_with_fingerprint(
             &self,
             identity: &Identity,
             fingerprint: &str,
         ) -> Result<bool> {
             if self.approve {
-                self.paired
+                self.linked
                     .lock()
-                    .expect("paired lock")
+                    .expect("linked lock")
                     .insert(identity.device_id.clone());
                 self.fingerprints
                     .lock()
@@ -665,7 +665,7 @@ mod tests {
     }
 
     #[test]
-    fn pair_request_updates_allowlist() {
+    fn link_request_updates_allowlist() {
         let identity = Identity::new("listener", "com.example.app", "listener-user");
         let listener_keys = crate::DeviceKeys::generate(&identity).expect("listener keys");
         let handler = Arc::new(RecordingHandler::new(
@@ -691,25 +691,25 @@ mod tests {
 
         write_message(
             reader.get_mut(),
-            &Message::PairRequest {
+            &Message::LinkRequest {
                 identity: device_identity.clone(),
                 app_key: Some(app_key.as_bytes().to_vec()),
             },
         )
-        .expect("pair request");
+        .expect("link request");
 
-        let response = read_message(&mut reader).expect("pair response");
+        let response = read_message(&mut reader).expect("link response");
         match response {
-            Message::PairResponse { accepted, .. } => assert!(accepted),
-            _ => panic!("expected pair response"),
+            Message::LinkResponse { accepted, .. } => assert!(accepted),
+            _ => panic!("expected link response"),
         }
 
-        assert!(handler.is_paired_with_fingerprint(&device_identity, device_keys.fingerprint()));
+        assert!(handler.is_linked_with_fingerprint(&device_identity, device_keys.fingerprint()));
         listener.shutdown().expect("shutdown");
     }
 
     #[test]
-    fn sync_rejects_unpaired_device() {
+    fn sync_rejects_unlinked_device() {
         let identity = Identity::new("listener", "com.example.app", "listener-user");
         let listener_keys = crate::DeviceKeys::generate(&identity).expect("listener keys");
         let app_key = AppKey::generate().expect("app key");

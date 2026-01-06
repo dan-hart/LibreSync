@@ -10,7 +10,7 @@ LibreSync should be the gold standard for device-to-device, local-first data syn
 
 Success means:
 - Developers can add reliable sync without running always-on devices or maintaining backend infrastructure.
-- Users can pair once and stay in sync automatically, with clear trust and status indicators.
+- Users can link once and stay in sync automatically, with clear trust and status indicators.
 - Privacy and security are defaults, not optional add-ons.
 
 ## Experience goals
@@ -24,7 +24,7 @@ Developer experience:
 
 User experience:
 - No accounts, no cloud dependencies, no surprises.
-- Explicit pairing and device trust, with easy revocation.
+- Explicit linking and device trust, with easy revocation.
 - Always-on sync where possible, fast catch-up when returning online.
 - E2EE by default, with clear trust indicators.
 
@@ -53,7 +53,7 @@ User experience:
 - `FileLogicalAdapter` persists logical records to a JSON file for simple app storage.
 - `SqliteLogicalAdapter` (feature `sqlite-logical`) persists records to a SQLite table; it is not yet a drop-in mapping for existing schemas.
 - SQLite file adapters can enable page-delta encoding to reduce payload size when changes are small.
-- Auto refresh polls for local changes and syncs with paired devices discovered on the LAN.
+- Auto refresh polls for local changes and syncs with linked devices discovered on the LAN.
 - Use `AutoRefreshConfig` to customize polling and refresh intervals.
 - Use `WatchedFileAdapter` for near-real-time local file change detection.
 - Attach an `EventStream` to update UI immediately after sync completes.
@@ -74,7 +74,7 @@ let _auto = engine.auto_refresh("file", "./state.json")?;
 ```
 
 ## CLI (libresync)
-The CLI is a device-to-device testing tool that uses LAN discovery, device pairing, and JSON/SQLite adapter refresh.
+The CLI is a device-to-device testing tool that uses LAN discovery, device linking, and JSON/SQLite adapter refresh.
 
 ### Quick start
 1. Initialize a config on each device:
@@ -84,24 +84,24 @@ The CLI is a device-to-device testing tool that uses LAN discovery, device pairi
    - `libresync select --id db --kind sqlite --file ./app.db`
 3. Start the device listener (advertises via mDNS, default port 52345):
    - `libresync listen`
-4. Pair once between devices (consent required):
-   - `libresync pair`
+4. Link once between devices (consent required):
+   - `libresync link`
 5. Refresh the selected adapter:
    - `libresync refresh`
 6. For continuous updates, run:
    - `libresync watch`
-7. Check status (paired + discovered devices):
+7. Check status (linked + discovered devices):
    - `libresync status`
 
 ### Notes
-- Pairing is required before refresh.
-- `pair`/`refresh` will discover devices automatically; if multiple are found, you’ll be prompted to pick one.
-- `pair` prints the local and remote fingerprints so you can verify trust out of band.
-- Use `unpair --device-id <device-id>` to revoke trust and force re-pairing.
-- `watch` refreshes all paired devices on local changes and on a periodic interval (auto-starts a listener by default).
+- Linking is required before refresh.
+- `link`/`refresh` will discover devices automatically; if multiple are found, you’ll be prompted to pick one.
+- `link` prints the local and remote fingerprints so you can verify trust out of band.
+- Use `unlink --device-id <device-id>` to revoke trust and force re-linking.
+- `watch` refreshes all linked devices on local changes and on a periodic interval (auto-starts a listener by default).
 - You can also target a specific device: `--device <ip:port>` or `--device-id <device-id>`.
-- Discovery is unauthenticated and only used to find devices; trust is established at pairing.
-- `status` shows the selected file, listener status, connected devices (discovered now), last seen addresses, and last seen timestamps for paired devices.
+- Discovery is unauthenticated and only used to find devices; trust is established at linking.
+- `status` shows the selected file, listener status, connected devices (discovered now), last seen addresses, and last seen timestamps for linked devices.
 - Config defaults to the OS config directory (override with `--config`).
 - `listen` runs in the background by default; use `--foreground` to keep it in the terminal.
 - `listen` updates the selected adapter files when incoming refreshes are received.
@@ -113,7 +113,7 @@ The CLI is a device-to-device testing tool that uses LAN discovery, device pairi
 - Runs as a device that keeps data synced even when the primary app is closed.
 - Status dashboard with manual refresh and per-app backup toggles.
 - Snapshot preview and restore controls (restore gated by allow-restore).
-- System tray controls and trust panel (pairing + fingerprints).
+- System tray controls and trust panel (linking + fingerprints).
 - Intended targets: macOS, Windows, Linux.
 
 ## Current limitations (alpha)

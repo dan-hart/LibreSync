@@ -1,10 +1,10 @@
 # Progress log
 
 ## Summary
-LibreSync has a working device-to-device MVP for two CLI instances on a LAN. Devices can discover each other, pair with consent, and refresh JSON or SQLite adapters with deterministic conflict resolution.
+LibreSync has a working device-to-device MVP for two CLI instances on a LAN. Devices can discover each other, link with consent, and refresh JSON or SQLite adapters with deterministic conflict resolution.
 
 ## Status snapshot
-- Core sync engine: strong (pairing, discovery, refresh, auto-refresh, event stream).
+- Core sync engine: strong (linking, discovery, refresh, auto-refresh, event stream).
 - Security/E2EE: strong (app key encryption, key export/import/rotation).
 - File adapters (JSON/SQLite/WAL/SHM): strong (page-delta optional, solid tests).
 - Logical records (mergeable state): moderate (schema and merges exist; still early for real apps).
@@ -16,18 +16,17 @@ LibreSync has a working device-to-device MVP for two CLI instances on a LAN. Dev
 - Rust workspace with core library and CLI.
 - Device identity model (device/app/user IDs) with per-app trust.
 - LAN discovery via mDNS.
-- Pairing flow (trust only) and refresh flow (data exchange).
+- Linking flow (trust only) and refresh flow (data exchange).
 - Device listener for inbound connections.
-- CLI commands: init, select, discover, pair, listen, refresh, watch, status.
+- CLI commands: init, select, discover, link, listen, refresh, watch, status.
 - Status output with last-seen timestamps.
 - Listener runs in the background by default with PID/log output.
 - Discovery filters out the local device from selection lists.
 - Verbose error output available via `--verbose`.
 - Architecture and CLI docs in `docs/`.
 - Test suite covering core and CLI flows.
-- SDK-first `Engine` API with adapters and device discovery/pairing.
-- CLI dogfoods the `Engine` for listen, discover, pair, refresh, and watch.
-- Frankly Tauri demo app with SQLite-backed todos and LAN device linking.
+- SDK-first `Engine` API with adapters and device discovery/linking.
+- CLI dogfoods the `Engine` for listen, discover, link, refresh, and watch.
 - Engine auto-refresh loop for polling-based change sync.
 - Vision and DX/UX goals captured in README and research docs.
 - Watched file adapter for near-real-time local change detection.
@@ -61,20 +60,19 @@ LibreSync has a working device-to-device MVP for two CLI instances on a LAN. Dev
 - FFI crate added with Swift/Kotlin starter bindings and samples.
 - SQLite logical mapping added with sidecar metadata for existing tables.
 - Swift/Kotlin binding docs now cover Local Network permissions and secure key storage.
-- LibreSyncAlwaysOn now supports system tray show/hide and trust UI (pairing + fingerprints).
-- Frankly demo now uses SQLite logical mapping for record-level sync.
+- LibreSyncAlwaysOn now supports system tray show/hide and trust UI (linking + fingerprints).
 - Swift/Kotlin samples now default to logical record adapters.
 - FFI tests added to meet the coverage gate.
 
 ## Current MVP behavior
 - Two devices on the same LAN can run `libresync`.
 - Devices auto-discover via mDNS and can be selected interactively.
-- Pairing requires consent on both devices and adds to the allowlist.
+- Linking requires consent on both devices and adds to the allowlist.
 - Sync exchanges selected JSON or SQLite adapters and applies last-writer-wins via Lamport clocks.
 
 ## Known gaps
 - Device keys are self-signed and stored locally; rotation is CLI-only and needs SDK UX for verification.
-- Pairing uses fingerprint allowlisting (TOFU) without out-of-band verification prompts.
+- Linking uses fingerprint allowlisting (TOFU) without out-of-band verification prompts.
 - Logical record sync is now the preferred path but still early for production apps.
 - SQLite logical mapping is available but still evolving for complex schemas.
 - Background auto-refresh is polling-based; discovery is mDNS-first with manual fallback addresses.

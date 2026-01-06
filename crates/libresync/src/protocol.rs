@@ -8,12 +8,12 @@ use crate::{Entry, Error, Identity, Result};
 #[serde(tag = "type", content = "payload")]
 pub enum Message {
     Hello { identity: Identity },
-    PairRequest {
+    LinkRequest {
         identity: Identity,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         app_key: Option<Vec<u8>>,
     },
-    PairResponse {
+    LinkResponse {
         identity: Identity,
         accepted: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]

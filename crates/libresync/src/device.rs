@@ -2,8 +2,8 @@ use crate::{AppKey, DeviceKeys, Error, Identity, Result};
 
 pub trait DeviceHandler: Send + Sync {
     fn app_id(&self) -> &str;
-    fn is_paired(&self, identity: &Identity) -> bool;
-    fn approve_pair(&self, identity: &Identity) -> Result<bool>;
+    fn is_linked(&self, identity: &Identity) -> bool;
+    fn approve_link(&self, identity: &Identity) -> Result<bool>;
     fn app_key(&self) -> Result<AppKey> {
         Err(Error::Protocol("app key not configured".to_string()))
     }
@@ -16,17 +16,17 @@ pub trait DeviceHandler: Send + Sync {
     fn set_device_keys(&self, _device_keys: &DeviceKeys) -> Result<()> {
         Err(Error::Protocol("device key updates not supported".to_string()))
     }
-    fn is_paired_with_fingerprint(&self, identity: &Identity, fingerprint: &str) -> bool {
+    fn is_linked_with_fingerprint(&self, identity: &Identity, fingerprint: &str) -> bool {
         let _ = fingerprint;
-        self.is_paired(identity)
+        self.is_linked(identity)
     }
-    fn approve_pair_with_fingerprint(
+    fn approve_link_with_fingerprint(
         &self,
         identity: &Identity,
         fingerprint: &str,
     ) -> Result<bool> {
         let _ = fingerprint;
-        self.approve_pair(identity)
+        self.approve_link(identity)
     }
 }
 
@@ -42,11 +42,11 @@ mod tests {
             "com.example.app"
         }
 
-        fn is_paired(&self, _identity: &Identity) -> bool {
+        fn is_linked(&self, _identity: &Identity) -> bool {
             false
         }
 
-        fn approve_pair(&self, _identity: &Identity) -> crate::Result<bool> {
+        fn approve_link(&self, _identity: &Identity) -> crate::Result<bool> {
             Ok(false)
         }
     }
@@ -85,12 +85,12 @@ mod tests {
     }
 
     #[test]
-    fn default_pairing_methods_delegate() {
+    fn default_linking_methods_delegate() {
         let handler = StubHandler;
         let identity = Identity::new("device", "com.example.app", "user");
-        assert!(!handler.is_paired_with_fingerprint(&identity, "fingerprint"));
+        assert!(!handler.is_linked_with_fingerprint(&identity, "fingerprint"));
         assert!(!handler
-            .approve_pair_with_fingerprint(&identity, "fingerprint")
+            .approve_link_with_fingerprint(&identity, "fingerprint")
             .expect("approve"));
     }
 }

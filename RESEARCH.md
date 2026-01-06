@@ -32,7 +32,7 @@ The strongest approach is a **shared Rust core** with **thin native bindings**, 
 LibreSync should be the default choice when someone wants sync without centralized infrastructure.
 It must be:
 - **Easy to integrate** (small API, clear docs, reliable defaults).
-- **Easy to understand** (transparent pairing, visible trust, status you can trust).
+- **Easy to understand** (transparent linking, visible trust, status you can trust).
 - **Easy to trust** (local-only, encrypted transport, explicit consent).
 
 Definitions:
@@ -143,7 +143,7 @@ The CLI proved the protocol works end-to-end. The next phase is to turn the core
    - Exposes a stable API for clients (Rust API and C ABI for wrappers).
 
 2) **Platform integration layer (Swift/Kotlin wrappers)**  
-   - Handles permissions, lifecycle, and UI/UX flows (pairing prompts).
+   - Handles permissions, lifecycle, and UI/UX flows (linking prompts).
    - Bridges platform key storage (Keychain/Keystore).
    - Provides idiomatic APIs and async model to the host language.
 
@@ -160,11 +160,11 @@ The CLI becomes a **first-class integration test** and example app that exercise
 ### Core runtime objects
 
 - `Engine`: top-level runtime owning discovery, transport, and sync tasks.
-- `DeviceIdentity`: keypair + device metadata; app ID is the trust boundary.
+- `DeviceIdentity`: keyset + device metadata; app ID is the trust boundary.
 - `DeviceStore`: allowlist and last-seen info; supports revoke and reset.
 - `SyncSession`: per-device connection state and flow control.
 - `DataAdapter`: pluggable adapter for JSON or SQLite (see below).
-- `EventStream`: typed events (pairing requests, sync status, errors).
+- `EventStream`: typed events (linking requests, sync status, errors).
 
 ### Suggested Rust API (conceptual)
 
@@ -172,15 +172,15 @@ The CLI becomes a **first-class integration test** and example app that exercise
   Creates a runtime with a background task executor.
 - `engine.start_listening()` / `engine.stop_listening()`
 - `engine.discover_devices()` / `engine.add_device(address)`
-- `engine.request_pair(device)` / `engine.accept_pair(device, decision)`
+- `engine.request_link(device)` / `engine.accept_link(device, decision)`
 - `engine.sync_now(device)` / `engine.watch(adapter_id)`
 
 ### Event model
 
 Expose events that app UIs can map to UX:
 
-- `PairingRequested { device, metadata }`
-- `PairingDecisionRequired { device, code }`
+- `LinkingRequested { device, metadata }`
+- `LinkingDecisionRequired { device, code }`
 - `SyncStarted { device, adapter }`
 - `SyncProgress { device, adapter, received, total }`
 - `SyncFinished { device, adapter, result }`
@@ -283,7 +283,7 @@ Adapters should hide the op-log and merge semantics from app code.
 
 - Define FFI-safe types and functions.
 - Generate Swift/Kotlin bindings (UniFFI or manual).
-- Build minimal demo apps that pair + sync a document.
+- Build minimal demo apps that link + sync a document.
 
 ### Phase 3: Platform hardening
 
@@ -314,7 +314,7 @@ Recommended structure:
 
 mDNS is the most natural for “zero config” on LAN.
 
-Manual pairing still matters for:
+Manual linking still matters for:
 
 - networks where mDNS/broadcast is blocked
 - cross-subnet LANs
@@ -337,9 +337,9 @@ For iOS/macOS-first, either works. QUIC tends to be “future-proof,” but TCP+
 
 Recommended:
 
-- Each device generates a long-term keypair.
+- Each device generates a long-term keyset.
 - Device ID = hash of public key.
-- Pairing workflow:
+- Linking workflow:
   - show QR code / short code containing device ID + ephemeral handshake info
   - device scans/enters code
   - both sides prompt: “Approve this device?”
@@ -606,11 +606,11 @@ To avoid boiling the ocean:
 ### v1 deliverables
 
 - LAN discovery via mDNS
-- Secure pairing + allow-list
+- Secure linking + allow-list
 - One transport (TCP+TLS or QUIC)
 - One adapter: JSON CRDT OR simple key-value with deterministic merge
 - iOS + macOS SDKs
-- CLI debug tool (“list devices”, “pair”, “sync status”, “dump state”)
+- CLI debug tool (“list devices”, “link”, “sync status”, “dump state”)
 
 ### v1 non-goals
 
@@ -647,7 +647,7 @@ Mitigations:
 - **Adapter API**: What is the minimal contract to support JSON + SQLite cleanly?
 - **Device topology**: Mesh only, or hub option?
 - **Compaction semantics**: When and how do you safely GC history?
-- **UX for trust**: pairing codes vs QR, and how to handle re-keying.
+- **UX for trust**: linking codes vs QR, and how to handle re-keying.
 
 ---
 

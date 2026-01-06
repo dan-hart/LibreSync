@@ -26,7 +26,7 @@ pub use adapter::{
 };
 pub use engine::{
     AdapterWatch, AutoRefresh, AutoRefreshConfig, DeviceInfo, Engine, EngineConfig, Event,
-    EventSink, EventStream, PairingDecision, PairingRequest, SyncResult, event_channel,
+    EventSink, EventStream, LinkingDecision, LinkingRequest, SyncResult, event_channel,
 };
 pub use discovery::{browse_mdns, register_mdns, DiscoveredDevice, MdnsAdvertiser};
 pub use keys::DeviceKeys;
@@ -51,4 +51,4 @@ pub use backup::{
     SnapshotStore, summarize_snapshot_diff,
 };
 pub use state::State;
-pub use sync::{pair_with_device, sync_with_device, SyncListener};
+pub use sync::{link_with_device, sync_with_device, SyncListener};

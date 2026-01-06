@@ -12,7 +12,7 @@
 ## Core objects
 - `Identity`: `device_id`, `app_id`, `user_id`.
 - `EngineConfig`: identity + optional listen address.
-- `Engine`: pairing, discovery, refresh, and event stream.
+- `Engine`: linking, discovery, refresh, and event stream.
 - `SyncRecord`: logical record (`schema`, `entity`, `id`, `fields`, `tombstone`, `clock`).
 - `State`: encrypted local sync state (managed by the engine).
 
@@ -21,7 +21,7 @@
 - `engine_register_adapter(adapter)` -> register file/logical adapters.
 - `engine_start_listening(listen_addr)` / `engine_stop_listening()`.
 - `engine_discover(timeout)` -> list visible devices on LAN.
-- `engine_request_pair(address)` -> pair with a device (consent required).
+- `engine_request_link(address)` -> link with a device (consent required).
 - `engine_sync_now(address, adapter_id)` -> refresh data for one adapter.
 - `engine_auto_refresh(config)` -> background refresh loop.
 - `engine_auto_refresh_with_config(config)` -> supports fallback addresses and discovery tuning.
@@ -35,7 +35,7 @@
 ## Events
 - Event stream is exposed as a pollable queue.
 - Events include:
-  - `PairingRequested`, `PairingDecisionRequired`
+  - `LinkingRequested`, `LinkingDecisionRequired`
   - `SyncStarted`, `SyncFinished`
   - `DeviceSeen`, `DeviceOffline`, `Error`
 - No cross-thread callbacks from Rust; wrappers poll the queue and dispatch on the platform thread.
@@ -54,7 +54,7 @@
 
 ## Key handling
 - The engine manages app-level keys; E2EE is enforced and cannot be disabled.
-- Pairing exchanges the app key inside the encrypted transport.
+- Linking exchanges the app key inside the encrypted transport.
 
 ## Platform constraints to plan for
 - iOS and macOS require Local Network permission for discovery and inbound connections.
@@ -77,7 +77,7 @@ The FFI layer should be small, versioned, and handle-based so wrappers stay thin
 - `engine_register_logical_adapter(handle, adapter_id, namespace)`.
 - `engine_start_listening(handle, listen_addr)` / `engine_stop_listening(handle)`.
 - `engine_discover(handle, timeout_ms)` -> list of devices.
-- `engine_request_pair(handle, address)` / `engine_accept_pair(handle, device_id, decision)`.
+- `engine_request_link(handle, address)` / `engine_accept_link(handle, device_id, decision)`.
 - `engine_sync_now(handle, address, adapter_id)`.
 - `engine_event_next(handle)` -> next event (pollable).
 - `backup_create(handle, adapter_id, note)` / `backup_list(handle, adapter_id)` / `backup_preview(handle, adapter_id, snapshot_id)` / `backup_restore(handle, adapter_id, snapshot_id, confirm_id)`.

@@ -5,7 +5,7 @@ LibreSync exists to make **local-first** data exchange simple, private, and reli
 ## Principles
 - **Local-only**: devices connect directly on the LAN or a private overlay.
 - **E2EE by default**: the engine encrypts payloads and local state automatically.
-- **Consent-driven**: explicit device pairing and revocation.
+- **Consent-driven**: explicit device linking and revocation.
 - **Open and free**: AGPLv3 ensures the core stays open.
 
 ## What makes it different

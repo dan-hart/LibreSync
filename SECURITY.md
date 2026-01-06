@@ -19,7 +19,7 @@ LibreSync is designed for **local-only, device-to-device synchronization** with 
 ## Mitigations (current + planned)
 - TLS with device keys for transport security.
 - E2EE for payloads and encrypted local state/backups.
-- Explicit pairing and per-app allowlists.
+- Explicit linking and per-app allowlists.
 - Minimal discovery payloads and opt-out discovery flags.
 - App-key rotation and device-key rotation (CLI) with re-encryption/rotation guidance.
 - Planned: key export/import for recovery and assisted revocation workflows.
@@ -34,7 +34,7 @@ LibreSync is designed for **local-only, device-to-device synchronization** with 
 - E2EE is mandatory for consumers; there is no opt-out path.
 - Engine state files and backups are encrypted at rest using the same app-level key.
 - App-key rotation is implemented (state/backups are re-encrypted).
-- Device-key rotation is implemented (new fingerprints require re-pairing).
+- Device-key rotation is implemented (new fingerprints require re-linking).
 - Assisted re-keying and export/import flows are still pending.
 
 ## Key model (current)
@@ -42,18 +42,18 @@ LibreSync is designed for **local-only, device-to-device synchronization** with 
 - **App key**: shared app-level key used for payload encryption and encrypted state/backup storage.
 - The app key is never optional; the engine always encrypts payloads and local state.
 
-## Pairing and key exchange (current)
-- Pairing occurs only between devices with the same app ID.
-- The app key is exchanged during pairing inside the TLS channel.
-- If devices disagree on the app key, the newest pairing wins and the local device adopts the remote app key.
-- Pairing always requires explicit consent (or explicit auto-accept configuration).
+## Linking and key exchange (current)
+- Linking occurs only between devices with the same app ID.
+- The app key is exchanged during linking inside the TLS channel.
+- If devices disagree on the app key, the newest linking wins and the local device adopts the remote app key.
+- Linking always requires explicit consent (or explicit auto-accept configuration).
 
 ## App-key lifecycle (current + planned)
 **Current behavior**
 - The app-level key is generated on first init and stored locally per app config.
-- Pairing exchanges app keys; the local device adopts the remote app key when they differ.
+- Linking exchanges app keys; the local device adopts the remote app key when they differ.
 - The app-level key encrypts sync payloads and state/backup storage. It is never optional.
-- `libresync key rotate` generates a new app key and re-encrypts state/backups. The allowlist is cleared by default to force re-pairing.
+- `libresync key rotate` generates a new app key and re-encrypts state/backups. The allowlist is cleared by default to force re-linking.
 - `libresync key export-app` and `libresync key import-app` support key portability and recovery.
 
 **Planned behavior**
@@ -64,19 +64,19 @@ LibreSync is designed for **local-only, device-to-device synchronization** with 
 - **App-key rotation** (`libresync key rotate`):
   1) Generates a new app key.
   2) Re-encrypts local state and backups.
-  3) Clears the allowlist by default to force re-pairing (optional `--keep-allowlist`).
+  3) Clears the allowlist by default to force re-linking (optional `--keep-allowlist`).
 - **Device-key rotation** (`libresync key rotate-device`):
   1) Generates new TLS keys and a new fingerprint.
-  2) Requires remote devices to re-pair to trust the new fingerprint.
-  3) Optionally clears the allowlist to force re-pairing.
+  2) Requires remote devices to re-link to trust the new fingerprint.
+  3) Optionally clears the allowlist to force re-linking.
 - **Key export/import**:
   - `libresync key export-app` / `libresync key import-app` for app-level key portability.
   - `libresync key export-device` / `libresync key import-device` for device TLS keys.
 
-## Re-pairing and revocation
-- `libresync unpair` removes a device from the allowlist; it must re-pair before any refresh.
-- App-key rotation clears the allowlist by default, forcing re-pairing on all devices.
-- Device-key rotation changes the local fingerprint; remote devices must re-pair to trust it.
+## Re-linking and revocation
+- `libresync unlink` removes a device from the allowlist; it must re-link before any refresh.
+- App-key rotation clears the allowlist by default, forcing re-linking on all devices.
+- Device-key rotation changes the local fingerprint; remote devices must re-link to trust it.
 
 ## Repository Security Controls
 - **.gitignore hardening**: sensitive files and build caches are excluded by default.

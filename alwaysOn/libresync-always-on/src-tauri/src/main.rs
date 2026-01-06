@@ -168,9 +168,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_status,
             manual_refresh,
-            pair_device,
-            unpair_device,
-            set_auto_accept_pairing,
+            link_device,
+            unlink_device,
+            set_auto_accept_linking,
             set_backup_policy,
             create_snapshot,
             list_snapshots,
@@ -199,10 +199,10 @@ struct AlwaysOnStatus {
     user_id: String,
     app_id: String,
     listen_addr: String,
-    paired_count: usize,
-    paired_devices: Vec<DeviceRecord>,
+    linked_count: usize,
+    linked_devices: Vec<DeviceRecord>,
     local_fingerprint: String,
-    auto_accept_pairing: bool,
+    auto_accept_linking: bool,
     last_sync_unix_secs: Option<u64>,
     last_error: Option<String>,
     backup: BTreeMap<String, BackupPolicy>,
@@ -216,10 +216,10 @@ impl AlwaysOnStatus {
             user_id: config.user_id.clone(),
             app_id: config.app_id.clone(),
             listen_addr: listen_addr.to_string(),
-            paired_count: config.devices.len(),
-            paired_devices: config.devices.values().cloned().collect(),
+            linked_count: config.devices.len(),
+            linked_devices: config.devices.values().cloned().collect(),
             local_fingerprint: config.device_keys.fingerprint.clone(),
-            auto_accept_pairing: config.auto_accept_pairing,
+            auto_accept_linking: config.auto_accept_linking,
             last_sync_unix_secs: None,
             last_error: None,
             backup: config.backup.clone(),
@@ -233,10 +233,10 @@ fn sync_status_with_config(status: &mut AlwaysOnStatus, config: &AlwaysOnConfig)
     status.user_id = config.user_id.clone();
     status.app_id = config.app_id.clone();
     status.listen_addr = config.listen_addr.clone();
-    status.paired_devices = config.devices.values().cloned().collect();
-    status.paired_count = status.paired_devices.len();
+    status.linked_devices = config.devices.values().cloned().collect();
+    status.linked_count = status.linked_devices.len();
     status.local_fingerprint = config.device_keys.fingerprint.clone();
-    status.auto_accept_pairing = config.auto_accept_pairing;
+    status.auto_accept_linking = config.auto_accept_linking;
     status.backup = config.backup.clone();
     status.data_path = config.data_path.clone();
 }
@@ -280,7 +280,7 @@ fn manual_refresh_internal(state: &AlwaysOnRuntime) -> Result<RefreshSummary, St
 
     let mut address_book = Vec::new();
     for device in devices {
-        if !device.paired {
+        if !device.linked {
             continue;
         }
         if let Some(addr) = device.address {
@@ -296,7 +296,7 @@ fn manual_refresh_internal(state: &AlwaysOnRuntime) -> Result<RefreshSummary, St
                         identity: Identity::new(&record.device_id, &record.app_id, &record.user_id),
                         address: Some(parsed),
                         last_seen: None,
-                        paired: true,
+                        linked: true,
                         fingerprint: record.fingerprint.clone(),
                     };
                     address_book.push((device, parsed));
@@ -346,13 +346,13 @@ fn manual_refresh(state: TauriState<AlwaysOnRuntime>) -> Result<RefreshSummary, 
 }
 
 #[tauri::command]
-fn pair_device(state: TauriState<AlwaysOnRuntime>, address: String) -> Result<AlwaysOnStatus, String> {
+fn link_device(state: TauriState<AlwaysOnRuntime>, address: String) -> Result<AlwaysOnStatus, String> {
     let addr = address
         .parse::<SocketAddr>()
         .map_err(|_| "invalid address".to_string())?;
     let mut engine = state.engine.lock().map_err(|_| "engine lock".to_string())?;
     let remote = engine
-        .request_pair(addr)
+        .request_link(addr)
         .map_err(|error| error.to_string())?;
 
     let mut config = state.config.lock().map_err(|_| "config lock".to_string())?;
@@ -365,7 +365,7 @@ fn pair_device(state: TauriState<AlwaysOnRuntime>, address: String) -> Result<Al
 }
 
 #[tauri::command]
-fn unpair_device(state: TauriState<AlwaysOnRuntime>, device_id: String) -> Result<AlwaysOnStatus, String> {
+fn unlink_device(state: TauriState<AlwaysOnRuntime>, device_id: String) -> Result<AlwaysOnStatus, String> {
     let mut config = state.config.lock().map_err(|_| "config lock".to_string())?;
     config.devices.remove(&device_id);
     save_config(&state.config_path, &config)?;
@@ -376,12 +376,12 @@ fn unpair_device(state: TauriState<AlwaysOnRuntime>, device_id: String) -> Resul
 }
 
 #[tauri::command]
-fn set_auto_accept_pairing(
+fn set_auto_accept_linking(
     state: TauriState<AlwaysOnRuntime>,
     enabled: bool,
 ) -> Result<AlwaysOnStatus, String> {
     let mut config = state.config.lock().map_err(|_| "config lock".to_string())?;
-    config.auto_accept_pairing = enabled;
+    config.auto_accept_linking = enabled;
     save_config(&state.config_path, &config)?;
 
     let mut status = state.status.lock().map_err(|_| "status lock".to_string())?;
@@ -608,14 +608,14 @@ impl libresync::DeviceHandler for AlwaysOnHandler {
         &self.app_id
     }
 
-    fn is_paired(&self, identity: &libresync::Identity) -> bool {
+    fn is_linked(&self, identity: &libresync::Identity) -> bool {
         let config = self.config.lock().expect("config lock");
         config.devices.contains_key(&identity.device_id)
     }
 
-    fn approve_pair(&self, _identity: &libresync::Identity) -> libresync::Result<bool> {
+    fn approve_link(&self, _identity: &libresync::Identity) -> libresync::Result<bool> {
         let config = self.config.lock().expect("config lock");
-        Ok(config.auto_accept_pairing)
+        Ok(config.auto_accept_linking)
     }
 
     fn device_keys(&self) -> libresync::Result<DeviceKeys> {
@@ -636,9 +636,9 @@ impl libresync::DeviceHandler for AlwaysOnHandler {
             .map_err(|error| libresync::Error::Protocol(error))
     }
 
-    fn is_paired_with_fingerprint(&self, identity: &libresync::Identity, fingerprint: &str) -> bool {
+    fn is_linked_with_fingerprint(&self, identity: &libresync::Identity, fingerprint: &str) -> bool {
         if fingerprint.is_empty() {
-            return self.is_paired(identity);
+            return self.is_linked(identity);
         }
         let config = self.config.lock().expect("config lock");
         config
@@ -738,7 +738,7 @@ struct AlwaysOnConfig {
     #[serde(default)]
     devices: BTreeMap<String, DeviceRecord>,
     #[serde(default)]
-    auto_accept_pairing: bool,
+    auto_accept_linking: bool,
     #[serde(default)]
     backup: BTreeMap<String, BackupPolicy>,
 }
@@ -845,7 +845,7 @@ fn load_or_init_config(path: &Path, data_path: &Path) -> Result<(AlwaysOnConfig,
         device_keys: DeviceKeysRecord::from_keys(&keys),
         app_key: BASE64.encode(app_key.as_bytes()),
         devices: BTreeMap::new(),
-        auto_accept_pairing: false,
+        auto_accept_linking: false,
         backup: BTreeMap::new(),
     };
 

@@ -6,7 +6,7 @@ public struct LibreSyncDeviceInfo: Codable {
     public let user_id: String
     public let app_id: String
     public let address: String?
-    public let paired: Bool
+    public let linked: Bool
 }
 
 public enum LibreSyncError: Error, CustomStringConvertible {
@@ -75,8 +75,8 @@ public final class LibreSyncEngine {
         return try JSONDecoder().decode([LibreSyncDeviceInfo].self, from: Data(json.utf8))
     }
 
-    public func pair(address: String) throws -> LibreSyncDeviceInfo {
-        guard let jsonPtr = libresync_engine_pair(handle, address) else {
+    public func link(address: String) throws -> LibreSyncDeviceInfo {
+        guard let jsonPtr = libresync_engine_link(handle, address) else {
             throw LibreSyncError.message(Self.lastError())
         }
         defer { libresync_string_free(jsonPtr) }

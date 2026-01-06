@@ -105,18 +105,18 @@
         border-top: 1px solid var(--border);
         padding-top: 20px;
       }
-      .pair-controls {
+      .link-controls {
         display: flex;
         flex-wrap: wrap;
         gap: 12px;
         margin-top: 12px;
       }
-      .paired-list {
+      .linked-list {
         display: grid;
         gap: 8px;
         margin-top: 12px;
       }
-      .paired-item {
+      .linked-item {
         display: flex;
         justify-content: space-between;
         align-items: flex-start;
@@ -126,7 +126,7 @@
         background: #fff;
         font-size: 12px;
       }
-      .paired-meta {
+      .linked-meta {
         display: flex;
         flex-direction: column;
         gap: 4px;
@@ -220,13 +220,13 @@
         <p class="muted" id="local-fingerprint">Local fingerprint: —</p>
         <div class="toggle">
           <input type="checkbox" id="auto-accept" />
-          <label for="auto-accept">Auto-accept pairing</label>
+          <label for="auto-accept">Auto-accept linking</label>
         </div>
-        <div class="pair-controls">
-          <input type="text" id="pair-address" placeholder="Device address (ip:port)" />
-          <button class="secondary" id="pair-device">Pair device</button>
+        <div class="link-controls">
+          <input type="text" id="link-address" placeholder="Device address (ip:port)" />
+          <button class="secondary" id="link-device">Link device</button>
         </div>
-        <div class="paired-list" id="paired-list">No paired devices.</div>
+        <div class="linked-list" id="linked-list">No linked devices.</div>
       </section>
 
       <section class="backup">
@@ -265,9 +265,9 @@
       const statusBanner = document.getElementById("status-banner");
       const localFingerprint = document.getElementById("local-fingerprint");
       const autoAccept = document.getElementById("auto-accept");
-      const pairAddressInput = document.getElementById("pair-address");
-      const pairDeviceButton = document.getElementById("pair-device");
-      const pairedList = document.getElementById("paired-list");
+      const linkAddressInput = document.getElementById("link-address");
+      const linkDeviceButton = document.getElementById("link-device");
+      const linkedList = document.getElementById("linked-list");
       const backupEnabled = document.getElementById("backup-enabled");
       const backupRestore = document.getElementById("backup-restore");
       const backupApp = document.getElementById("backup-app");
@@ -299,17 +299,17 @@
         return date.toLocaleString();
       };
 
-      const renderPairedDevices = (devices) => {
+      const renderLinkedDevices = (devices) => {
         if (!devices || !devices.length) {
-          pairedList.textContent = "No paired devices.";
+          linkedList.textContent = "No linked devices.";
           return;
         }
-        pairedList.innerHTML = "";
+        linkedList.innerHTML = "";
         devices.forEach((device) => {
           const item = document.createElement("div");
-          item.className = "paired-item";
+          item.className = "linked-item";
           const meta = document.createElement("div");
-          meta.className = "paired-meta";
+          meta.className = "linked-meta";
           const lastSeen = device.last_seen_unix_secs
             ? new Date(device.last_seen_unix_secs * 1000).toLocaleString()
             : "—";
@@ -321,17 +321,17 @@
           `;
           const action = document.createElement("button");
           action.className = "secondary";
-          action.textContent = "Unpair";
+          action.textContent = "Unlink";
           action.addEventListener("click", () => {
-            statusBanner.textContent = "Unpairing...";
-            invoke("unpair_device", { device_id: device.device_id })
+            statusBanner.textContent = "Unlinking...";
+            invoke("unlink_device", { device_id: device.device_id })
               .then(renderStatus)
               .catch((error) => {
-                statusBanner.textContent = `Unpair error: ${error}`;
+                statusBanner.textContent = `Unlink error: ${error}`;
               });
           });
           item.append(meta, action);
-          pairedList.appendChild(item);
+          linkedList.appendChild(item);
         });
       };
 
@@ -342,7 +342,7 @@
           { label: "User", value: status.user_id },
           { label: "App", value: status.app_id },
           { label: "Listen", value: status.listen_addr },
-          { label: "Paired devices", value: String(status.paired_count) },
+          { label: "Linked devices", value: String(status.linked_count) },
           { label: "Last sync", value: formatTimestamp(status.last_sync_unix_secs) },
           { label: "Data path", value: status.data_path || "—" },
           { label: "Last error", value: status.last_error || "—" },
@@ -363,8 +363,8 @@
 
         currentAppId = status.app_id;
         localFingerprint.textContent = `Local fingerprint: ${status.local_fingerprint || "—"}`;
-        autoAccept.checked = Boolean(status.auto_accept_pairing);
-        renderPairedDevices(status.paired_devices || []);
+        autoAccept.checked = Boolean(status.auto_accept_linking);
+        renderLinkedDevices(status.linked_devices || []);
         backupApp.textContent = `App: ${status.app_id}`;
         const policy = status.backup?.[status.app_id] || { enabled: false, allow_restore: false };
         backupEnabled.checked = policy.enabled;
@@ -472,27 +472,27 @@
 
       reloadButton.addEventListener("click", loadStatus);
       autoAccept.addEventListener("change", () => {
-        statusBanner.textContent = "Updating pairing policy...";
-        invoke("set_auto_accept_pairing", { enabled: autoAccept.checked })
+        statusBanner.textContent = "Updating linking policy...";
+        invoke("set_auto_accept_linking", { enabled: autoAccept.checked })
           .then(renderStatus)
           .catch((error) => {
             statusBanner.textContent = `Auto-accept error: ${error}`;
           });
       });
-      pairDeviceButton.addEventListener("click", () => {
-        const address = pairAddressInput.value.trim();
+      linkDeviceButton.addEventListener("click", () => {
+        const address = linkAddressInput.value.trim();
         if (!address) {
-          statusBanner.textContent = "Enter a device address to pair.";
+          statusBanner.textContent = "Enter a device address to link.";
           return;
         }
-        statusBanner.textContent = "Pairing...";
-        invoke("pair_device", { address })
+        statusBanner.textContent = "Linking...";
+        invoke("link_device", { address })
           .then((status) => {
-            pairAddressInput.value = "";
+            linkAddressInput.value = "";
             renderStatus(status);
           })
           .catch((error) => {
-            statusBanner.textContent = `Pair error: ${error}`;
+            statusBanner.textContent = `Link error: ${error}`;
           });
       });
       backupEnabled.addEventListener("change", updateBackup);

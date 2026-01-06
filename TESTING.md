@@ -68,29 +68,29 @@ libresync stop
 ```
 
 ## 4) Discover devices (optional)
-You can verify discovery before pairing:
+You can verify discovery before linking:
 ```
 libresync discover
 ```
 
 This should list the other device on the LAN with its device ID and address.
 
-## 5) Pair the devices (trust only)
-Pairing must happen once between devices, with consent on both sides.
+## 5) Link the devices (trust only)
+Linking must happen once between devices, with consent on both sides.
 
 On **Device A**:
 ```
-libresync pair
+libresync link
 ```
 
 If multiple devices are discovered, you’ll be prompted to select one.
 
-On **Device B** (optional, if you want to initiate pairing from the other side):
+On **Device B** (optional, if you want to initiate linking from the other side):
 ```
-libresync pair
+libresync link
 ```
 
-Pairing establishes trust only; it does **not** refresh data.
+Linking establishes trust only; it does **not** refresh data.
 
 ## 6) Refresh the JSON file
 On either device:
@@ -131,18 +131,18 @@ cat ~/libresync-data.json
 Then reverse the direction and repeat to confirm two‑way refresh.
 
 ## 9) Check status
-Use `status` to verify paired devices and last seen info:
+Use `status` to verify linked devices and last seen info:
 ```
 libresync status
 ```
 
 ## Troubleshooting
 - **No devices found**: ensure both listeners are running and mDNS is not blocked.
-- **Pair rejected**: check that app IDs match and both devices accept pairing.
-- **Sync fails**: confirm pairing is complete and both devices are still on the same LAN.
+- **Link rejected**: check that app IDs match and both devices accept linking.
+- **Sync fails**: confirm linking is complete and both devices are still on the same LAN.
 
 ## Notes
 - Discovery is unauthenticated and only used to find devices.
-- Pairing is required before refresh.
+- Linking is required before refresh.
 - E2EE is enforced by the engine; state files and backups are encrypted at rest.
 - Config defaults to the OS config directory; pass `--config` to override.

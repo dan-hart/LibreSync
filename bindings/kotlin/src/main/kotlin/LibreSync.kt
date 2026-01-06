@@ -17,7 +17,7 @@ object LibreSyncNative {
     external fun libresync_engine_stop_listening(handle: Long): Boolean
 
     external fun libresync_engine_discover(handle: Long, timeoutMs: Long): String?
-    external fun libresync_engine_pair(handle: Long, address: String): String?
+    external fun libresync_engine_link(handle: Long, address: String): String?
     external fun libresync_engine_sync_now(handle: Long, address: String, adapterId: String): Boolean
 
     external fun libresync_backup_snapshot(handle: Long, adapterId: String, note: String?): String?
@@ -75,9 +75,9 @@ class LibreSyncEngine(configJson: String, statePath: String) {
             ?: throw IllegalStateException(LibreSyncNative.libresync_last_error() ?: "discover failed")
     }
 
-    fun pair(address: String): String {
-        return LibreSyncNative.libresync_engine_pair(handle, address)
-            ?: throw IllegalStateException(LibreSyncNative.libresync_last_error() ?: "pair failed")
+    fun link(address: String): String {
+        return LibreSyncNative.libresync_engine_link(handle, address)
+            ?: throw IllegalStateException(LibreSyncNative.libresync_last_error() ?: "link failed")
     }
 
     fun syncNow(address: String, adapterId: String) {

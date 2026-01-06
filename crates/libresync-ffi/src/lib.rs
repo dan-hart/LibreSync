@@ -52,7 +52,7 @@ impl DeviceHandler for FfiHandler {
         &self.app_id
     }
 
-    fn is_paired(&self, identity: &Identity) -> bool {
+    fn is_linked(&self, identity: &Identity) -> bool {
         self.allowlist
             .lock()
             .ok()
@@ -60,7 +60,7 @@ impl DeviceHandler for FfiHandler {
             .unwrap_or(false)
     }
 
-    fn approve_pair(&self, _identity: &Identity) -> libresync::Result<bool> {
+    fn approve_link(&self, _identity: &Identity) -> libresync::Result<bool> {
         Ok(self.auto_accept.load(Ordering::SeqCst))
     }
 
@@ -84,7 +84,7 @@ impl DeviceHandler for FfiHandler {
         Ok(self.device_keys.clone())
     }
 
-    fn is_paired_with_fingerprint(&self, identity: &Identity, fingerprint: &str) -> bool {
+    fn is_linked_with_fingerprint(&self, identity: &Identity, fingerprint: &str) -> bool {
         self.allowlist
             .lock()
             .ok()
@@ -93,7 +93,7 @@ impl DeviceHandler for FfiHandler {
             .unwrap_or(false)
     }
 
-    fn approve_pair_with_fingerprint(
+    fn approve_link_with_fingerprint(
         &self,
         _identity: &Identity,
         _fingerprint: &str,
@@ -115,7 +115,7 @@ struct FfiDeviceInfo {
     user_id: String,
     app_id: String,
     address: Option<String>,
-    paired: bool,
+    linked: bool,
 }
 
 #[derive(Serialize)]
@@ -434,7 +434,7 @@ pub extern "C" fn libresync_engine_discover(
             user_id: device.identity.user_id,
             app_id: device.identity.app_id,
             address: device.address.map(|addr| addr.to_string()),
-            paired: device.paired,
+            linked: device.linked,
         })
         .collect::<Vec<_>>();
     let json = match serde_json::to_string(&info) {
@@ -480,7 +480,7 @@ pub extern "C" fn libresync_allowlist_clear(handle: *mut EngineHandle) -> bool {
 }
 
 #[no_mangle]
-pub extern "C" fn libresync_engine_pair(
+pub extern "C" fn libresync_engine_link(
     handle: *mut EngineHandle,
     address: *const c_char,
 ) -> *mut c_char {
@@ -511,7 +511,7 @@ pub extern "C" fn libresync_engine_pair(
             return std::ptr::null_mut();
         }
     };
-    let device = match engine.request_pair(addr) {
+    let device = match engine.request_link(addr) {
         Ok(device) => device,
         Err(error) => {
             set_last_error(error.to_string());
@@ -528,7 +528,7 @@ pub extern "C" fn libresync_engine_pair(
         user_id: device.identity.user_id,
         app_id: device.identity.app_id,
         address: device.address.map(|addr| addr.to_string()),
-        paired: device.paired,
+        linked: device.linked,
     };
     let json = match serde_json::to_string(&info) {
         Ok(json) => json,
@@ -1087,11 +1087,11 @@ mod tests {
     }
 
     #[test]
-    fn ffi_error_paths_for_pair_and_sync() {
+    fn ffi_error_paths_for_link_and_sync() {
         let (_tempdir, handle) = create_engine(None);
 
         let bad_addr = CString::new("nope").expect("bad addr");
-        let result = libresync_engine_pair(handle, bad_addr.as_ptr());
+        let result = libresync_engine_link(handle, bad_addr.as_ptr());
         assert!(result.is_null());
         assert!(last_error().is_some());
 

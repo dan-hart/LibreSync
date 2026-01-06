@@ -12,7 +12,7 @@ use crate::discovery::browse_mdns;
 use crate::sync::{pull_snapshot, push_snapshot};
 use crate::{
     AdapterCache, DataAdapter, DeviceHandler, Entry, Error, Identity, LogicalAdapter,
-    LogicalAdapterWrapper, Result, State, SyncListener, pair_with_device, sync_with_device,
+    LogicalAdapterWrapper, Result, State, SyncListener, link_with_device, sync_with_device,
 };
 
 #[derive(Clone, Debug)]
@@ -40,18 +40,18 @@ pub struct DeviceInfo {
     pub identity: Identity,
     pub address: Option<SocketAddr>,
     pub last_seen: Option<SystemTime>,
-    pub paired: bool,
+    pub linked: bool,
     pub fingerprint: Option<String>,
 }
 
 #[derive(Clone, Debug)]
-pub struct PairingRequest {
+pub struct LinkingRequest {
     pub device: DeviceInfo,
     pub code: Option<String>,
 }
 
 #[derive(Clone, Debug)]
-pub enum PairingDecision {
+pub enum LinkingDecision {
     Accept,
     Reject,
 }
@@ -64,8 +64,8 @@ pub enum SyncResult {
 
 #[derive(Clone, Debug)]
 pub enum Event {
-    PairingRequested { request: PairingRequest },
-    PairingDecisionRequired { request: PairingRequest },
+    LinkingRequested { request: LinkingRequest },
+    LinkingDecisionRequired { request: LinkingRequest },
     SyncStarted { device: DeviceInfo, adapter_id: String },
     SyncFinished {
         device: DeviceInfo,
@@ -314,7 +314,7 @@ impl Engine {
             .into_iter()
             .filter(|device| device.identity.device_id != self.config.identity.device_id)
             .map(|device| DeviceInfo {
-                paired: self.device_handler.is_paired(&device.identity),
+                linked: self.device_handler.is_linked(&device.identity),
                 identity: device.identity,
                 address: Some(device.address),
                 last_seen: Some(SystemTime::now()),
@@ -324,14 +324,14 @@ impl Engine {
     }
 
     pub fn add_device(&self, _address: SocketAddr) -> Result<DeviceInfo> {
-        self.request_pair(_address)
+        self.request_link(_address)
     }
 
-    pub fn request_pair(&self, address: SocketAddr) -> Result<DeviceInfo> {
+    pub fn request_link(&self, address: SocketAddr) -> Result<DeviceInfo> {
         let device_keys = self.device_handler.device_keys()?;
         let app_key = self.device_handler.app_key()?;
         let (remote_identity, fingerprint, remote_app_key) =
-            pair_with_device(&self.config.identity, &device_keys, &app_key, address)?;
+            link_with_device(&self.config.identity, &device_keys, &app_key, address)?;
         if remote_app_key != app_key {
             self.device_handler.set_app_key(&remote_app_key)?;
         }
@@ -340,15 +340,15 @@ impl Engine {
             identity: remote_identity,
             address: Some(address),
             last_seen: Some(SystemTime::now()),
-            paired: true,
+            linked: true,
             fingerprint: Some(fingerprint),
         })
     }
 
-    pub fn respond_to_pairing(
+    pub fn respond_to_linking(
         &self,
-        _request: PairingRequest,
-        _decision: PairingDecision,
+        _request: LinkingRequest,
+        _decision: LinkingDecision,
     ) -> Result<()> {
         not_implemented()
     }
@@ -371,9 +371,9 @@ impl Engine {
             }
             if !self
                 .device_handler
-                .is_paired_with_fingerprint(identity, fingerprint)
+                .is_linked_with_fingerprint(identity, fingerprint)
             {
-                return Err(Error::Protocol("device not paired".to_string()));
+                return Err(Error::Protocol("device not linked".to_string()));
             }
             Ok(())
         };
@@ -394,7 +394,7 @@ impl Engine {
             identity: remote_identity.clone(),
             address: Some(address),
             last_seen: Some(SystemTime::now()),
-            paired: true,
+            linked: true,
             fingerprint: Some(fingerprint.clone()),
         };
 
@@ -579,7 +579,7 @@ impl Engine {
                     if device.identity.device_id == identity.device_id {
                         continue;
                     }
-                    if !device_handler.is_paired(&device.identity) {
+                    if !device_handler.is_linked(&device.identity) {
                         continue;
                     }
                     if seen.insert(device.address) {
@@ -601,9 +601,9 @@ impl Engine {
                         identity: base_identity,
                         address: Some(address),
                         last_seen: Some(SystemTime::now()),
-                        paired: known_identity
+                        linked: known_identity
                             .as_ref()
-                            .map(|identity| device_handler.is_paired(identity))
+                            .map(|identity| device_handler.is_linked(identity))
                             .unwrap_or(false),
                         fingerprint: None,
                     };
@@ -654,9 +654,9 @@ impl Engine {
                                         "app id mismatch".to_string(),
                                     ));
                                 }
-                                if !handler.is_paired_with_fingerprint(identity, fingerprint) {
+                                if !handler.is_linked_with_fingerprint(identity, fingerprint) {
                                     return Err(Error::Protocol(
-                                        "device not paired".to_string(),
+                                        "device not linked".to_string(),
                                     ));
                                 }
                                 Ok(())
@@ -809,11 +809,11 @@ mod tests {
             &self.app_id
         }
 
-        fn is_paired(&self, _identity: &Identity) -> bool {
+        fn is_linked(&self, _identity: &Identity) -> bool {
             true
         }
 
-        fn approve_pair(&self, _identity: &Identity) -> crate::Result<bool> {
+        fn approve_link(&self, _identity: &Identity) -> crate::Result<bool> {
             Ok(true)
         }
 
@@ -900,7 +900,7 @@ mod tests {
     }
 
     #[test]
-    fn request_pair_updates_app_key() {
+    fn request_link_updates_app_key() {
         let remote_identity = Identity::new("remote", "com.example.app", "user");
         let remote_keys = DeviceKeys::generate(&remote_identity).expect("keys");
         let remote_app_key = AppKey::generate().expect("app key");
@@ -929,7 +929,7 @@ mod tests {
         let engine =
             Engine::new(EngineConfig::new(local_identity), State::new("local"), local_handler.clone());
 
-        let _ = engine.request_pair(listener.addr()).expect("pair");
+        let _ = engine.request_link(listener.addr()).expect("link");
         assert_eq!(local_handler.app_key_value(), local_initial_key);
         assert_eq!(remote_handler.app_key_value(), local_initial_key);
 

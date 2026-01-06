@@ -17,11 +17,11 @@ impl DeviceHandler for AllowAllHandler {
         &self.app_id
     }
 
-    fn is_paired(&self, _identity: &Identity) -> bool {
+    fn is_linked(&self, _identity: &Identity) -> bool {
         true
     }
 
-    fn approve_pair(&self, _identity: &Identity) -> libresync::Result<bool> {
+    fn approve_link(&self, _identity: &Identity) -> libresync::Result<bool> {
         Ok(true)
     }
 

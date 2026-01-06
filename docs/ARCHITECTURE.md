@@ -22,7 +22,7 @@ Each device announces a triple:
 - app ID: bundle identifier (e.g., `com.codedbydan.libresync-cli`).
 - user ID: human-friendly string (CLI uses adjective + noun).
 
-The app ID is the scope boundary for trust and discovery. Devices will only pair and sync when app IDs match.
+The app ID is the scope boundary for trust and discovery. Devices will only link and sync when app IDs match.
 
 ## Discovery (LAN)
 - Devices advertise over mDNS with a service type of `_libresync._tcp.local.`
@@ -36,14 +36,14 @@ The app ID is the scope boundary for trust and discovery. Devices will only pair
 - Some Wi-Fi networks use AP isolation, which blocks device-to-device traffic even on LAN.
 - Manual addresses and fallback refresh flows are required in restricted networks.
 
-## Pairing and consent
-Pairing is explicit consent on both devices:
-1. Device A sends a pairing request to device B.
+## Linking and consent
+Linking is explicit consent on both devices:
+1. Device A sends a linking request to device B.
 2. Device B checks the app ID and prompts the user (or auto-accepts).
 3. If accepted, device B stores device A in its allowlist.
 4. Device A then prompts locally and stores device B in its allowlist.
 
-Pairing is required before any sync. Devices that are not paired are rejected.
+Linking is required before any sync. Devices that are not linked are rejected.
 
 ## Trust scope (per app)
 Trust is stored per app ID. This prevents a trusted device in one app from automatically being trusted by another app.
@@ -87,12 +87,12 @@ The CLI maps one or more file-backed adapters (JSON or SQLite) into the state:
 - Adapter IDs let you refresh multiple files in one session.
 
 ## Security notes (MVP)
-- Current MVP uses self-signed device keys with TOFU fingerprints for pairing.
+- Current MVP uses self-signed device keys with TOFU fingerprints for linking.
 - Identities are not derived from keys yet (device IDs are user-defined).
 - mDNS discovery is unauthenticated and should be treated as a hint only.
-- Pairing is the trust gate; devices that are not paired are rejected.
+- Linking is the trust gate; devices that are not linked are rejected.
 - Sync payloads are encrypted by the engine using a shared app-level key (E2EE on the wire, no opt-out).
-- Pairing exchanges the app-level key inside the TLS channel.
+- Linking exchanges the app-level key inside the TLS channel.
 - Engine state files and backups are encrypted at rest with the app-level key.
 
 ## LibreSyncAlwaysOn (in progress)
@@ -101,11 +101,11 @@ The CLI maps one or more file-backed adapters (JSON or SQLite) into the state:
 - Status dashboard with manual refresh and per-app backup policy controls.
 - Snapshot preview and restore controls (restore gated by allow-restore).
 - Stored last-seen addresses allow refresh even when discovery is unavailable.
-- System tray controls and trust UI (pairing, fingerprints, auto-accept toggle).
+- System tray controls and trust UI (linking, fingerprints, auto-accept toggle).
 - Still needs OS-level background/auto-start behavior and retention defaults per app.
 
 ## Future hardening
-- Device keypairs and signed app attestations.
+- Device keysets and signed app attestations.
 - Encrypted transport (Noise or TLS).
 - Allowlist revocation and key rotation.
 - Trust delegation policies (auto-accept for pre-approved devices).

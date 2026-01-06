@@ -37,9 +37,9 @@ libresync select --id db --kind sqlite --page-delta 4096 --file ~/libresync.db
 libresync listen
 ```
 
-## 5) Pair devices (trust only)
+## 5) Link devices (trust only)
 ```
-libresync pair
+libresync link
 ```
 
 ## 6) Refresh
@@ -62,7 +62,7 @@ libresync diagnose
 ```
 
 ## Notes
-- Pairing is required before refresh.
+- Linking is required before refresh.
 - E2EE is always on (no opt-out).
 - Use `libresync status` for last-seen and backup status.
  - Backups are opt-in: `libresync backup configure --enable`.

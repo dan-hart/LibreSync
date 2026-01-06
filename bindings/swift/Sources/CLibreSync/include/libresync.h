@@ -23,7 +23,7 @@ bool libresync_engine_start_listening(void *handle);
 bool libresync_engine_stop_listening(void *handle);
 
 char *libresync_engine_discover(void *handle, uint64_t timeout_ms);
-char *libresync_engine_pair(void *handle, const char *address);
+char *libresync_engine_link(void *handle, const char *address);
 
 bool libresync_allowlist_add(void *handle, const char *device_id, const char *fingerprint);
 bool libresync_allowlist_clear(void *handle);

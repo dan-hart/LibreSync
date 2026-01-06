@@ -25,4 +25,4 @@ let engine = try LibreSyncEngine(configJson: config, statePath: statePath)
 try engine.registerLogicalFileAdapter(id: "records", namespace: "com.example.notes", path: "./records.json")
 try engine.startListening()
 
-print("Listening. Run pairing from another device.")
+print("Listening. Run linking from another device.")
