@@ -203,6 +203,122 @@ fn cli_help_mentions_commands() {
 }
 
 #[test]
+fn cli_device_auto_approve_toggles() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config_path = temp.path().join("config.json");
+
+    cargo_bin_cmd!("libresync")
+        .args([
+            "init",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--device-id",
+            "brisk-river-summit",
+            "--user-id",
+            "calm-forest",
+        ])
+        .assert()
+        .success();
+
+    cargo_bin_cmd!("libresync")
+        .args([
+            "device",
+            "auto-approve",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--enable",
+            "--minutes",
+            "5",
+        ])
+        .assert()
+        .success();
+
+    let config_raw = fs::read_to_string(&config_path).expect("read config");
+    let config_json: serde_json::Value =
+        serde_json::from_str(&config_raw).expect("parse config");
+    assert!(config_json
+        .get("auto_approve")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
+    assert!(config_json.get("auto_approve_until").is_some());
+
+    cargo_bin_cmd!("libresync")
+        .args([
+            "device",
+            "auto-approve",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--disable",
+        ])
+        .assert()
+        .success();
+
+    let config_raw = fs::read_to_string(&config_path).expect("read config");
+    let config_json: serde_json::Value =
+        serde_json::from_str(&config_raw).expect("parse config");
+    assert!(!config_json
+        .get("auto_approve")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true));
+}
+
+#[test]
+fn cli_device_pairing_secret_sets_and_clears() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config_path = temp.path().join("config.json");
+
+    cargo_bin_cmd!("libresync")
+        .args([
+            "init",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--device-id",
+            "brisk-river-summit",
+            "--user-id",
+            "calm-forest",
+        ])
+        .assert()
+        .success();
+
+    cargo_bin_cmd!("libresync")
+        .args([
+            "device",
+            "pairing-secret",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--set",
+            "shared-secret",
+        ])
+        .assert()
+        .success();
+
+    let config_raw = fs::read_to_string(&config_path).expect("read config");
+    let config_json: serde_json::Value =
+        serde_json::from_str(&config_raw).expect("parse config");
+    assert_eq!(
+        config_json.get("pairing_secret").and_then(|v| v.as_str()),
+        Some("shared-secret")
+    );
+
+    cargo_bin_cmd!("libresync")
+        .args([
+            "device",
+            "pairing-secret",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--clear",
+        ])
+        .assert()
+        .success();
+
+    let config_raw = fs::read_to_string(&config_path).expect("read config");
+    let config_json: serde_json::Value =
+        serde_json::from_str(&config_raw).expect("parse config");
+    let pairing = config_json.get("pairing_secret");
+    assert!(pairing.is_none() || pairing == Some(&serde_json::Value::Null));
+}
+
+#[test]
 fn cli_status_runs_without_discovery() {
     let temp = tempfile::tempdir().expect("tempdir");
     let config_path = temp.path().join("config.json");
@@ -231,4 +347,270 @@ fn cli_status_runs_without_discovery() {
         .success()
         .stdout(contains("Device ID"))
         .stdout(contains("Linked devices"));
+}
+
+#[test]
+fn cli_backup_snapshot_preview_restore() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config_path = temp.path().join("config.json");
+    let data_path = temp.path().join("data.json");
+    let backup_dir = temp.path().join("backups");
+
+    cargo_bin_cmd!("libresync")
+        .args([
+            "init",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--device-id",
+            "silent-river-crest",
+            "--user-id",
+            "steady-forest",
+        ])
+        .assert()
+        .success();
+
+    cargo_bin_cmd!("libresync")
+        .args([
+            "select",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--file",
+            data_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    fs::write(&data_path, br#"{"note":"hello"}"#).expect("write data");
+
+    cargo_bin_cmd!("libresync")
+        .args([
+            "backup",
+            "configure",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--enable",
+            "--allow-restore",
+            "--dir",
+            backup_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let output = cargo_bin_cmd!("libresync")
+        .args([
+            "backup",
+            "snapshot",
+            "--config",
+            config_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("backup snapshot");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let snapshot_id = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("Created snapshot "))
+        .and_then(|rest| rest.split_whitespace().next())
+        .expect("snapshot id");
+
+    cargo_bin_cmd!("libresync")
+        .args([
+            "backup",
+            "list",
+            "--config",
+            config_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(contains(snapshot_id));
+
+    cargo_bin_cmd!("libresync")
+        .args([
+            "backup",
+            "preview",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--snapshot-id",
+            snapshot_id,
+        ])
+        .assert()
+        .success();
+
+    cargo_bin_cmd!("libresync")
+        .args([
+            "backup",
+            "restore",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--snapshot-id",
+            snapshot_id,
+            "--confirm",
+            "--confirm-id",
+            snapshot_id,
+        ])
+        .assert()
+        .success();
+
+    cargo_bin_cmd!("libresync")
+        .args([
+            "backup",
+            "prune",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--keep",
+            "1",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn cli_key_export_import_cycle() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config_path = temp.path().join("config.json");
+    let app_key_path = temp.path().join("app.key");
+    let device_key_path = temp.path().join("device.keys");
+
+    cargo_bin_cmd!("libresync")
+        .args([
+            "init",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--device-id",
+            "silent-river-crest",
+            "--user-id",
+            "steady-forest",
+        ])
+        .assert()
+        .success();
+
+    cargo_bin_cmd!("libresync")
+        .args([
+            "key",
+            "export-app",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--output",
+            app_key_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    assert!(app_key_path.exists());
+
+    cargo_bin_cmd!("libresync")
+        .args([
+            "key",
+            "import-app",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--input",
+            app_key_path.to_str().unwrap(),
+            "--confirm",
+        ])
+        .assert()
+        .success();
+
+    cargo_bin_cmd!("libresync")
+        .args([
+            "key",
+            "export-device",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--output",
+            device_key_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    assert!(device_key_path.exists());
+
+    cargo_bin_cmd!("libresync")
+        .args([
+            "key",
+            "import-device",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--input",
+            device_key_path.to_str().unwrap(),
+            "--confirm",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn cli_key_rotations() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config_path = temp.path().join("config.json");
+
+    cargo_bin_cmd!("libresync")
+        .args([
+            "init",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--device-id",
+            "silent-river-crest",
+            "--user-id",
+            "steady-forest",
+        ])
+        .assert()
+        .success();
+
+    cargo_bin_cmd!("libresync")
+        .args([
+            "key",
+            "rotate",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--confirm",
+            "--keep-allowlist",
+        ])
+        .assert()
+        .success();
+
+    cargo_bin_cmd!("libresync")
+        .args([
+            "key",
+            "rotate-device",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--confirm",
+            "--clear-allowlist",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn cli_listen_foreground_quits() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config_path = temp.path().join("config.json");
+
+    cargo_bin_cmd!("libresync")
+        .args([
+            "init",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--device-id",
+            "silent-river-crest",
+            "--user-id",
+            "steady-forest",
+        ])
+        .assert()
+        .success();
+
+    cargo_bin_cmd!("libresync")
+        .args([
+            "listen",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--listen",
+            "127.0.0.1:0",
+            "--foreground",
+            "--no-discovery",
+            "--duration-secs",
+            "1",
+        ])
+        .assert()
+        .success();
 }

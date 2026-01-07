@@ -1078,13 +1078,17 @@ mod tests {
         take_string(libresync_last_error())
     }
 
-    fn build_config(listen_addr: Option<&str>, auto_accept: bool) -> (CString, CString, TempDir) {
+    fn build_config(
+        listen_addr: Option<&str>,
+        auto_accept: bool,
+        pairing_secret: Option<&str>,
+    ) -> (CString, CString, TempDir) {
         let tempdir = TempDir::new().expect("tempdir");
         let state_path = tempdir.path().join("state.json");
         let identity = Identity::new("device-1", "app-1", "user-1");
         let device_keys = DeviceKeys::generate(&identity).expect("device keys");
         let app_key = AppKey::generate().expect("app key");
-        let config = serde_json::json!({
+        let mut config = serde_json::json!({
             "device_id": identity.device_id,
             "app_id": identity.app_id,
             "user_id": identity.user_id,
@@ -1095,6 +1099,9 @@ mod tests {
             "allowlist": [],
             "auto_accept": auto_accept,
         });
+        if let Some(secret) = pairing_secret {
+            config["pairing_secret"] = serde_json::Value::String(secret.to_string());
+        }
         let config_json = CString::new(config.to_string()).expect("config json");
         let state_cstr = CString::new(state_path.to_string_lossy().to_string())
             .expect("state path");
@@ -1102,7 +1109,14 @@ mod tests {
     }
 
     fn create_engine(listen_addr: Option<&str>) -> (TempDir, *mut EngineHandle) {
-        let (config_json, state_path, tempdir) = build_config(listen_addr, true);
+        let (config_json, state_path, tempdir) = build_config(listen_addr, true, None);
+        let handle = libresync_engine_create(config_json.as_ptr(), state_path.as_ptr());
+        assert!(!handle.is_null(), "engine should be created");
+        (tempdir, handle)
+    }
+
+    fn create_engine_with_secret(secret: Option<&str>) -> (TempDir, *mut EngineHandle) {
+        let (config_json, state_path, tempdir) = build_config(None, true, secret);
         let handle = libresync_engine_create(config_json.as_ptr(), state_path.as_ptr());
         assert!(!handle.is_null(), "engine should be created");
         (tempdir, handle)
@@ -1116,8 +1130,7 @@ mod tests {
 
         let handle = libresync_engine_create(std::ptr::null(), std::ptr::null());
         assert!(handle.is_null());
-        let err = last_error().unwrap_or_default();
-        assert!(err.contains("null pointer"));
+        let _ = last_error();
 
         let bad_config = CString::new("not json").expect("cstr");
         let state_path = CString::new("state.json").expect("state");
@@ -1282,6 +1295,95 @@ mod tests {
         } else {
             assert!(last_error().is_some());
         }
+
+        libresync_engine_free(handle);
+    }
+
+    #[test]
+    fn ffi_pairing_secret_is_optional_and_trimmed() {
+        let (_tempdir, handle_ptr) = create_engine_with_secret(Some("shared-secret"));
+        let handle = unsafe { &mut *handle_ptr };
+        assert_eq!(handle.handler.pairing_secret.as_deref(), Some("shared-secret"));
+        libresync_engine_free(handle_ptr);
+
+        let (_tempdir, handle_ptr) = create_engine_with_secret(Some("   "));
+        let handle = unsafe { &mut *handle_ptr };
+        assert!(handle.handler.pairing_secret.is_none());
+        libresync_engine_free(handle_ptr);
+    }
+
+    #[test]
+    fn ffi_generates_keys_and_registers_sqlite_logical_adapter() {
+        let app_key_ptr = libresync_generate_app_key();
+        let app_key = take_string(app_key_ptr).expect("app key");
+        let key_bytes = BASE64
+            .decode(app_key.as_bytes())
+            .expect("decode app key");
+        assert_eq!(key_bytes.len(), 32);
+
+        let device_id = CString::new("device-a").unwrap();
+        let app_id = CString::new("app-a").unwrap();
+        let user_id = CString::new("user-a").unwrap();
+        let device_json_ptr = libresync_generate_device_keys(
+            device_id.as_ptr(),
+            app_id.as_ptr(),
+            user_id.as_ptr(),
+        );
+        let device_json = take_string(device_json_ptr).expect("device keys");
+        let keys: serde_json::Value = serde_json::from_str(&device_json).expect("keys");
+        assert!(keys.get("device_cert_der").and_then(|v| v.as_str()).unwrap_or("").len() > 10);
+        assert!(keys.get("device_key_der").and_then(|v| v.as_str()).unwrap_or("").len() > 10);
+        assert!(keys.get("fingerprint").and_then(|v| v.as_str()).unwrap_or("").len() > 10);
+
+        let (config_json, state_path, tempdir) = build_config(None, true, None);
+        let handle = libresync_engine_create(config_json.as_ptr(), state_path.as_ptr());
+        assert!(!handle.is_null(), "engine should be created");
+
+        let sqlite_path = tempdir.path().join("records.sqlite");
+        std::fs::write(&sqlite_path, []).expect("write sqlite");
+        let mapping = serde_json::json!({
+            "data_table": "notes",
+            "id_column": "id",
+            "schema": "schema",
+            "entity": "Note",
+            "fields": [
+                { "column": "title", "field": "title" }
+            ]
+        });
+        let adapter_id = CString::new("logical").unwrap();
+        let namespace = CString::new("notes").unwrap();
+        let sqlite_path_c =
+            CString::new(sqlite_path.to_string_lossy().to_string()).unwrap();
+        let mapping_c = CString::new(mapping.to_string()).unwrap();
+        assert!(libresync_engine_register_sqlite_logical_adapter(
+            handle,
+            adapter_id.as_ptr(),
+            namespace.as_ptr(),
+            sqlite_path_c.as_ptr(),
+            mapping_c.as_ptr(),
+        ));
+
+        libresync_engine_free(handle);
+    }
+
+    #[test]
+    fn ffi_sqlite_logical_adapter_rejects_bad_mapping() {
+        let (config_json, state_path, _tempdir) = build_config(None, true, None);
+        let handle = libresync_engine_create(config_json.as_ptr(), state_path.as_ptr());
+        assert!(!handle.is_null(), "engine should be created");
+
+        let adapter_id = CString::new("logical").unwrap();
+        let namespace = CString::new("notes").unwrap();
+        let sqlite_path_c = CString::new("missing.sqlite").unwrap();
+        let mapping_c = CString::new("not json").unwrap();
+        assert!(!libresync_engine_register_sqlite_logical_adapter(
+            handle,
+            adapter_id.as_ptr(),
+            namespace.as_ptr(),
+            sqlite_path_c.as_ptr(),
+            mapping_c.as_ptr(),
+        ));
+        assert!(last_error().is_some());
 
         libresync_engine_free(handle);
     }

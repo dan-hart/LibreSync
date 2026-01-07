@@ -4153,6 +4153,104 @@ mod tests {
     }
 
     #[test]
+    fn auto_approve_state_expires_and_clears() {
+        let identity = Identity::new("local", APP_ID_DEFAULT, "user");
+        let device_keys = DeviceKeysRecord::from_keys(
+            &DeviceKeys::generate(&identity).expect("device keys"),
+        );
+        let app_key = AppKey::generate().expect("app key");
+        let mut config = Config {
+            device_id: "local".to_string(),
+            app_id: APP_ID_DEFAULT.to_string(),
+            user_id: "user".to_string(),
+            state_path: PathBuf::from("state.json"),
+            data_path: None,
+            data_paths: BTreeMap::new(),
+            default_adapter: None,
+            adapters: BTreeMap::new(),
+            device_keys: Some(device_keys),
+            app_key: Some(BASE64.encode(app_key.as_bytes())),
+            backup_enabled: false,
+            backup_allow_restore: false,
+            backup_dir: None,
+            auto_approve: true,
+            auto_approve_until: Some(now_unix_secs().saturating_sub(1)),
+            pairing_secret: None,
+            devices: BTreeMap::new(),
+        };
+
+        let (active, expired) = config.auto_approve_state();
+        assert!(!active);
+        assert!(expired);
+        assert!(!config.auto_approve);
+        assert!(config.auto_approve_until.is_none());
+    }
+
+    #[test]
+    fn set_auto_approve_updates_config() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+
+        set_auto_approve(&config_path, true, false, 1, false).expect("enable");
+        let config = load_config(&config_path).expect("load");
+        assert!(config.auto_approve);
+        assert!(config.auto_approve_until.is_some());
+
+        set_auto_approve(&config_path, true, false, 5, true).expect("enable persist");
+        let config = load_config(&config_path).expect("load");
+        assert!(config.auto_approve);
+        assert!(config.auto_approve_until.is_none());
+
+        set_auto_approve(&config_path, false, true, 5, false).expect("disable");
+        let config = load_config(&config_path).expect("load");
+        assert!(!config.auto_approve);
+        assert!(config.auto_approve_until.is_none());
+    }
+
+    #[test]
+    fn set_auto_approve_rejects_conflict() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+
+        let error = set_auto_approve(&config_path, true, true, 1, false)
+            .expect_err("expected error");
+        assert!(error.to_string().contains("choose either"));
+    }
+
+    #[test]
+    fn set_pairing_secret_sets_and_clears() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+
+        set_pairing_secret(
+            &config_path,
+            Some("shared-secret".to_string()),
+            false,
+        )
+        .expect("set secret");
+        let config = load_config(&config_path).expect("load");
+        assert_eq!(config.pairing_secret.as_deref(), Some("shared-secret"));
+
+        set_pairing_secret(&config_path, None, true).expect("clear secret");
+        let config = load_config(&config_path).expect("load");
+        assert!(config.pairing_secret.is_none());
+    }
+
+    #[test]
+    fn set_pairing_secret_rejects_empty() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("config.json");
+        init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
+
+        let error = set_pairing_secret(&config_path, Some("  ".to_string()), false)
+            .expect_err("expected error");
+        assert!(error.to_string().contains("pairing secret cannot be empty"));
+    }
+
+    #[test]
     fn backup_snapshot_list_restore_round_trip() {
         let temp = tempdir().expect("tempdir");
         let config_path = temp.path().join("config.json");

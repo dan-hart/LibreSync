@@ -163,11 +163,18 @@ struct Args {
 }
 
 fn parse_args() -> Result<Args, String> {
-    let mut args = Args::default();
-    let mut iter = env::args().skip(1);
+    parse_args_from(env::args().skip(1))
+}
 
-        while let Some(arg) = iter.next() {
-            match arg.as_str() {
+fn parse_args_from<I>(iter: I) -> Result<Args, String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut args = Args::default();
+    let mut iter = iter.into_iter();
+
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
             "--help" | "-h" => {
                 print_usage();
                 std::process::exit(0);
@@ -817,5 +824,334 @@ fn is_auto_approve_address(addr: SocketAddr) -> bool {
     match addr.ip() {
         IpAddr::V4(ip) => ip.is_private() || ip.is_link_local(),
         IpAddr::V6(ip) => ip.is_unique_local() || ip.is_unicast_link_local(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use libresync::DeviceHandler;
+    use std::fs;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::thread;
+    use std::time::Duration;
+    use tempfile::tempdir;
+
+    fn base_config(tempdir: &Path) -> AlwaysOnConfig {
+        let identity = Identity::new("device-a", "app-a", "user-a");
+        let keys = DeviceKeys::generate(&identity).expect("device keys");
+        let app_key = AppKey::generate().expect("app key");
+        AlwaysOnConfig {
+            app_id: identity.app_id.clone(),
+            device_id: identity.device_id.clone(),
+            user_id: identity.user_id.clone(),
+            listen_addr: DEFAULT_LISTEN.to_string(),
+            state_path: tempdir.join("state.json"),
+            data_path: Some(tempdir.join("data.json")),
+            device_keys: DeviceKeysRecord::from_keys(&keys),
+            app_key: BASE64.encode(app_key.as_bytes()),
+            devices: BTreeMap::new(),
+            auto_accept_linking: false,
+            auto_approve_linking: false,
+            auto_approve_until: None,
+            pairing_secret: None,
+            backup: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn parse_args_from_sets_defaults() {
+        let args = parse_args_from(vec!["--auto-approve".to_string()]).expect("args");
+        assert!(args.auto_approve);
+        assert_eq!(args.auto_approve_minutes, 15);
+    }
+
+    #[test]
+    fn parse_args_from_reads_values() {
+        let args = parse_args_from(vec![
+            "--config".to_string(),
+            "cfg.json".to_string(),
+            "--data".to_string(),
+            "data.json".to_string(),
+            "--state".to_string(),
+            "state.json".to_string(),
+            "--listen".to_string(),
+            "127.0.0.1:1".to_string(),
+            "--device-id".to_string(),
+            "device".to_string(),
+            "--app-id".to_string(),
+            "app".to_string(),
+            "--user-id".to_string(),
+            "user".to_string(),
+            "--auto-accept".to_string(),
+            "--auto-approve".to_string(),
+            "--auto-approve-minutes".to_string(),
+            "5".to_string(),
+            "--pairing-secret".to_string(),
+            "secret".to_string(),
+        ])
+        .expect("args");
+        assert_eq!(args.config.as_deref(), Some(Path::new("cfg.json")));
+        assert_eq!(args.data.as_deref(), Some(Path::new("data.json")));
+        assert_eq!(args.state.as_deref(), Some(Path::new("state.json")));
+        assert_eq!(args.listen.as_deref(), Some("127.0.0.1:1"));
+        assert_eq!(args.device_id.as_deref(), Some("device"));
+        assert_eq!(args.app_id.as_deref(), Some("app"));
+        assert_eq!(args.user_id.as_deref(), Some("user"));
+        assert!(args.auto_accept);
+        assert!(args.auto_approve);
+        assert_eq!(args.auto_approve_minutes, 5);
+        assert_eq!(args.pairing_secret.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn apply_overrides_sets_auto_approve_and_pairing_secret() {
+        let tempdir = tempdir().expect("tempdir");
+        let data_path = tempdir.path().join("data.json");
+        let state_path = tempdir.path().join("state.json");
+        let mut config = base_config(tempdir.path());
+        let args = Args {
+            listen: Some("127.0.0.1:9999".to_string()),
+            auto_accept: false,
+            auto_approve: true,
+            auto_approve_minutes: 10,
+            pairing_secret: Some(" secret ".to_string()),
+            data: Some(data_path.clone()),
+            state: Some(state_path.clone()),
+            ..Args::default()
+        };
+
+        apply_overrides(&mut config, &args, &data_path, &state_path)
+            .expect("apply overrides");
+        assert_eq!(config.listen_addr, "127.0.0.1:9999");
+        assert!(config.auto_accept_linking);
+        assert!(config.auto_approve_linking);
+        assert!(config.auto_approve_until.is_some());
+        assert_eq!(config.pairing_secret.as_deref(), Some(" secret "));
+        assert_eq!(config.data_path.as_deref(), Some(data_path.as_path()));
+        assert_eq!(config.state_path, state_path);
+    }
+
+    #[test]
+    fn apply_overrides_ignores_blank_pairing_secret() {
+        let tempdir = tempdir().expect("tempdir");
+        let data_path = tempdir.path().join("data.json");
+        let state_path = tempdir.path().join("state.json");
+        let mut config = base_config(tempdir.path());
+        let args = Args {
+            pairing_secret: Some("   ".to_string()),
+            ..Args::default()
+        };
+        apply_overrides(&mut config, &args, &data_path, &state_path)
+            .expect("apply overrides");
+        assert!(config.pairing_secret.is_none());
+    }
+
+    #[test]
+    fn load_or_init_config_round_trip() {
+        let tempdir = tempdir().expect("tempdir");
+        let config_path = tempdir.path().join("config.json");
+        let data_path = tempdir.path().join("data.json");
+        let args = Args {
+            device_id: Some("device-x".to_string()),
+            app_id: Some("app-x".to_string()),
+            user_id: Some("user-x".to_string()),
+            ..Args::default()
+        };
+
+        let (config, keys) =
+            load_or_init_config(&config_path, &data_path, &args).expect("init config");
+        assert_eq!(config.device_id, "device-x");
+        assert_eq!(config.app_id, "app-x");
+        assert_eq!(config.user_id, "user-x");
+        assert!(config_path.exists());
+        assert_eq!(keys.fingerprint(), config.device_keys.fingerprint);
+
+        let (loaded, _) =
+            load_or_init_config(&config_path, &data_path, &Args::default())
+                .expect("load config");
+        assert_eq!(loaded.device_id, "device-x");
+    }
+
+    #[test]
+    fn auto_approve_state_expires() {
+        let tempdir = tempdir().expect("tempdir");
+        let mut config = base_config(tempdir.path());
+        config.auto_approve_linking = true;
+        config.auto_approve_until = Some(now_unix_secs().saturating_sub(1));
+
+        let (active, expired) = config.auto_approve_state();
+        assert!(!active);
+        assert!(expired);
+        assert!(!config.auto_approve_linking);
+        assert!(config.auto_approve_until.is_none());
+    }
+
+    #[test]
+    fn auto_approve_state_active_without_expiry() {
+        let tempdir = tempdir().expect("tempdir");
+        let mut config = base_config(tempdir.path());
+        config.auto_approve_linking = true;
+        config.auto_approve_until = None;
+
+        let (active, expired) = config.auto_approve_state();
+        assert!(active);
+        assert!(!expired);
+    }
+
+    #[test]
+    fn auto_approve_address_filters_networks() {
+        let private = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)), 1234);
+        let link_local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(169, 254, 1, 2)), 1234);
+        let public = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 1234);
+        let unique_local =
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1)), 1234);
+        let v6_link_local =
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)), 1234);
+
+        assert!(is_auto_approve_address(private));
+        assert!(is_auto_approve_address(link_local));
+        assert!(!is_auto_approve_address(public));
+        assert!(is_auto_approve_address(unique_local));
+        assert!(is_auto_approve_address(v6_link_local));
+    }
+
+    #[test]
+    fn config_helpers_round_trip() {
+        let tempdir = tempdir().expect("tempdir");
+        let mut config = base_config(tempdir.path());
+
+        let parsed = config.listen_addr().expect("listen addr");
+        assert_eq!(parsed, DEFAULT_LISTEN.parse::<SocketAddr>().unwrap());
+
+        let app_key = config.app_key().expect("app key");
+        let rotated = AppKey::generate().expect("app key");
+        config.set_app_key(&rotated);
+        let updated = config.app_key().expect("app key");
+        assert_ne!(app_key.as_bytes(), updated.as_bytes());
+
+        let keys = config.device_keys().expect("device keys");
+        assert_eq!(keys.fingerprint(), config.device_keys.fingerprint);
+
+        let identity = Identity::new("remote", "app-a", "user-b");
+        let addr = "127.0.0.1:5555".parse::<SocketAddr>().unwrap();
+        config.upsert_device(&identity, Some(addr), Some("fp".to_string()));
+        let record = config.devices.get("remote").expect("record");
+        assert_eq!(record.last_seen_addr.as_deref(), Some("127.0.0.1:5555"));
+        assert_eq!(record.fingerprint.as_deref(), Some("fp"));
+    }
+
+    #[test]
+    fn ensure_backup_policy_sets_defaults() {
+        let tempdir = tempdir().expect("tempdir");
+        let mut config = base_config(tempdir.path());
+        let backups = tempdir.path().join("backups");
+
+        ensure_backup_policy(&mut config, &backups).expect("backup policy");
+        let policy = config.backup.get("app-a").expect("policy");
+        assert_eq!(policy.backup_dir.as_deref(), Some(backups.as_path()));
+        assert_eq!(policy.max_snapshots, Some(20));
+        assert_eq!(policy.max_age_days, Some(30));
+    }
+
+    #[test]
+    fn load_or_init_state_round_trip_and_mismatch() {
+        let tempdir = tempdir().expect("tempdir");
+        let mut config = base_config(tempdir.path());
+        let app_key = config.app_key().expect("app key");
+
+        let state = load_or_init_state(&config, &app_key).expect("state");
+        assert_eq!(state.device_id, config.device_id);
+        assert!(config.state_path.exists());
+
+        let state = load_or_init_state(&config, &app_key).expect("state");
+        assert_eq!(state.device_id, config.device_id);
+
+        config.device_id = "other-device".to_string();
+        let error = load_or_init_state(&config, &app_key).expect_err("mismatch");
+        assert!(error.contains("state device id does not match config"));
+    }
+
+    #[test]
+    fn handler_updates_config_and_persists() {
+        let tempdir = tempdir().expect("tempdir");
+        let config_path = tempdir.path().join("config.json");
+        let mut config = base_config(tempdir.path());
+        config.auto_accept_linking = true;
+        config.pairing_secret = Some("secret".to_string());
+        save_config(&config_path, &config).expect("save");
+
+        let config_arc = Arc::new(Mutex::new(config));
+        let keys = config_arc
+            .lock()
+            .expect("lock")
+            .device_keys()
+            .expect("keys");
+        let handler = AlwaysOnHandler {
+            app_id: "app-a".to_string(),
+            keys,
+            config: Arc::clone(&config_arc),
+            config_path: config_path.clone(),
+        };
+
+        let identity = Identity::new("remote", "app-a", "user-x");
+        assert!(handler.approve_link(&identity).expect("approve"));
+        assert!(handler.is_linked(&identity));
+
+        assert!(handler
+            .approve_link_with_fingerprint(&identity, "fp")
+            .expect("approve"));
+        assert!(handler.is_linked_with_fingerprint(&identity, "fp"));
+
+        assert_eq!(handler.pairing_secret().as_deref(), Some("secret"));
+
+        let rotated = AppKey::generate().expect("app key");
+        handler.set_app_key(&rotated).expect("set app key");
+        let reloaded = {
+            let bytes = fs::read(&config_path).expect("read config");
+            serde_json::from_slice::<AlwaysOnConfig>(&bytes).expect("config")
+        };
+        let updated = reloaded.app_key().expect("app key");
+        assert_eq!(updated.as_bytes(), rotated.as_bytes());
+    }
+
+    #[test]
+    fn spawn_config_listener_records_events() {
+        let tempdir = tempdir().expect("tempdir");
+        let config_path = tempdir.path().join("config.json");
+        let config = base_config(tempdir.path());
+        save_config(&config_path, &config).expect("save config");
+
+        let config_arc = Arc::new(Mutex::new(config));
+        let (sink, stream) = libresync::event_channel();
+        spawn_config_listener(stream, Arc::clone(&config_arc), config_path.clone());
+
+        let identity = Identity::new("remote-device", "app-a", "user-a");
+        let addr = "127.0.0.1:1234".parse::<SocketAddr>().unwrap();
+        let device = libresync::DeviceInfo {
+            identity: identity.clone(),
+            address: Some(addr),
+            last_seen: None,
+            linked: false,
+            fingerprint: Some("fp".to_string()),
+        };
+        sink.emit(Event::DeviceSeen {
+            device: device.clone(),
+        });
+        sink.emit(Event::LinkingRequested {
+            request: libresync::LinkingRequest {
+                device,
+                code: None,
+            },
+        });
+
+        drop(sink);
+        thread::sleep(Duration::from_millis(50));
+
+        let loaded = fs::read(&config_path).expect("read config");
+        let loaded: AlwaysOnConfig = serde_json::from_slice(&loaded).expect("parse config");
+        let record = loaded.devices.get("remote-device").expect("record");
+        assert_eq!(record.last_seen_addr.as_deref(), Some("127.0.0.1:1234"));
+        assert_eq!(record.fingerprint.as_deref(), Some("fp"));
     }
 }
