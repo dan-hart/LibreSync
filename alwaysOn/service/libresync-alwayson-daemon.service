@@ -4,8 +4,10 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/libresync-alwayson-daemon --auto-approve
+# Add optional flags like --auto-accept, --auto-approve, or --pairing-secret
+ExecStart=/usr/local/bin/libresync-alwayson-daemon
 Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=default.target

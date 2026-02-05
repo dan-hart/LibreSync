@@ -23,7 +23,6 @@
   <Actions Context="Author">
     <Exec>
       <Command>C:\\Program Files\\LibreSync\\libresync-alwayson-daemon.exe</Command>
-      <Arguments>--auto-approve</Arguments>
     </Exec>
   </Actions>
 </Task>
