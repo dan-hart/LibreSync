@@ -61,6 +61,13 @@ libresync watch
 libresync diagnose
 ```
 
+## 9) AlwaysOn (optional)
+For background sync on Linux, you can run the headless daemon:
+```
+cargo run -p libresync-alwayson-daemon -- --auto-accept --pairing-secret "my-shared-secret"
+```
+See `alwaysOn/README.md` for systemd user service setup.
+
 ## Notes
 - Linking is required before refresh.
 - E2EE is always on (no opt-out).

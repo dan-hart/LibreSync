@@ -40,8 +40,8 @@ User experience:
 
 ## Where can I use this?
 - In Rust. This repo is _only_ for the shared sync engine logic.
-- Soon, platform-specific libraries will be added to enable application integration.
-- As of January 2026, the project is in alpha.
+- Platform-specific libraries are available but still early.
+- As of February 2026, the project is a desktop-only production MVP; mobile SDKs remain early.
 
 ---
 
@@ -121,7 +121,7 @@ The CLI is a device-to-device testing tool that uses LAN discovery, device linki
 - The SQLite logical adapter does not yet map arbitrary existing schemas.
 - Discovery on iOS/macOS requires local network permissions and may be blocked by AP isolation.
 - SDK wrappers include Keychain/Keystore helpers but still need default integration and UX polish.
-- LibreSyncAlwaysOn still needs true OS-level background/auto-start behavior.
+- LibreSyncAlwaysOn uses a Linux systemd user service for background behavior; macOS/Windows rely on the tray app.
 
 ## Values
 - Privacy: a human right

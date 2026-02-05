@@ -69,6 +69,7 @@ LibreSync has a working device-to-device MVP for two CLI instances on a LAN. Dev
 - Headless LibreSyncAlwaysOn daemon added with service templates for OS-level background runs.
 - Auto-approve linking mode added (opt-in, private/link-local LAN only).
 - Coverage gate met with additional CLI/FFI/daemon tests (backup, keys, auto-approve, daemon config/event handling).
+- 0.2.0 production MVP hardening and Linux systemd user service runbook.
 
 ## Current MVP behavior
 - Two devices on the same LAN can run `libresync`.

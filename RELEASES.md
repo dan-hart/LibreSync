@@ -1,6 +1,11 @@
 # Releases
 
-## v0.1.6 (unreleased)
+## v0.2.0 (unreleased)
+- Production MVP (desktop-only) with hardened stability gates.
+- Linux systemd user service support for the always-on daemon.
+- AlwaysOn service templates default to safe linking (no auto-approve).
+- AlwaysOn status surfaces auto-approve errors and clears stale error state.
+- Docs refreshed for production MVP behavior and diagnostics.
 - File-backed logical adapter and record schema documentation.
 - Logical record compaction policy and idempotent merge semantics updates.
 - SQLite logical adapter (feature `sqlite-logical`).

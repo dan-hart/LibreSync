@@ -15,3 +15,5 @@
 ## Logs
 - `libresync listen` writes to `libresync-listen.log` next to the config file.
 - The PID file (`libresync-listen.pid`) is used by `libresync stop`.
+- Linux AlwaysOn daemon logs (systemd user): `journalctl --user -u libresync-alwayson-daemon.service -f`
+- AlwaysOn desktop app logs appear on stdout/stderr when launched from a terminal.

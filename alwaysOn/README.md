@@ -56,3 +56,15 @@ Templates live in `alwaysOn/service/`:
 - `libresync-alwayson-daemon.xml` (Windows Task Scheduler)
 
 Edit the ExecStart/Command paths to the installed daemon binary and adjust arguments as needed.
+
+Linux systemd user setup:
+```
+mkdir -p ~/.config/systemd/user
+cp alwaysOn/service/libresync-alwayson-daemon.service ~/.config/systemd/user/
+# Edit ExecStart to the installed daemon path and add any flags.
+systemctl --user daemon-reload
+systemctl --user enable --now libresync-alwayson-daemon.service
+journalctl --user -u libresync-alwayson-daemon.service -f
+```
+
+Security note: only use `--auto-approve` on trusted private LANs, and prefer a `--pairing-secret` when enabling it.
