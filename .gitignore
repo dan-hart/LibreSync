@@ -84,3 +84,4 @@ logs/
 # Temporary
 *.tmp
 .tmp/
+.worktrees/
