@@ -130,6 +130,7 @@ fn main() {
                 Arc::clone(&engine),
                 Arc::clone(&config_arc),
                 paths.config.clone(),
+                Arc::clone(&status),
             );
 
             app.manage(AlwaysOnRuntime {
@@ -349,6 +350,7 @@ fn manual_refresh_internal(state: &AlwaysOnRuntime) -> Result<RefreshSummary, St
     let mut status = state.status.lock().map_err(|_| "status lock".to_string())?;
     if succeeded > 0 {
         status.last_sync_unix_secs = Some(now_unix_secs());
+        status.last_error = None;
     }
     if let Some(error) = &last_error {
         status.last_error = Some(error.clone());
@@ -641,6 +643,7 @@ fn spawn_status_listener(stream: EventStream, status: Arc<Mutex<AlwaysOnStatus>>
                 match result {
                     libresync::SyncResult::Success => {
                         status.last_sync_unix_secs = Some(now_unix_secs());
+                        status.last_error = None;
                     }
                     libresync::SyncResult::Failed(message) => {
                         status.last_error = Some(message);
@@ -657,10 +660,17 @@ fn spawn_status_listener(stream: EventStream, status: Arc<Mutex<AlwaysOnStatus>>
     });
 }
 
+fn set_status_error(status: &Arc<Mutex<AlwaysOnStatus>>, message: String) {
+    if let Ok(mut status) = status.lock() {
+        status.last_error = Some(message);
+    }
+}
+
 fn spawn_auto_approve_loop(
     engine: Arc<Mutex<Engine>>,
     config: Arc<Mutex<AlwaysOnConfig>>,
     config_path: PathBuf,
+    status: Arc<Mutex<AlwaysOnStatus>>,
 ) {
     thread::spawn(move || {
         let mut attempts: HashMap<String, Instant> = HashMap::new();
@@ -702,7 +712,7 @@ fn spawn_auto_approve_loop(
                 )) {
                     Ok(devices) => devices,
                     Err(error) => {
-                        eprintln!("Auto-approve discovery error: {error}");
+                        set_status_error(&status, format!("Auto-approve discovery error: {error}"));
                         last_run = Instant::now();
                         continue;
                     }
@@ -750,6 +760,9 @@ fn spawn_auto_approve_loop(
                             let _ = save_config(&config_path, &config);
                         }
                         attempts.remove(&device_id);
+                        if let Ok(mut status) = status.lock() {
+                            status.last_error = None;
+                        }
                         println!(
                             "Auto-approved link with {} ({})",
                             remote.identity.device_id, remote.identity.user_id
@@ -757,7 +770,7 @@ fn spawn_auto_approve_loop(
                     }
                     Err(error) => {
                         attempts.insert(device_id, now);
-                        eprintln!("Auto-approve link failed: {error}");
+                        set_status_error(&status, format!("Auto-approve link failed: {error}"));
                     }
                 }
             }
