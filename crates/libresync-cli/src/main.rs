@@ -10,17 +10,17 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine as _;
 use chrono::{Local, TimeZone};
 use clap::{Parser, Subcommand, ValueEnum};
 use directories::ProjectDirs;
 use libresync::{
-    AppKey, BackupManager, DataAdapter, DataAdapterBackup, DeviceHandler, DeviceInfo, DeviceKeys,
-    Engine, EngineConfig, FileLogicalAdapter, FileSnapshotStore, Identity, JsonFileAdapter,
-    LogicalAdapterWrapper, RestoreOptions, RetentionPolicy, SnapshotStore, SqliteFileAdapter,
-    State, decrypt_entries, encrypt_entries, summarize_snapshot_diff,
+    decrypt_entries, encrypt_entries, summarize_snapshot_diff, AppKey, BackupManager, DataAdapter,
+    DataAdapterBackup, DeviceHandler, DeviceInfo, DeviceKeys, Engine, EngineConfig,
+    FileLogicalAdapter, FileSnapshotStore, Identity, JsonFileAdapter, LogicalAdapterWrapper,
+    RestoreOptions, RetentionPolicy, SnapshotStore, SqliteFileAdapter, State,
 };
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine as _;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
@@ -68,7 +68,7 @@ fn pid_path_for_config(config_path: &Path) -> PathBuf {
     name = "libresync",
     version,
     about = "Local-only device-to-device sync CLI for LibreSync.",
-    long_about = "A practical CLI for the LibreSync core. Use it to create configs, select logical/JSON/SQLite adapters,\ndiscover devices on LAN, link devices, refresh/watch adapters, and manage encrypted backups and keys.",
+    long_about = "A practical CLI for the LibreSync core. Use it to create configs, select logical/JSON/SQLite adapters,\ndiscover devices on LAN/private overlays, link devices, refresh/watch adapters, and manage encrypted backups and keys.",
     after_help = "Examples:\n  libresync init --app-id com.example.notes\n  libresync select --file ./data.json\n  libresync select --id settings --file ./settings.json\n  libresync select --id db --kind sqlite --page-delta 4096 --file ./app.db\n  libresync select --id records --kind logical-file --file ./records.json\n  libresync listen\n  libresync link\n  libresync refresh --all\n  libresync refresh --all-adapters\n  libresync watch --interval-secs 5\n  libresync device set-address --device-id amber-river-summit --address 192.168.1.10:52345\n  libresync backup configure --enable\n  libresync backup snapshot --note \"before import\"\n  libresync backup list\n  libresync backup restore --snapshot-id <id> --confirm --confirm-id <id>\n  libresync status\n\nOutput hints:\n  - Most commands print the config path in use and adapter IDs affected.\n  - Link/refresh output includes local and remote fingerprints for trust checks.\n  - Snapshot/export commands print the snapshot ID or output file path."
 )]
 struct Cli {
@@ -154,10 +154,7 @@ enum Commands {
             help = "SQLite page-delta size in bytes (enables delta encoding)."
         )]
         page_delta: Option<usize>,
-        #[arg(
-            long,
-            help = "Logical namespace override (defaults to the app ID)."
-        )]
+        #[arg(long, help = "Logical namespace override (defaults to the app ID).")]
         namespace: Option<String>,
         #[arg(
             long,
@@ -168,7 +165,7 @@ enum Commands {
     },
     #[command(
         about = "Discover devices on the LAN running the same app ID.",
-        long_about = "List devices discovered via mDNS for the current app ID. Discovery is unauthenticated and does not grant trust.",
+        long_about = "List devices discovered for the current app ID. Discovery uses LAN mDNS plus private overlays (Tailscale/Headscale when available) and does not grant trust.",
         after_help = "Examples:\n  libresync discover\n  libresync discover --timeout-secs 6\n\nOutput:\n  - list of device IDs, user IDs, and addresses"
     )]
     Discover {
@@ -181,8 +178,8 @@ enum Commands {
         #[arg(
             long,
             default_value_t = 3,
-            help = "Duration in seconds to listen for mDNS responses.",
-            long_help = "Time to wait for LAN discovery responses. Increase this value on slower networks."
+            help = "Duration in seconds to wait for discovery responses.",
+            long_help = "Time to wait for discovery responses (LAN mDNS + private overlays). Increase this value on slower networks."
         )]
         timeout_secs: u64,
     },
@@ -201,14 +198,14 @@ enum Commands {
         #[arg(
             long,
             help = "Device address to connect to (e.g. 192.168.1.10:52345).",
-            long_help = "Socket address for the device listener you want to link with. If omitted, LibreSync will try to discover devices on the LAN."
+            long_help = "Socket address for the device listener you want to link with. If omitted, LibreSync will try discovery (LAN + private overlays)."
         )]
         device: Option<SocketAddr>,
         #[arg(
             long,
             conflicts_with = "device",
             help = "Device ID to link with (uses discovery).",
-            long_help = "Device ID to link with. LibreSync will discover devices on the LAN and connect to the matching device ID."
+            long_help = "Device ID to link with. LibreSync will discover devices (LAN + private overlays) and connect to the matching device ID."
         )]
         device_id: Option<String>,
         #[arg(
@@ -318,10 +315,7 @@ enum Commands {
             help = "Adapter ID to refresh (defaults to the selected adapter)."
         )]
         adapter_id: Option<String>,
-        #[arg(
-            long,
-            help = "Refresh all selected adapters."
-        )]
+        #[arg(long, help = "Refresh all selected adapters.")]
         all_adapters: bool,
         #[arg(
             long,
@@ -340,14 +334,14 @@ enum Commands {
         #[arg(
             long,
             help = "Device address to connect to (e.g. 192.168.1.10:52345).",
-            long_help = "Socket address for the device listener you want to refresh with. If omitted, LibreSync will try to discover devices on the LAN."
+            long_help = "Socket address for the device listener you want to refresh with. If omitted, LibreSync will try discovery (LAN + private overlays)."
         )]
         device: Option<SocketAddr>,
         #[arg(
             long,
             conflicts_with = "device",
             help = "Device ID to refresh with (uses discovery).",
-            long_help = "Device ID to refresh with. LibreSync will discover devices on the LAN and connect to the matching device ID."
+            long_help = "Device ID to refresh with. LibreSync will discover devices (LAN + private overlays) and connect to the matching device ID."
         )]
         device_id: Option<String>,
     },
@@ -363,15 +357,9 @@ enum Commands {
             long_help = "Config file that includes selected adapters and device allowlist. Defaults to the OS config directory when omitted."
         )]
         config: Option<PathBuf>,
-        #[arg(
-            long,
-            help = "Adapter ID to watch (defaults to the selected adapter)."
-        )]
+        #[arg(long, help = "Adapter ID to watch (defaults to the selected adapter).")]
         adapter_id: Option<String>,
-        #[arg(
-            long,
-            help = "Watch all selected adapters."
-        )]
+        #[arg(long, help = "Watch all selected adapters.")]
         all_adapters: bool,
         #[arg(
             long,
@@ -450,8 +438,8 @@ enum Commands {
         #[arg(
             long,
             default_value_t = 3,
-            help = "Duration in seconds to listen for mDNS responses.",
-            long_help = "Time to wait for LAN discovery responses when status discovery is enabled."
+            help = "Duration in seconds to wait for discovery responses.",
+            long_help = "Time to wait for discovery responses when status discovery is enabled."
         )]
         timeout_secs: u64,
     },
@@ -490,15 +478,9 @@ enum KeyCommands {
             help = "Path to the config JSON file (defaults to the OS config directory)."
         )]
         config: Option<PathBuf>,
-        #[arg(
-            long,
-            help = "Keep the existing allowlist (skip forced re-linking)."
-        )]
+        #[arg(long, help = "Keep the existing allowlist (skip forced re-linking).")]
         keep_allowlist: bool,
-        #[arg(
-            long,
-            help = "Confirm key rotation."
-        )]
+        #[arg(long, help = "Confirm key rotation.")]
         confirm: bool,
     },
     #[command(
@@ -512,10 +494,7 @@ enum KeyCommands {
             help = "Path to the config JSON file (defaults to the OS config directory)."
         )]
         config: Option<PathBuf>,
-        #[arg(
-            long,
-            help = "Output path for the key file."
-        )]
+        #[arg(long, help = "Output path for the key file.")]
         output: PathBuf,
     },
     #[command(
@@ -529,20 +508,11 @@ enum KeyCommands {
             help = "Path to the config JSON file (defaults to the OS config directory)."
         )]
         config: Option<PathBuf>,
-        #[arg(
-            long,
-            help = "Path to the key file to import."
-        )]
+        #[arg(long, help = "Path to the key file to import.")]
         input: PathBuf,
-        #[arg(
-            long,
-            help = "Clear the allowlist to force re-linking."
-        )]
+        #[arg(long, help = "Clear the allowlist to force re-linking.")]
         clear_allowlist: bool,
-        #[arg(
-            long,
-            help = "Confirm key import."
-        )]
+        #[arg(long, help = "Confirm key import.")]
         confirm: bool,
     },
     #[command(
@@ -556,10 +526,7 @@ enum KeyCommands {
             help = "Path to the config JSON file (defaults to the OS config directory)."
         )]
         config: Option<PathBuf>,
-        #[arg(
-            long,
-            help = "Output path for the device key file."
-        )]
+        #[arg(long, help = "Output path for the device key file.")]
         output: PathBuf,
     },
     #[command(
@@ -573,20 +540,11 @@ enum KeyCommands {
             help = "Path to the config JSON file (defaults to the OS config directory)."
         )]
         config: Option<PathBuf>,
-        #[arg(
-            long,
-            help = "Path to the device key file to import."
-        )]
+        #[arg(long, help = "Path to the device key file to import.")]
         input: PathBuf,
-        #[arg(
-            long,
-            help = "Clear the allowlist to force re-linking."
-        )]
+        #[arg(long, help = "Clear the allowlist to force re-linking.")]
         clear_allowlist: bool,
-        #[arg(
-            long,
-            help = "Confirm key import."
-        )]
+        #[arg(long, help = "Confirm key import.")]
         confirm: bool,
     },
     #[command(
@@ -600,15 +558,9 @@ enum KeyCommands {
             help = "Path to the config JSON file (defaults to the OS config directory)."
         )]
         config: Option<PathBuf>,
-        #[arg(
-            long,
-            help = "Clear the local allowlist to force re-linking."
-        )]
+        #[arg(long, help = "Clear the local allowlist to force re-linking.")]
         clear_allowlist: bool,
-        #[arg(
-            long,
-            help = "Confirm key rotation."
-        )]
+        #[arg(long, help = "Confirm key rotation.")]
         confirm: bool,
     },
 }
@@ -626,15 +578,9 @@ enum DeviceCommands {
             help = "Path to the config JSON file (defaults to the OS config directory)."
         )]
         config: Option<PathBuf>,
-        #[arg(
-            long,
-            help = "Linked device ID to update."
-        )]
+        #[arg(long, help = "Linked device ID to update.")]
         device_id: String,
-        #[arg(
-            long,
-            help = "Socket address to store for the device."
-        )]
+        #[arg(long, help = "Socket address to store for the device.")]
         address: SocketAddr,
     },
     #[command(
@@ -648,15 +594,9 @@ enum DeviceCommands {
             help = "Path to the config JSON file (defaults to the OS config directory)."
         )]
         config: Option<PathBuf>,
-        #[arg(
-            long,
-            help = "Enable auto-approve linking."
-        )]
+        #[arg(long, help = "Enable auto-approve linking.")]
         enable: bool,
-        #[arg(
-            long,
-            help = "Disable auto-approve linking."
-        )]
+        #[arg(long, help = "Disable auto-approve linking.")]
         disable: bool,
         #[arg(
             long,
@@ -664,10 +604,7 @@ enum DeviceCommands {
             help = "Minutes to keep auto-approve enabled (ignored with --persist)."
         )]
         minutes: u64,
-        #[arg(
-            long,
-            help = "Keep auto-approve enabled until manually disabled."
-        )]
+        #[arg(long, help = "Keep auto-approve enabled until manually disabled.")]
         persist: bool,
     },
     #[command(
@@ -681,15 +618,9 @@ enum DeviceCommands {
             help = "Path to the config JSON file (defaults to the OS config directory)."
         )]
         config: Option<PathBuf>,
-        #[arg(
-            long,
-            help = "Set the pairing secret value."
-        )]
+        #[arg(long, help = "Set the pairing secret value.")]
         set: Option<String>,
-        #[arg(
-            long,
-            help = "Clear the pairing secret."
-        )]
+        #[arg(long, help = "Clear the pairing secret.")]
         clear: bool,
     },
 }
@@ -707,20 +638,14 @@ enum BackupCommands {
             help = "Path to the config JSON file (defaults to the OS config directory)."
         )]
         config: Option<PathBuf>,
-        #[arg(
-            long,
-            help = "Enable encrypted backups for this app."
-        )]
+        #[arg(long, help = "Enable encrypted backups for this app.")]
         enable: bool,
         #[arg(
             long,
             help = "Allow restores for this app (requires explicit confirmation at restore time)."
         )]
         allow_restore: bool,
-        #[arg(
-            long,
-            help = "Optional backup directory override."
-        )]
+        #[arg(long, help = "Optional backup directory override.")]
         dir: Option<PathBuf>,
     },
     #[command(
@@ -740,10 +665,7 @@ enum BackupCommands {
             help = "Adapter ID to snapshot (default: file)."
         )]
         adapter_id: String,
-        #[arg(
-            long,
-            help = "Optional note to attach to the snapshot."
-        )]
+        #[arg(long, help = "Optional note to attach to the snapshot.")]
         note: Option<String>,
     },
     #[command(
@@ -781,10 +703,7 @@ enum BackupCommands {
             help = "Adapter ID to preview (default: file)."
         )]
         adapter_id: String,
-        #[arg(
-            long,
-            help = "Snapshot ID to preview."
-        )]
+        #[arg(long, help = "Snapshot ID to preview.")]
         snapshot_id: String,
     },
     #[command(
@@ -804,20 +723,11 @@ enum BackupCommands {
             help = "Adapter ID to restore (default: file)."
         )]
         adapter_id: String,
-        #[arg(
-            long,
-            help = "Snapshot ID to restore."
-        )]
+        #[arg(long, help = "Snapshot ID to restore.")]
         snapshot_id: String,
-        #[arg(
-            long,
-            help = "Confirm the restore action."
-        )]
+        #[arg(long, help = "Confirm the restore action.")]
         confirm: bool,
-        #[arg(
-            long,
-            help = "Confirm snapshot ID (must match the snapshot_id)."
-        )]
+        #[arg(long, help = "Confirm snapshot ID (must match the snapshot_id).")]
         confirm_id: Option<String>,
     },
     #[command(
@@ -837,20 +747,11 @@ enum BackupCommands {
             help = "Adapter ID to prune (default: file)."
         )]
         adapter_id: String,
-        #[arg(
-            long,
-            help = "Keep at most this many snapshots."
-        )]
+        #[arg(long, help = "Keep at most this many snapshots.")]
         keep: Option<usize>,
-        #[arg(
-            long,
-            help = "Delete snapshots older than this many days."
-        )]
+        #[arg(long, help = "Delete snapshots older than this many days.")]
         max_age_days: Option<u64>,
-        #[arg(
-            long,
-            help = "Show what would be deleted without removing snapshots."
-        )]
+        #[arg(long, help = "Show what would be deleted without removing snapshots.")]
         dry_run: bool,
     },
 }
@@ -1068,8 +969,7 @@ impl Config {
         );
         self.default_adapter = Some(adapter_id.to_string());
         if kind == AdapterKindConfig::Json {
-            self.data_paths
-                .insert(adapter_id.to_string(), path.clone());
+            self.data_paths.insert(adapter_id.to_string(), path.clone());
             if adapter_id == FILE_KEY {
                 self.data_path = Some(path);
             }
@@ -1288,9 +1188,7 @@ impl DeviceHandler for StaticHandler {
 }
 
 fn engine_for_config(config: &Config) -> Engine {
-    let device_keys = config
-        .device_keys()
-        .expect("device keys should exist");
+    let device_keys = config.device_keys().expect("device keys should exist");
     let app_key = config.app_key().expect("app key should exist");
     let handler = Arc::new(StaticHandler {
         app_id: config.app_id.clone(),
@@ -1682,14 +1580,16 @@ fn select_file(
         AdapterKindConfig::LogicalFile => ensure_logical_file(&file)?,
     }
     let namespace = match kind {
-        AdapterKindConfig::LogicalFile => {
-            Some(namespace.unwrap_or_else(|| config.app_id.clone()))
-        }
+        AdapterKindConfig::LogicalFile => Some(namespace.unwrap_or_else(|| config.app_id.clone())),
         _ => None,
     };
     config.set_adapter_config(adapter_id, kind, file.clone(), page_delta, namespace);
     save_config(path, &config)?;
-    println!("Selected adapter {adapter_id} ({:?}): {}", kind, file.display());
+    println!(
+        "Selected adapter {adapter_id} ({:?}): {}",
+        kind,
+        file.display()
+    );
     Ok(())
 }
 
@@ -1762,10 +1662,7 @@ fn create_backup_snapshot(
     Ok(())
 }
 
-fn list_backup_snapshots(
-    path: &Path,
-    adapter_id: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn list_backup_snapshots(path: &Path, adapter_id: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = load_config(path)?;
     let backup_dir = ensure_backup_dir(path, &mut config)?;
     if !config.backup_enabled {
@@ -1840,9 +1737,7 @@ fn restore_backup_snapshot(
         return Err("backups are not enabled; run libresync backup configure --enable".into());
     }
     if !config.backup_allow_restore {
-        return Err(
-            "restores are disabled; run libresync backup configure --allow-restore".into(),
-        );
+        return Err("restores are disabled; run libresync backup configure --allow-restore".into());
     }
 
     let app_key = config.app_key()?;
@@ -1868,7 +1763,12 @@ fn restore_backup_snapshot(
         return Err("restore requires --confirm-id that matches snapshot_id".into());
     }
 
-    manager.restore_snapshot(&backup_adapter, &mut state, snapshot_id, RestoreOptions::confirmed())?;
+    manager.restore_snapshot(
+        &backup_adapter,
+        &mut state,
+        snapshot_id,
+        RestoreOptions::confirmed(),
+    )?;
     adapter.apply_from_state(&state)?;
     state.save_encrypted(&config.app_key()?, &config.state_path)?;
 
@@ -2141,7 +2041,10 @@ fn backup_adapter_for_config(
     Ok((adapter, backup_adapter))
 }
 
-fn ensure_backup_dir(path: &Path, config: &mut Config) -> Result<PathBuf, Box<dyn std::error::Error>> {
+fn ensure_backup_dir(
+    path: &Path,
+    config: &mut Config,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
     if config.backup_dir.is_none() {
         config.set_backup_dir(default_backup_dir(path));
         save_config(path, config)?;
@@ -2149,7 +2052,11 @@ fn ensure_backup_dir(path: &Path, config: &mut Config) -> Result<PathBuf, Box<dy
     Ok(config.backup_dir(path))
 }
 
-fn print_snapshot_summary(adapter_id: &str, snapshot_id: &str, summary: &libresync::SnapshotDiffSummary) {
+fn print_snapshot_summary(
+    adapter_id: &str,
+    snapshot_id: &str,
+    summary: &libresync::SnapshotDiffSummary,
+) {
     println!("Snapshot diff for adapter {adapter_id} / {snapshot_id}");
     println!(
         "Entries: snapshot {} | current {}",
@@ -2263,10 +2170,7 @@ fn unlink_device(
     let confirmed = if auto_accept {
         true
     } else {
-        prompt_yes_no(&format!(
-            "Revoke linking with {device_id}? [y/N]: "
-        ))
-        .unwrap_or(false)
+        prompt_yes_no(&format!("Revoke linking with {device_id}? [y/N]: ")).unwrap_or(false)
     };
 
     if !confirmed {
@@ -2465,9 +2369,7 @@ fn listen_device(
 
     println!(
         "Listening on {} (device: {}, user: {})",
-        listener_addr,
-        identity.device_id,
-        identity.user_id
+        listener_addr, identity.device_id, identity.user_id
     );
 
     let deadline = duration_secs.map(|secs| Instant::now() + Duration::from_secs(secs));
@@ -2498,12 +2400,9 @@ fn listen_device(
             && !no_discovery
             && auto_approve_last.elapsed() >= Duration::from_secs(AUTO_APPROVE_INTERVAL_SECS)
         {
-            if let Err(error) = auto_approve_devices(
-                &engine,
-                &config,
-                path,
-                &mut auto_approve_attempts,
-            ) {
+            if let Err(error) =
+                auto_approve_devices(&engine, &config, path, &mut auto_approve_attempts)
+            {
                 eprintln!("Auto-approve error: {error}");
             }
             auto_approve_last = Instant::now();
@@ -2568,7 +2467,8 @@ fn spawn_background_listener(
     }
     if auto_approve {
         cmd.arg("--auto-approve");
-        cmd.arg("--auto-approve-minutes").arg(auto_approve_minutes.to_string());
+        cmd.arg("--auto-approve-minutes")
+            .arg(auto_approve_minutes.to_string());
     }
 
     if no_discovery {
@@ -2742,7 +2642,11 @@ fn status(
     }
     println!(
         "Pairing secret: {}",
-        if config.pairing_secret.is_some() { "set" } else { "not set" }
+        if config.pairing_secret.is_some() {
+            "set"
+        } else {
+            "not set"
+        }
     );
     let adapter_ids = config.adapter_ids();
     if adapter_ids.is_empty() {
@@ -2797,10 +2701,7 @@ fn status(
                     .unwrap_or_else(|| "unknown".to_string());
                 println!(
                     "  {} ({}) at {} [{}]",
-                    device.identity.device_id,
-                    device.identity.user_id,
-                    address,
-                    status
+                    device.identity.device_id, device.identity.user_id, address, status
                 );
             }
         }
@@ -2819,10 +2720,7 @@ fn status(
                 record.last_seen_unix_secs = Some(now_unix_secs());
             }
         }
-        let addr = record
-            .last_seen_addr
-            .as_deref()
-            .unwrap_or("unknown");
+        let addr = record.last_seen_addr.as_deref().unwrap_or("unknown");
         let connected = if discovered_map.contains_key(&record.device_id) {
             "connected"
         } else {
@@ -2997,10 +2895,7 @@ fn print_listener_status(path: &Path) -> Result<(), Box<dyn std::error::Error>> 
             return Ok(());
         }
         Err(error) => {
-            println!(
-                "Listener: unknown (failed to read PID file: {})",
-                error
-            );
+            println!("Listener: unknown (failed to read PID file: {})", error);
             println!("Listener log: {}", log_path.display());
             return Ok(());
         }
@@ -3215,7 +3110,10 @@ fn ensure_json_file(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         fs::create_dir_all(parent).map_err(|error| {
             io::Error::new(
                 error.kind(),
-                format!("failed to create data directory {}: {error}", parent.display()),
+                format!(
+                    "failed to create data directory {}: {error}",
+                    parent.display()
+                ),
             )
         })?;
     }
@@ -3236,7 +3134,10 @@ fn ensure_logical_file(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         fs::create_dir_all(parent).map_err(|error| {
             io::Error::new(
                 error.kind(),
-                format!("failed to create data directory {}: {error}", parent.display()),
+                format!(
+                    "failed to create data directory {}: {error}",
+                    parent.display()
+                ),
             )
         })?;
     }
@@ -3334,9 +3235,9 @@ fn stored_device_infos(config: &Config) -> Vec<DeviceInfo> {
             address.map(|address| DeviceInfo {
                 identity: Identity::new(&record.device_id, &record.app_id, &record.user_id),
                 address: Some(address),
-                last_seen: record.last_seen_unix_secs.map(|secs| {
-                    SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
-                }),
+                last_seen: record
+                    .last_seen_unix_secs
+                    .map(|secs| SystemTime::UNIX_EPOCH + Duration::from_secs(secs)),
                 linked: true,
                 fingerprint: record.fingerprint.clone(),
             })
@@ -3391,10 +3292,7 @@ fn build_adapter(
 ) -> Result<Arc<dyn DataAdapter>, Box<dyn std::error::Error>> {
     let adapter = adapter_config_or_err(config, adapter_id)?;
     match adapter.kind {
-        AdapterKindConfig::Json => Ok(Arc::new(JsonFileAdapter::new(
-            adapter_id,
-            adapter.path,
-        ))),
+        AdapterKindConfig::Json => Ok(Arc::new(JsonFileAdapter::new(adapter_id, adapter.path))),
         AdapterKindConfig::Sqlite => {
             let mut sqlite = SqliteFileAdapter::new(adapter_id, &adapter.path);
             if let Some(delta) = adapter.page_delta {
@@ -3403,9 +3301,7 @@ fn build_adapter(
             Ok(Arc::new(sqlite))
         }
         AdapterKindConfig::LogicalFile => {
-            let namespace = adapter
-                .namespace
-                .unwrap_or_else(|| config.app_id.clone());
+            let namespace = adapter.namespace.unwrap_or_else(|| config.app_id.clone());
             let logical = FileLogicalAdapter::new(adapter_id, namespace, adapter.path);
             Ok(Arc::new(LogicalAdapterWrapper::new(Arc::new(logical))))
         }
@@ -3637,8 +3533,7 @@ fn watch_file(
                 let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
                 println!("Change detected at {timestamp}; refreshing linked devices.");
             }
-            let refresh_result =
-                refresh_all_devices(path, &mut config, !no_discover, &adapter_ids);
+            let refresh_result = refresh_all_devices(path, &mut config, !no_discover, &adapter_ids);
             match refresh_result {
                 Ok(changed) => {
                     if changed {
@@ -3708,9 +3603,8 @@ fn auto_approve_devices(
     path: &Path,
     attempts: &mut HashMap<String, Instant>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let devices = engine.discover_devices_with_timeout(Duration::from_secs(
-        AUTO_APPROVE_DISCOVER_TIMEOUT_SECS,
-    ))?;
+    let devices = engine
+        .discover_devices_with_timeout(Duration::from_secs(AUTO_APPROVE_DISCOVER_TIMEOUT_SECS))?;
     if devices.is_empty() {
         return Ok(());
     }
@@ -3809,9 +3703,7 @@ fn refresh_all_devices(
         if !refreshed {
             if let Some(error) = last_error {
                 if error.contains("Connection refused") {
-                    eprintln!(
-                        "Refresh error for {device_id}: {error} (is the listener running?)"
-                    );
+                    eprintln!("Refresh error for {device_id}: {error} (is the listener running?)");
                 } else {
                     eprintln!("Refresh error for {device_id}: {error}");
                 }
@@ -3904,7 +3796,10 @@ fn refresh_with_address(
 
 fn generate_device_id() -> String {
     let mut rng = rand::thread_rng();
-    let words = DEVICE_WORDS.choose_multiple(&mut rng, 3).cloned().collect::<Vec<_>>();
+    let words = DEVICE_WORDS
+        .choose_multiple(&mut rng, 3)
+        .cloned()
+        .collect::<Vec<_>>();
     words.join("-")
 }
 
@@ -3916,24 +3811,23 @@ fn generate_user_id() -> String {
 }
 
 const DEVICE_WORDS: &[&str] = &[
-    "amber", "anchor", "atlas", "aurora", "blossom", "breeze", "canyon", "cedar",
-    "cliff", "comet", "coral", "cove", "dawn", "delta", "ember", "fable", "field",
-    "fjord", "forest", "glade", "harbor", "haven", "island", "keystone", "lagoon",
-    "lumen", "meadow", "mesa", "mist", "nova", "orbit", "pine", "prairie", "ridge",
-    "river", "sage", "sierra", "signal", "sky", "solace", "spark", "stone", "summit",
-    "tide", "vale", "valley", "vista", "wild", "zephyr",
+    "amber", "anchor", "atlas", "aurora", "blossom", "breeze", "canyon", "cedar", "cliff", "comet",
+    "coral", "cove", "dawn", "delta", "ember", "fable", "field", "fjord", "forest", "glade",
+    "harbor", "haven", "island", "keystone", "lagoon", "lumen", "meadow", "mesa", "mist", "nova",
+    "orbit", "pine", "prairie", "ridge", "river", "sage", "sierra", "signal", "sky", "solace",
+    "spark", "stone", "summit", "tide", "vale", "valley", "vista", "wild", "zephyr",
 ];
 
 const ADJECTIVES: &[&str] = &[
-    "brisk", "calm", "clear", "cozy", "gentle", "glad", "golden", "grand", "kind",
-    "lively", "mellow", "neat", "nimble", "proud", "quiet", "steady", "swift",
-    "tender", "true", "vivid", "warm",
+    "brisk", "calm", "clear", "cozy", "gentle", "glad", "golden", "grand", "kind", "lively",
+    "mellow", "neat", "nimble", "proud", "quiet", "steady", "swift", "tender", "true", "vivid",
+    "warm",
 ];
 
 const NOUNS: &[&str] = &[
-    "brook", "cascade", "canyon", "cloud", "crest", "dune", "field", "forest",
-    "garden", "grove", "harbor", "island", "meadow", "orchard", "path", "peak",
-    "prairie", "ridge", "river", "signal", "summit", "trail", "vale",
+    "brook", "cascade", "canyon", "cloud", "crest", "dune", "field", "forest", "garden", "grove",
+    "harbor", "island", "meadow", "orchard", "path", "peak", "prairie", "ridge", "river", "signal",
+    "summit", "trail", "vale",
 ];
 
 #[cfg(test)]
@@ -3960,9 +3854,8 @@ mod tests {
     fn resolve_device_address_prefers_explicit_device() {
         let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 52345));
         let identity = Identity::new("local-device", APP_ID_DEFAULT, "user");
-        let device_keys = DeviceKeysRecord::from_keys(
-            &DeviceKeys::generate(&identity).expect("device keys"),
-        );
+        let device_keys =
+            DeviceKeysRecord::from_keys(&DeviceKeys::generate(&identity).expect("device keys"));
         let app_key = AppKey::generate().expect("app key");
         let config = Config {
             device_id: "local-device".to_string(),
@@ -3972,7 +3865,7 @@ mod tests {
             data_path: None,
             data_paths: BTreeMap::new(),
             default_adapter: None,
-        adapters: BTreeMap::new(),
+            adapters: BTreeMap::new(),
             device_keys: Some(device_keys),
             app_key: Some(BASE64.encode(app_key.as_bytes())),
             backup_enabled: false,
@@ -3996,9 +3889,8 @@ mod tests {
     #[test]
     fn resolve_device_address_errors_when_none_found() {
         let identity = Identity::new("local-device", APP_ID_DEFAULT, "user");
-        let device_keys = DeviceKeysRecord::from_keys(
-            &DeviceKeys::generate(&identity).expect("device keys"),
-        );
+        let device_keys =
+            DeviceKeysRecord::from_keys(&DeviceKeys::generate(&identity).expect("device keys"));
         let app_key = AppKey::generate().expect("app key");
         let config = Config {
             device_id: "local-device".to_string(),
@@ -4008,7 +3900,7 @@ mod tests {
             data_path: None,
             data_paths: BTreeMap::new(),
             default_adapter: None,
-        adapters: BTreeMap::new(),
+            adapters: BTreeMap::new(),
             device_keys: Some(device_keys),
             app_key: Some(BASE64.encode(app_key.as_bytes())),
             backup_enabled: false,
@@ -4036,9 +3928,8 @@ mod tests {
     #[test]
     fn resolve_device_address_uses_stored_address() {
         let identity = Identity::new("local-device", APP_ID_DEFAULT, "user");
-        let device_keys = DeviceKeysRecord::from_keys(
-            &DeviceKeys::generate(&identity).expect("device keys"),
-        );
+        let device_keys =
+            DeviceKeysRecord::from_keys(&DeviceKeys::generate(&identity).expect("device keys"));
         let app_key = AppKey::generate().expect("app key");
         let mut config = Config {
             device_id: "local-device".to_string(),
@@ -4048,7 +3939,7 @@ mod tests {
             data_path: None,
             data_paths: BTreeMap::new(),
             default_adapter: None,
-        adapters: BTreeMap::new(),
+            adapters: BTreeMap::new(),
             device_keys: Some(device_keys),
             app_key: Some(BASE64.encode(app_key.as_bytes())),
             backup_enabled: false,
@@ -4096,9 +3987,8 @@ mod tests {
     #[test]
     fn upsert_device_sets_last_seen_fields() {
         let identity = Identity::new("local", APP_ID_DEFAULT, "user");
-        let device_keys = DeviceKeysRecord::from_keys(
-            &DeviceKeys::generate(&identity).expect("device keys"),
-        );
+        let device_keys =
+            DeviceKeysRecord::from_keys(&DeviceKeys::generate(&identity).expect("device keys"));
         let app_key = AppKey::generate().expect("app key");
         let mut config = Config {
             device_id: "local".to_string(),
@@ -4108,7 +3998,7 @@ mod tests {
             data_path: None,
             data_paths: BTreeMap::new(),
             default_adapter: None,
-        adapters: BTreeMap::new(),
+            adapters: BTreeMap::new(),
             device_keys: Some(device_keys),
             app_key: Some(BASE64.encode(app_key.as_bytes())),
             backup_enabled: false,
@@ -4155,9 +4045,8 @@ mod tests {
     #[test]
     fn auto_approve_state_expires_and_clears() {
         let identity = Identity::new("local", APP_ID_DEFAULT, "user");
-        let device_keys = DeviceKeysRecord::from_keys(
-            &DeviceKeys::generate(&identity).expect("device keys"),
-        );
+        let device_keys =
+            DeviceKeysRecord::from_keys(&DeviceKeys::generate(&identity).expect("device keys"));
         let app_key = AppKey::generate().expect("app key");
         let mut config = Config {
             device_id: "local".to_string(),
@@ -4214,8 +4103,8 @@ mod tests {
         let config_path = temp.path().join("config.json");
         init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
 
-        let error = set_auto_approve(&config_path, true, true, 1, false)
-            .expect_err("expected error");
+        let error =
+            set_auto_approve(&config_path, true, true, 1, false).expect_err("expected error");
         assert!(error.to_string().contains("choose either"));
     }
 
@@ -4225,12 +4114,8 @@ mod tests {
         let config_path = temp.path().join("config.json");
         init_config(&config_path, APP_ID_DEFAULT, None, None, true).expect("init");
 
-        set_pairing_secret(
-            &config_path,
-            Some("shared-secret".to_string()),
-            false,
-        )
-        .expect("set secret");
+        set_pairing_secret(&config_path, Some("shared-secret".to_string()), false)
+            .expect("set secret");
         let config = load_config(&config_path).expect("load");
         assert_eq!(config.pairing_secret.as_deref(), Some("shared-secret"));
 
@@ -4269,8 +4154,7 @@ mod tests {
         configure_backups(&config_path, true, true, None).expect("configure");
         std::fs::write(&data_path, b"{\"before\":true}").expect("write");
 
-        create_backup_snapshot(&config_path, FILE_KEY, Some("test".to_string()))
-            .expect("snapshot");
+        create_backup_snapshot(&config_path, FILE_KEY, Some("test".to_string())).expect("snapshot");
 
         let snapshots = {
             let mut config = load_config(&config_path).expect("load");
@@ -4284,8 +4168,7 @@ mod tests {
         };
         assert_eq!(snapshots.len(), 1);
 
-        preview_backup_snapshot(&config_path, FILE_KEY, &snapshots[0].id)
-            .expect("preview");
+        preview_backup_snapshot(&config_path, FILE_KEY, &snapshots[0].id).expect("preview");
 
         std::fs::write(&data_path, b"{\"after\":true}").expect("write after");
         restore_backup_snapshot(
@@ -4295,7 +4178,7 @@ mod tests {
             true,
             Some(snapshots[0].id.clone()),
         )
-            .expect("restore");
+        .expect("restore");
 
         let restored = std::fs::read_to_string(&data_path).expect("read");
         assert!(restored.contains("before"));
@@ -4586,7 +4469,7 @@ mod tests {
             data_path: None,
             data_paths: BTreeMap::new(),
             default_adapter: None,
-        adapters: BTreeMap::new(),
+            adapters: BTreeMap::new(),
             device_keys: None,
             app_key: None,
             backup_enabled: false,
@@ -4614,7 +4497,7 @@ mod tests {
             data_path: None,
             data_paths: BTreeMap::new(),
             default_adapter: None,
-        adapters: BTreeMap::new(),
+            adapters: BTreeMap::new(),
             device_keys: None,
             app_key: None,
             backup_enabled: false,
@@ -4638,7 +4521,7 @@ mod tests {
             data_path: None,
             data_paths: BTreeMap::new(),
             default_adapter: None,
-        adapters: BTreeMap::new(),
+            adapters: BTreeMap::new(),
             device_keys: None,
             app_key: None,
             backup_enabled: false,
@@ -4720,9 +4603,8 @@ mod tests {
     #[test]
     fn resolve_addresses_for_watch_dedupes_and_orders() {
         let identity = Identity::new("local-device", APP_ID_DEFAULT, "user");
-        let device_keys = DeviceKeysRecord::from_keys(
-            &DeviceKeys::generate(&identity).expect("device keys"),
-        );
+        let device_keys =
+            DeviceKeysRecord::from_keys(&DeviceKeys::generate(&identity).expect("device keys"));
         let app_key = AppKey::generate().expect("app key");
         let mut config = Config {
             device_id: "local-device".to_string(),
@@ -4732,7 +4614,7 @@ mod tests {
             data_path: None,
             data_paths: BTreeMap::new(),
             default_adapter: None,
-        adapters: BTreeMap::new(),
+            adapters: BTreeMap::new(),
             device_keys: Some(device_keys),
             app_key: Some(BASE64.encode(app_key.as_bytes())),
             backup_enabled: false,
@@ -4967,9 +4849,8 @@ mod tests {
     #[test]
     fn allowed_fingerprint_map_filters_missing() {
         let identity = Identity::new("local-device", APP_ID_DEFAULT, "user");
-        let device_keys = DeviceKeysRecord::from_keys(
-            &DeviceKeys::generate(&identity).expect("device keys"),
-        );
+        let device_keys =
+            DeviceKeysRecord::from_keys(&DeviceKeys::generate(&identity).expect("device keys"));
         let app_key = AppKey::generate().expect("app key");
         let mut config = Config {
             device_id: "local-device".to_string(),
@@ -4979,7 +4860,7 @@ mod tests {
             data_path: None,
             data_paths: BTreeMap::new(),
             default_adapter: None,
-        adapters: BTreeMap::new(),
+            adapters: BTreeMap::new(),
             device_keys: Some(device_keys),
             app_key: Some(BASE64.encode(app_key.as_bytes())),
             backup_enabled: false,
@@ -5088,7 +4969,7 @@ mod tests {
             data_path: None,
             data_paths: BTreeMap::new(),
             default_adapter: None,
-        adapters: BTreeMap::new(),
+            adapters: BTreeMap::new(),
             device_keys: None,
             app_key: None,
             backup_enabled: false,
@@ -5235,12 +5116,7 @@ mod tests {
         let mut config = load_config(&config_path).expect("load");
 
         let addr: SocketAddr = "127.0.0.1:1".parse().expect("addr");
-        let result = refresh_with_address(
-            &config_path,
-            &mut config,
-            addr,
-            &[FILE_KEY.to_string()],
-        );
+        let result = refresh_with_address(&config_path, &mut config, addr, &[FILE_KEY.to_string()]);
         assert!(result.is_err());
     }
 
@@ -5324,5 +5200,4 @@ mod tests {
         let config = load_config(&config_path).expect("load");
         assert!(!config.devices.contains_key("remote-device"));
     }
-
 }

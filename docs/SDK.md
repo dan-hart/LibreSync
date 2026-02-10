@@ -20,7 +20,7 @@
 - `engine_new(config, state_path)` -> Engine handle.
 - `engine_register_adapter(adapter)` -> register file/logical adapters.
 - `engine_start_listening(listen_addr)` / `engine_stop_listening()`.
-- `engine_discover(timeout)` -> list visible devices on LAN.
+- `engine_discover(timeout)` -> list visible devices from LAN and private overlays.
 - `engine_request_link(address)` -> link with a device (consent required).
 - `engine_sync_now(address, adapter_id)` -> refresh data for one adapter.
 - `engine_auto_refresh(config)` -> background refresh loop.
@@ -61,6 +61,8 @@
 ## Platform constraints to plan for
 - iOS and macOS require Local Network permission for discovery and inbound connections.
 - Some Wi-Fi networks enable AP isolation, blocking device-to-device traffic.
+- Tailscale/Headscale discovery works automatically when the `tailscale` client is present.
+- Other private overlays can provide peers through `LIBRESYNC_OVERLAY_PEERS` (`ip[:port],...`).
 - Mobile platforms restrict background execution; wrappers should re-sync quickly on resume.
 
 ## Secure key storage

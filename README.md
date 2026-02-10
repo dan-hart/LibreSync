@@ -53,7 +53,7 @@ User experience:
 - `FileLogicalAdapter` persists logical records to a JSON file for simple app storage.
 - `SqliteLogicalAdapter` (feature `sqlite-logical`) supports dedicated record tables and mapped existing SQLite tables, including multi-table mappings.
 - SQLite file adapters can enable page-delta encoding to reduce payload size when changes are small.
-- Auto refresh polls for local changes and syncs with linked devices discovered on the LAN.
+- Auto refresh polls for local changes and syncs with linked devices discovered on the LAN and private overlays.
 - Use `AutoRefreshConfig` to customize polling and refresh intervals.
 - Use `WatchedFileAdapter` for near-real-time local file change detection.
 - Attach an `EventStream` to update UI immediately after sync completes.
@@ -74,7 +74,7 @@ let _auto = engine.auto_refresh("file", "./state.json")?;
 ```
 
 ## CLI (libresync)
-The CLI is a device-to-device testing tool that uses LAN discovery, device linking, and JSON/SQLite adapter refresh.
+The CLI is a device-to-device testing tool that uses LAN/private-overlay discovery, device linking, and JSON/SQLite adapter refresh.
 
 ### Quick start
 1. Initialize a config on each device:
@@ -101,6 +101,8 @@ The CLI is a device-to-device testing tool that uses LAN discovery, device linki
 - `watch` refreshes all linked devices on local changes and on a periodic interval (auto-starts a listener by default).
 - You can also target a specific device: `--device <ip:port>` or `--device-id <device-id>`.
 - Discovery is unauthenticated and only used to find devices; trust is established at linking.
+- Discovery includes LAN mDNS plus Tailscale/Headscale peers (when `tailscale` is available).
+- For other private overlays, set `LIBRESYNC_OVERLAY_PEERS` to comma-separated `ip[:port]` values.
 - `status` shows the selected file, listener status, connected devices (discovered now), last seen addresses, and last seen timestamps for linked devices.
 - Config defaults to the OS config directory (override with `--config`).
 - `listen` runs in the background by default; use `--foreground` to keep it in the terminal.

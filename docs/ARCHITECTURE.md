@@ -24,9 +24,12 @@ Each device announces a triple:
 
 The app ID is the scope boundary for trust and discovery. Devices will only link and sync when app IDs match.
 
-## Discovery (LAN)
+## Discovery (LAN + private overlay)
 - Devices advertise over mDNS with a service type of `_libresync._tcp.local.`
 - Advertisements include app ID, device ID, and user ID as TXT properties.
+- Discovery also checks private overlays:
+  - Tailscale/Headscale peers via `tailscale status --json` when the client is installed.
+  - Static overlay peers via `LIBRESYNC_OVERLAY_PEERS` (`ip[:port],ip[:port],...`).
 - Discovery is used to find candidate devices, not to establish trust.
  - The default listener port is `52345` unless overridden.
 - Stored last-seen addresses (manual or observed) can be used when discovery is unavailable.

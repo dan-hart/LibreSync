@@ -9,6 +9,7 @@
 
 ## Common issues
 - **No devices discovered**: ensure listeners are running and mDNS is not blocked.
+- **Overlay peers missing**: verify `tailscale status` works, or set `LIBRESYNC_OVERLAY_PEERS`.
 - **Linking fails**: app IDs must match, and allowlists must permit linking.
 - **Refresh errors**: verify both devices are linked and reachable on the LAN.
 

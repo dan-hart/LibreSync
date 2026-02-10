@@ -8,11 +8,11 @@ use std::time::{Duration, Instant, SystemTime};
 use flume::{Receiver, Sender};
 use sha2::{Digest, Sha256};
 
-use crate::discovery::browse_mdns;
+use crate::discovery::{discover_devices, DEFAULT_SYNC_PORT};
 use crate::sync::{pull_snapshot, push_snapshot};
 use crate::{
-    AdapterCache, DataAdapter, DeviceHandler, Entry, Error, Identity, LogicalAdapter,
-    LogicalAdapterWrapper, Result, State, SyncListener, link_with_device, sync_with_device,
+    link_with_device, sync_with_device, AdapterCache, DataAdapter, DeviceHandler, Entry, Error,
+    Identity, LogicalAdapter, LogicalAdapterWrapper, Result, State, SyncListener,
 };
 
 #[derive(Clone, Debug)]
@@ -64,17 +64,30 @@ pub enum SyncResult {
 
 #[derive(Clone, Debug)]
 pub enum Event {
-    LinkingRequested { request: LinkingRequest },
-    LinkingDecisionRequired { request: LinkingRequest },
-    SyncStarted { device: DeviceInfo, adapter_id: String },
+    LinkingRequested {
+        request: LinkingRequest,
+    },
+    LinkingDecisionRequired {
+        request: LinkingRequest,
+    },
+    SyncStarted {
+        device: DeviceInfo,
+        adapter_id: String,
+    },
     SyncFinished {
         device: DeviceInfo,
         adapter_id: String,
         result: SyncResult,
     },
-    DeviceSeen { device: DeviceInfo },
-    DeviceOffline { device: DeviceInfo },
-    Error { message: String },
+    DeviceSeen {
+        device: DeviceInfo,
+    },
+    DeviceOffline {
+        device: DeviceInfo,
+    },
+    Error {
+        message: String,
+    },
 }
 
 pub trait EventSink: Send + Sync {
@@ -116,10 +129,7 @@ impl EventSink for EventChannel {
 
 pub fn event_channel() -> (Arc<dyn EventSink>, EventStream) {
     let (sender, receiver) = flume::unbounded();
-    (
-        Arc::new(EventChannel { sender }),
-        EventStream { receiver },
-    )
+    (Arc::new(EventChannel { sender }), EventStream { receiver })
 }
 
 pub struct AdapterWatch {
@@ -211,11 +221,7 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn new(
-        config: EngineConfig,
-        state: State,
-        device_handler: Arc<dyn DeviceHandler>,
-    ) -> Self {
+    pub fn new(config: EngineConfig, state: State, device_handler: Arc<dyn DeviceHandler>) -> Self {
         Self {
             config,
             state: Arc::new(Mutex::new(state)),
@@ -309,7 +315,12 @@ impl Engine {
     }
 
     pub fn discover_devices_with_timeout(&self, timeout: Duration) -> Result<Vec<DeviceInfo>> {
-        let discovered = browse_mdns(&self.config.identity.app_id, timeout)?;
+        let overlay_port = self
+            .listener_addr
+            .or(self.config.listen_addr)
+            .map(|addr| addr.port())
+            .unwrap_or(DEFAULT_SYNC_PORT);
+        let discovered = discover_devices(&self.config.identity.app_id, timeout, overlay_port)?;
         Ok(discovered
             .into_iter()
             .filter(|device| device.identity.device_id != self.config.identity.device_id)
@@ -331,14 +342,13 @@ impl Engine {
         let device_keys = self.device_handler.device_keys()?;
         let app_key = self.device_handler.app_key()?;
         let pairing_secret = self.device_handler.pairing_secret();
-        let (remote_identity, fingerprint, remote_app_key) =
-            link_with_device(
-                &self.config.identity,
-                &device_keys,
-                &app_key,
-                address,
-                pairing_secret,
-            )?;
+        let (remote_identity, fingerprint, remote_app_key) = link_with_device(
+            &self.config.identity,
+            &device_keys,
+            &app_key,
+            address,
+            pairing_secret,
+        )?;
         if remote_app_key != app_key {
             self.device_handler.set_app_key(&remote_app_key)?;
         }
@@ -510,6 +520,11 @@ impl Engine {
         let discover_timeout = config.discover_timeout;
         let fallback_addresses = config.fallback_addresses.clone();
         let adapter_id = config.adapter_id.clone();
+        let overlay_port = self
+            .listener_addr
+            .or(self.config.listen_addr)
+            .map(|addr| addr.port())
+            .unwrap_or(DEFAULT_SYNC_PORT);
         let device_keys = self.device_handler.device_keys()?;
         let app_key = self.device_handler.app_key()?;
 
@@ -572,13 +587,14 @@ impl Engine {
                     continue;
                 }
 
-                let discovered = match browse_mdns(&identity.app_id, discover_timeout) {
-                    Ok(devices) => devices,
-                    Err(error) => {
-                        emit_error(&event_sink, &format!("discovery error: {error}"));
-                        Vec::new()
-                    }
-                };
+                let discovered =
+                    match discover_devices(&identity.app_id, discover_timeout, overlay_port) {
+                        Ok(devices) => devices,
+                        Err(error) => {
+                            emit_error(&event_sink, &format!("discovery error: {error}"));
+                            Vec::new()
+                        }
+                    };
 
                 let mut candidates = Vec::new();
                 let mut seen = HashSet::new();
@@ -641,10 +657,7 @@ impl Engine {
                         let app_key = match handler.app_key() {
                             Ok(app_key) => app_key,
                             Err(error) => {
-                                emit_error(
-                                    &event_sink,
-                                    &format!("app key error: {error}"),
-                                );
+                                emit_error(&event_sink, &format!("app key error: {error}"));
                                 continue;
                             }
                         };
@@ -657,14 +670,10 @@ impl Engine {
                             &app_key,
                             |identity, fingerprint| {
                                 if identity.app_id != app_id {
-                                    return Err(Error::Protocol(
-                                        "app id mismatch".to_string(),
-                                    ));
+                                    return Err(Error::Protocol("app id mismatch".to_string()));
                                 }
                                 if !handler.is_linked_with_fingerprint(identity, fingerprint) {
-                                    return Err(Error::Protocol(
-                                        "device not linked".to_string(),
-                                    ));
+                                    return Err(Error::Protocol("device not linked".to_string()));
                                 }
                                 Ok(())
                             },
@@ -788,11 +797,11 @@ fn not_implemented<T>() -> Result<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AutoRefreshConfig, Engine, Event, event_channel, hash_entries};
+    use super::{event_channel, hash_entries, AutoRefreshConfig, Engine, Event};
     use crate::{
-        AppKey, DeviceHandler, DeviceKeys, EngineConfig, Entry, Identity, JsonFileAdapter,
-        LamportClock, LogicalAdapter, RecordState, RecordView, State, SyncListener, SyncRecord,
-        FieldValue,
+        AppKey, DeviceHandler, DeviceKeys, EngineConfig, Entry, FieldValue, Identity,
+        JsonFileAdapter, LamportClock, LogicalAdapter, RecordState, RecordView, State,
+        SyncListener, SyncRecord,
     };
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
@@ -933,8 +942,11 @@ mod tests {
             keys: local_keys,
             app_key: Mutex::new(local_initial_key.clone()),
         });
-        let engine =
-            Engine::new(EngineConfig::new(local_identity), State::new("local"), local_handler.clone());
+        let engine = Engine::new(
+            EngineConfig::new(local_identity),
+            State::new("local"),
+            local_handler.clone(),
+        );
 
         let _ = engine.request_link(listener.addr()).expect("link");
         assert_eq!(local_handler.app_key_value(), local_initial_key);
@@ -1000,9 +1012,8 @@ mod tests {
             keys,
             app_key: Mutex::new(AppKey::generate().expect("app key")),
         });
-        let config = EngineConfig::new(identity).with_listen_addr(
-            "127.0.0.1:0".parse().expect("addr"),
-        );
+        let config =
+            EngineConfig::new(identity).with_listen_addr("127.0.0.1:0".parse().expect("addr"));
         let mut engine = Engine::new(config, State::new("device"), handler);
 
         let addr = engine.start_listening().expect("start");

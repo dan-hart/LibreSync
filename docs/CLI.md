@@ -5,7 +5,7 @@ The CLI is a thin wrapper around the core library. It covers the full flow to co
 ## Command summary
 - `init`: create a config with device/app/user identity.
 - `select`: choose a file-backed adapter to refresh (`--kind json|sqlite|logical-file`).
-- `discover`: list devices on the LAN for the same app ID.
+- `discover`: list devices from LAN mDNS and private overlays for the same app ID.
 - `link`: request linking with a device (mutual consent).
 - `device set-address`: store a manual address for a linked device.
 - `device auto-approve`: toggle time-boxed automatic linking for devices on the LAN (private/link-local only).
@@ -72,7 +72,7 @@ You can override the location with `--config` on any command.
 1. On each device, run `init` to create a config.
 2. Run `select` to choose the adapter to refresh (use `--id` to add more than one).
 3. Start `listen` on both devices (or at least one). The default listener port is `52345`. The listener runs in the background by default; use `--foreground` to keep it in your terminal.
-4. Run `discover` to list devices on the LAN (optional).
+4. Run `discover` to list devices (LAN + private overlays) (optional).
 5. Run `link` once between devices (consent required). You can either:
    - pass a device address with `--device`, or
    - pass a device ID with `--device-id`, or
@@ -96,6 +96,8 @@ libresync select --id records --kind logical-file --file ./records.json
 - Link establishes trust only; it does not refresh data.
 - Refresh exchanges data and requires prior linking.
 - Discovery only lists devices; it does not grant trust.
+- Discovery uses LAN mDNS plus Tailscale/Headscale peers when the `tailscale` client is available.
+- For other private overlays, set `LIBRESYNC_OVERLAY_PEERS` to comma-separated `ip[:port]` values.
 - `link` prints the local and remote fingerprints so you can verify trust out of band.
 - `listen` can be run with `--no-discovery` to avoid mDNS advertising.
 - `listen --auto-approve` enables automatic LAN linking (private/link-local addresses only) with a default 15-minute window; override with `--auto-approve-minutes`.
