@@ -13,7 +13,8 @@ cargo build -p libresync-ffi
 - Use the wrapper in `src/main/kotlin/LibreSync.kt`.
 
 ## Example
-See `sample/Main.kt` for a minimal usage example.
+- `sample/Main.kt`: minimal logical-file setup.
+- `sample/RoomSample.kt`: SQLite logical sync with multi-table mappings for a Room-style schema.
 
 ## Notes
 - The Kotlin wrapper uses JNI-style `external` functions.
@@ -21,6 +22,7 @@ See `sample/Main.kt` for a minimal usage example.
 - Logical record adapters (`registerLogicalFileAdapter`) are the recommended integration path for structured data.
 - `LibreSyncKeyManager` can generate and store keys via `LibreSyncKeyStorage` and produce a JSON config.
 - `registerSqliteLogicalAdapter` supports mapping existing SQLite tables (via `LibreSyncSqliteLogicalMapping`).
+- `registerSqliteLogicalAdapter(..., mappings)` accepts multiple table mappings in one adapter.
 - Android requires Local Network permissions for discovery:
   - `android.permission.INTERNET`
   - `android.permission.CHANGE_WIFI_MULTICAST_STATE` (mDNS)

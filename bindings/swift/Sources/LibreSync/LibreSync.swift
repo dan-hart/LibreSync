@@ -72,6 +72,20 @@ public final class LibreSyncEngine {
         }
     }
 
+    public func registerSqliteLogicalAdapter(
+        id: String,
+        namespace: String,
+        path: String,
+        mappings: [LibreSyncSqliteLogicalMapping]
+    ) throws {
+        if mappings.isEmpty {
+            throw LibreSyncError.message("mappings must not be empty")
+        }
+        let data = try JSONEncoder().encode(mappings)
+        let mappingJson = String(decoding: data, as: UTF8.self)
+        try registerSqliteLogicalAdapter(id: id, namespace: namespace, path: path, mappingJson: mappingJson)
+    }
+
     public func discover(timeoutMs: UInt64 = 3000) throws -> [LibreSyncDeviceInfo] {
         guard let jsonPtr = libresync_engine_discover(handle, timeoutMs) else {
             throw LibreSyncError.message(Self.lastError())

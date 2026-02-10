@@ -66,7 +66,7 @@ Both devices merge incoming entries using the Lamport clock rules to ensure conv
 - Records are merged with field-level policies (LWW, set-union, counters, list append).
 - `InMemoryLogicalAdapter` provides a minimal record adapter for early integrations.
 - `FileLogicalAdapter` persists records in a JSON file for simple local storage.
-- `SqliteLogicalAdapter` (feature `sqlite-logical`) persists records to a SQLite table.
+- `SqliteLogicalAdapter` (feature `sqlite-logical`) persists records to a SQLite table and can map existing tables (including multi-table mappings).
 - File adapters remain supported as a fallback for arbitrary files or whole-store snapshots.
 - See `docs/LOGICAL.md` for the record schema and merge policy details.
 

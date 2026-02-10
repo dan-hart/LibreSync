@@ -4,12 +4,14 @@ Logical adapters map application data into structured records that are merged de
 
 ## Status
 - Logical record sync is the recommended integration path, but it is still early for production apps.
-- `SqliteLogicalAdapter` targets a dedicated record table and does not yet map arbitrary existing schemas.
+- `SqliteLogicalAdapter` can map existing SQLite tables and now supports multi-table mappings in one adapter.
+- Complex relational schemas may still require careful field-policy tuning.
 - CLI supports logical record files via `libresync select --kind logical-file`.
 
 ## SQLite schema mapping
 The SQLite logical adapter can map an existing table into records using a sidecar metadata table:
 - Provide a `SqliteLogicalMapping` with a data table, ID column, and column-to-field mapping.
+- You can provide one or more mappings; each mapping syncs one table/entity pair.
 - LibreSync stores clocks and tombstones in a `*_libresync_meta` table by default.
 - The mapping is best for a single-table entity with a stable primary key and deterministic columns.
 - Use `with_bool_field` or `SqliteLogicalEncoding::Bool` for boolean columns.
@@ -46,7 +48,7 @@ Merges happen at the field level and are deterministic across devices:
 - `SetUnion`: for list/map fields where you want union semantics.
 - `Counter`: prefer per-device maps (`Map` of device IDs to `I64`) so merges take the max per device. If you store a plain `I64`, the newer value wins (no double counting).
 - `ListAppend`: appends list entries in order, skipping duplicates to remain idempotent.
-- `Custom(name)`: reserved for app-defined merges in future adapter implementations.
+- `Custom(name)`: uses adapter-provided custom merge hooks. If no hook is registered for `name`, it falls back to last-writer-wins.
 
 Tombstones win over active data when their Lamport clock is newer. If both are tombstones, the newer clock wins.
 
@@ -55,11 +57,12 @@ Logical adapters implement `LogicalAdapter`:
 - `load_records` loads app data into a `RecordState` before refresh.
 - `apply_records` writes the merged snapshot back to the app store after refresh.
 - `apply_snapshot` can override merge behavior to apply field-level policies.
+- `merge_custom_field` can resolve `Custom(name)` policies with app-defined logic.
 
 ## Provided adapters
 - `InMemoryLogicalAdapter`: in-memory adapter for testing and early integration.
 - `FileLogicalAdapter`: persists records to a JSON file for simple local-first storage.
-- `SqliteLogicalAdapter` (feature `sqlite-logical`): persists records to a SQLite table.
+- `SqliteLogicalAdapter` (feature `sqlite-logical`): persists records to a SQLite table or mapped existing tables (single or multi-table mappings).
 
 ## Usage notes
 - Keep record IDs stable across devices.

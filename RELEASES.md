@@ -1,6 +1,6 @@
 # Releases
 
-## v0.2.0 (unreleased)
+## v0.2.0 (2026-02-09)
 - Production MVP (desktop-only) with hardened stability gates.
 - Linux systemd user service support for the always-on daemon.
 - AlwaysOn service templates default to safe linking (no auto-approve).
@@ -9,6 +9,7 @@
 - File-backed logical adapter and record schema documentation.
 - Logical record compaction policy and idempotent merge semantics updates.
 - SQLite logical adapter (feature `sqlite-logical`).
+- SQLite logical adapter multi-table mapping support (core + FFI array input).
 - SQLite WAL/SHM integration tests and page-delta coverage.
 - Backup retention planning and CLI snapshot pruning.
 - CLI refresh-all, diagnostics, key rotation, and richer status output.
@@ -16,6 +17,7 @@
 - CLI adapter registry with JSON/SQLite support plus app/device key export/import.
 - E2EE lifecycle and threat model documentation updates.
 - FFI crate with Swift/Kotlin starter bindings and samples.
+- SwiftData/Room-style SDK samples for multi-table SQLite logical mappings.
 - LibreSyncAlwaysOn snapshot creation and retention polish.
 - Auto-refresh fallback addresses for always-on reliability.
 

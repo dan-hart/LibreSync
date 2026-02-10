@@ -8,9 +8,9 @@ LibreSync has a working device-to-device MVP for two CLI instances on a LAN. Dev
 - Security/E2EE: strong (app key encryption, key export/import/rotation).
 - File adapters (JSON/SQLite/WAL/SHM): strong (page-delta optional, solid tests).
 - Logical records (mergeable state): moderate (schema and merges exist; still early for real apps).
-- SDK bindings (Swift/Kotlin): early (wrappers exist, Keychain/Keystore helpers added; not production-ready).
-- Always-on desktop device: MVP (UI, snapshots, tray, trust panel; needs OS-level background).
-- DX/UX docs + examples: good (docs are coherent; sample apps are limited).
+- SDK bindings (Swift/Kotlin): early-to-moderate (wrappers + key storage helpers + SQLite logical mapping samples; still not production-ready).
+- Always-on desktop device: MVP (UI, snapshots, tray, trust panel; Linux daemon/service runbook shipped).
+- DX/UX docs + examples: good (docs are coherent; SwiftData/Room schema samples added).
 
 ## Completed
 - Rust workspace with core library and CLI.
@@ -60,6 +60,8 @@ LibreSync has a working device-to-device MVP for two CLI instances on a LAN. Dev
 - FFI crate added with Swift/Kotlin starter bindings and samples.
 - SQLite logical mapping added with sidecar metadata for existing tables.
 - SQLite logical mapping now supports JSON-value encoding and per-field merge policies.
+- SQLite logical mapping now supports multi-table mappings in a single adapter.
+- Logical adapters now support app-defined `MergePolicy::Custom` merge hooks.
 - Swift/Kotlin binding docs now cover Local Network permissions and secure key storage.
 - LibreSyncAlwaysOn now supports system tray show/hide and trust UI (linking + fingerprints).
 - Swift/Kotlin samples now default to logical record adapters.
@@ -70,6 +72,7 @@ LibreSync has a working device-to-device MVP for two CLI instances on a LAN. Dev
 - Auto-approve linking mode added (opt-in, private/link-local LAN only).
 - Coverage gate met with additional CLI/FFI/daemon tests (backup, keys, auto-approve, daemon config/event handling).
 - 0.2.0 production MVP hardening and Linux systemd user service runbook.
+- Swift/Kotlin SDK samples now include SwiftData/Room-style SQLite schema mappings.
 
 ## Current MVP behavior
 - Two devices on the same LAN can run `libresync`.
@@ -81,14 +84,13 @@ LibreSync has a working device-to-device MVP for two CLI instances on a LAN. Dev
 - Device keys are self-signed and stored locally; rotation is CLI-only and needs SDK UX for verification.
 - Linking uses fingerprint allowlisting (TOFU) without out-of-band verification prompts.
 - Logical record sync is now the preferred path but still early for production apps.
-- SQLite logical mapping is available but still evolving for complex schemas.
+- SQLite logical mapping is available (including multi-table mappings) but still evolving for complex relational schemas.
 - Background auto-refresh is polling-based; discovery is mDNS-first with manual fallback addresses.
-- LibreSyncAlwaysOn still needs true OS-level daemon/service behavior.
+- LibreSyncAlwaysOn has Linux daemon/service support; macOS/Windows still rely on tray behavior.
 - Coverage gate is met but additional tests would improve confidence across the SDK/FFI surface.
 
 ## Next steps
-- Expand logical adapters for multi-table schemas and custom merge policies.
-- Ship native SDK samples for SwiftData/Room with real schemas.
+- Improve SDK UX for key verification and guided trust/re-key flows.
 
 ## Tests
 - `cargo test` covers core and CLI behavior.

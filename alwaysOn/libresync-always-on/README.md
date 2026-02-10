@@ -14,6 +14,6 @@ LibreSyncAlwaysOn is an always-on desktop device that keeps LibreSync data synce
 - System tray menu supports show/hide, manual refresh, and quit.
 
 ## Next steps
-- Add a true background service/daemon per OS (tray-based hide is present).
+- Extend daemon/service packaging beyond Linux systemd user service (macOS launchd and Windows scheduler hardening).
 - Add explicit linking approval flows (beyond auto-accept).
 - Make the app ID configurable so it can sync data for specific apps.

@@ -31,6 +31,7 @@
 - Logical adapter: record-level sync with merge policies.
 - Adapter registration is per engine instance; adapters are identified by `adapter_id`.
 - SQLite logical mappings can target existing tables with a sidecar metadata table for clocks/tombstones.
+- One adapter can register multiple SQLite logical mappings to sync multi-table schemas in one refresh cycle.
 - Swift/Kotlin wrappers can map SwiftData/Room tables through SQLite logical mappings to keep record-level semantics.
 
 ## Events
@@ -80,7 +81,7 @@ The FFI layer should be small, versioned, and handle-based so wrappers stay thin
 - `engine_register_file_adapter(handle, adapter_id, path)`.
 - `engine_register_logical_adapter(handle, adapter_id, namespace)`.
 - `engine_start_listening(handle, listen_addr)` / `engine_stop_listening(handle)`.
-- `engine_register_sqlite_logical_adapter(handle, adapter_id, namespace, path, mapping_json)` -> map existing SQLite tables.
+- `engine_register_sqlite_logical_adapter(handle, adapter_id, namespace, path, mapping_json)` -> map existing SQLite tables (`mapping_json` accepts one mapping object or an array).
 - `engine_discover(handle, timeout_ms)` -> list of devices.
 - `engine_request_link(handle, address)` / `engine_accept_link(handle, device_id, decision)`.
 - `engine_sync_now(handle, address, adapter_id)`.
@@ -133,3 +134,4 @@ Notes:
 - `crates/libresync-ffi` provides a minimal C ABI.
 - `bindings/swift` wraps the C ABI in a Swift Package.
 - `bindings/kotlin` provides a JNI-style wrapper and sample usage.
+- Sample apps include `bindings/swift/Samples/SwiftDataNotes/main.swift` and `bindings/kotlin/sample/RoomSample.kt`.

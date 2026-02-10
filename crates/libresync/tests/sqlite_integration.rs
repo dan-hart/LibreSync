@@ -1,13 +1,13 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use libresync::{AdapterCache, DataAdapter, SqliteFileAdapter, State};
 use rusqlite::{params, Connection};
 
-fn wal_path(db_path: &PathBuf) -> PathBuf {
+fn wal_path(db_path: &Path) -> PathBuf {
     PathBuf::from(format!("{}-wal", db_path.to_string_lossy()))
 }
 
-fn shm_path(db_path: &PathBuf) -> PathBuf {
+fn shm_path(db_path: &Path) -> PathBuf {
     PathBuf::from(format!("{}-shm", db_path.to_string_lossy()))
 }
 
@@ -17,9 +17,9 @@ fn sqlite_adapter_loads_real_wal_and_shm() {
     let db_path = dir.path().join("db.sqlite");
 
     let conn = Connection::open(&db_path).expect("open");
-    conn.pragma_update(None, "journal_mode", &"WAL")
+    conn.pragma_update(None, "journal_mode", "WAL")
         .expect("wal");
-    conn.pragma_update(None, "wal_autocheckpoint", &0)
+    conn.pragma_update(None, "wal_autocheckpoint", 0)
         .expect("checkpoint");
     conn.execute(
         "CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, name TEXT)",

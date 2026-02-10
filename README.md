@@ -51,7 +51,7 @@ User experience:
 - Adapters can be logical (records) or file-based (JSON, SQLite, arbitrary files).
 - `InMemoryLogicalAdapter` provides a minimal record adapter for merge-policy testing.
 - `FileLogicalAdapter` persists logical records to a JSON file for simple app storage.
-- `SqliteLogicalAdapter` (feature `sqlite-logical`) persists records to a SQLite table; it is not yet a drop-in mapping for existing schemas.
+- `SqliteLogicalAdapter` (feature `sqlite-logical`) supports dedicated record tables and mapped existing SQLite tables, including multi-table mappings.
 - SQLite file adapters can enable page-delta encoding to reduce payload size when changes are small.
 - Auto refresh polls for local changes and syncs with linked devices discovered on the LAN.
 - Use `AutoRefreshConfig` to customize polling and refresh intervals.
@@ -118,7 +118,7 @@ The CLI is a device-to-device testing tool that uses LAN discovery, device linki
 
 ## Current limitations (alpha)
 - Logical record sync is the recommended integration path but still early for production apps.
-- The SQLite logical adapter does not yet map arbitrary existing schemas.
+- The SQLite logical adapter supports mapped existing tables, but complex relational schemas still need careful field-policy tuning.
 - Discovery on iOS/macOS requires local network permissions and may be blocked by AP isolation.
 - SDK wrappers include Keychain/Keystore helpers but still need default integration and UX polish.
 - LibreSyncAlwaysOn uses a Linux systemd user service for background behavior; macOS/Windows rely on the tray app.

@@ -36,5 +36,6 @@ LibreSync is pre-1.0, but the following surface is intended to be **stable** and
 ## Stability notes
 - New fields may be added to public structs over time.
 - New enum variants may be added; avoid exhaustive matching in downstream code.
+- `LogicalAdapter::merge_custom_field` is the extension hook for `MergePolicy::Custom(name)`.
 - The CLI is a reference implementation and may change faster than the core library.
 - E2EE is enforced by the engine; app key handling is part of the runtime surface.

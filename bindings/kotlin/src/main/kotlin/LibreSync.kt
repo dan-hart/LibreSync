@@ -75,6 +75,17 @@ class LibreSyncEngine(configJson: String, statePath: String) {
         }
     }
 
+    fun registerSqliteLogicalAdapter(
+        id: String,
+        namespace: String,
+        path: String,
+        mappings: List<LibreSyncSqliteLogicalMapping>
+    ) {
+        require(mappings.isNotEmpty()) { "mappings must not be empty" }
+        val mappingJson = mappings.joinToString(prefix = "[", postfix = "]") { it.toJson() }
+        registerSqliteLogicalAdapter(id, namespace, path, mappingJson)
+    }
+
     fun startListening() {
         require(LibreSyncNative.libresync_engine_start_listening(handle)) {
             LibreSyncNative.libresync_last_error() ?: "start listening failed"

@@ -1,11 +1,13 @@
 #[cfg(feature = "sqlite-logical")]
-use rusqlite::{params, params_from_iter, Connection};
-#[cfg(feature = "sqlite-logical")]
 use rusqlite::types::Value as SqlValue;
+#[cfg(feature = "sqlite-logical")]
+use rusqlite::{params, params_from_iter, Connection};
 
-use std::path::{Path, PathBuf};
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::{
     logical::apply_snapshot_with_policy, Error, FieldValue, LamportClock, LogicalAdapter,
@@ -13,6 +15,9 @@ use crate::{
 };
 
 use serde::{Deserialize, Serialize};
+
+type CustomMergeHandler =
+    dyn Fn(&str, Option<&FieldValue>, &FieldValue, bool) -> Option<FieldValue> + Send + Sync;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -126,8 +131,13 @@ impl SqliteLogicalMapping {
         self
     }
 
-    pub fn with_json_value_field(mut self, column: impl Into<String>, field: impl Into<String>) -> Self {
-        self.fields.push(SqliteLogicalField::json_value(column, field));
+    pub fn with_json_value_field(
+        mut self,
+        column: impl Into<String>,
+        field: impl Into<String>,
+    ) -> Self {
+        self.fields
+            .push(SqliteLogicalField::json_value(column, field));
         self
     }
 
@@ -161,7 +171,8 @@ pub struct SqliteLogicalAdapter {
     path: PathBuf,
     table: String,
     merge_policies: BTreeMap<String, MergePolicy>,
-    mapping: Option<SqliteLogicalMapping>,
+    custom_merge_handlers: HashMap<String, Arc<CustomMergeHandler>>,
+    mappings: Vec<SqliteLogicalMapping>,
 }
 
 impl SqliteLogicalAdapter {
@@ -177,7 +188,8 @@ impl SqliteLogicalAdapter {
             path: path.into(),
             table: table.into(),
             merge_policies: BTreeMap::new(),
-            mapping: None,
+            custom_merge_handlers: HashMap::new(),
+            mappings: Vec::new(),
         }
     }
 
@@ -186,8 +198,24 @@ impl SqliteLogicalAdapter {
         self
     }
 
+    pub fn with_custom_merge_handler<F>(
+        mut self,
+        policy_name: impl Into<String>,
+        handler: F,
+    ) -> Self
+    where
+        F: Fn(&str, Option<&FieldValue>, &FieldValue, bool) -> Option<FieldValue>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.custom_merge_handlers
+            .insert(policy_name.into(), Arc::new(handler));
+        self
+    }
+
     pub fn with_mapping(mut self, mapping: SqliteLogicalMapping) -> Self {
-        self.mapping = Some(mapping);
+        self.mappings.push(mapping);
         self
     }
 
@@ -219,11 +247,7 @@ impl SqliteLogicalAdapter {
         Connection::open(&self.path).map_err(|error| Error::Protocol(error.to_string()))
     }
 
-    fn ensure_meta_table(
-        &self,
-        conn: &Connection,
-        mapping: &SqliteLogicalMapping,
-    ) -> Result<()> {
+    fn ensure_meta_table(&self, conn: &Connection, mapping: &SqliteLogicalMapping) -> Result<()> {
         let sql = format!(
             "CREATE TABLE IF NOT EXISTS {} (\
              schema TEXT NOT NULL,\
@@ -311,10 +335,8 @@ impl SqliteLogicalAdapter {
         for row in rows {
             let (record_id, fields) = row.map_err(|error| Error::Protocol(error.to_string()))?;
             seen.insert(record_id.clone());
-            let (tombstone, updated_at, clock) = meta_map
-                .get(&record_id)
-                .cloned()
-                .unwrap_or_else(|| {
+            let (tombstone, updated_at, clock) =
+                meta_map.get(&record_id).cloned().unwrap_or_else(|| {
                     (
                         false,
                         None,
@@ -396,10 +418,7 @@ impl SqliteLogicalAdapter {
                 values.push(SqlValue::Text(record.id.clone()));
                 for field in &mapping.fields {
                     columns.push(field.column.clone());
-                    let field_value = record
-                        .fields
-                        .get(&field.field)
-                        .unwrap_or(&FieldValue::Null);
+                    let field_value = record.fields.get(&field.field).unwrap_or(&FieldValue::Null);
                     values.push(field_to_sql_value(field_value, &field.encoding));
                 }
 
@@ -469,16 +488,32 @@ impl LogicalAdapter for SqliteLogicalAdapter {
             .get(field)
             .cloned()
             .or_else(|| {
-                self.mapping
-                    .as_ref()
-                    .and_then(|mapping| mapping.policy_for(field))
+                self.mappings
+                    .iter()
+                    .find_map(|mapping| mapping.policy_for(field))
             })
             .unwrap_or(MergePolicy::LastWriterWins)
     }
 
+    fn merge_custom_field(
+        &self,
+        policy_name: &str,
+        field: &str,
+        existing: Option<&FieldValue>,
+        incoming: &FieldValue,
+        incoming_newer: bool,
+    ) -> Option<FieldValue> {
+        self.custom_merge_handlers
+            .get(policy_name)
+            .and_then(|handler| handler(field, existing, incoming, incoming_newer))
+    }
+
     fn load_records(&self, records: &mut RecordState) -> Result<()> {
-        if let Some(mapping) = self.mapping.as_ref() {
-            return self.load_records_mapped(records, mapping);
+        if !self.mappings.is_empty() {
+            for mapping in &self.mappings {
+                self.load_records_mapped(records, mapping)?;
+            }
+            return Ok(());
         }
         let conn = self.open()?;
         self.ensure_table(&conn)?;
@@ -523,8 +558,11 @@ impl LogicalAdapter for SqliteLogicalAdapter {
     }
 
     fn apply_records(&self, records: &RecordView) -> Result<()> {
-        if let Some(mapping) = self.mapping.as_ref() {
-            return self.apply_records_mapped(records, mapping);
+        if !self.mappings.is_empty() {
+            for mapping in &self.mappings {
+                self.apply_records_mapped(records, mapping)?;
+            }
+            return Ok(());
         }
         let mut conn = self.open()?;
         self.ensure_table(&conn)?;
@@ -567,8 +605,19 @@ impl LogicalAdapter for SqliteLogicalAdapter {
         Ok(())
     }
 
-    fn apply_snapshot(&self, records: &mut RecordState, incoming: Vec<SyncRecord>) -> Result<usize> {
-        apply_snapshot_with_policy(records, incoming, |field| self.merge_policy(field))
+    fn apply_snapshot(
+        &self,
+        records: &mut RecordState,
+        incoming: Vec<SyncRecord>,
+    ) -> Result<usize> {
+        apply_snapshot_with_policy(
+            records,
+            incoming,
+            |field| self.merge_policy(field),
+            |policy_name, field, existing, incoming, incoming_newer| {
+                self.merge_custom_field(policy_name, field, existing, incoming, incoming_newer)
+            },
+        )
     }
 }
 
@@ -602,10 +651,12 @@ fn sqlite_value_to_field(value: SqlValue, encoding: &SqliteLogicalEncoding) -> F
             SqlValue::Blob(value) => FieldValue::Bytes(value),
         },
         SqliteLogicalEncoding::Json => match value {
-            SqlValue::Text(value) => serde_json::from_str::<FieldValue>(&value)
-                .unwrap_or_else(|_| FieldValue::String(value)),
-            SqlValue::Blob(value) => serde_json::from_slice::<FieldValue>(&value)
-                .unwrap_or_else(|_| FieldValue::Bytes(value)),
+            SqlValue::Text(value) => {
+                serde_json::from_str::<FieldValue>(&value).unwrap_or(FieldValue::String(value))
+            }
+            SqlValue::Blob(value) => {
+                serde_json::from_slice::<FieldValue>(&value).unwrap_or(FieldValue::Bytes(value))
+            }
             other => sqlite_value_to_field(other, &SqliteLogicalEncoding::Plain),
         },
         SqliteLogicalEncoding::JsonValue => match value {
@@ -665,7 +716,8 @@ fn field_to_sql_value(value: &FieldValue, encoding: &SqliteLogicalEncoding) -> S
             FieldValue::Null => SqlValue::Null,
             _ => {
                 let json_value = field_to_json_value(value);
-                let json = serde_json::to_string(&json_value).unwrap_or_else(|_| "null".to_string());
+                let json =
+                    serde_json::to_string(&json_value).unwrap_or_else(|_| "null".to_string());
                 SqlValue::Text(json)
             }
         },
@@ -726,8 +778,13 @@ fn field_to_json_value(value: &FieldValue) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{SqliteLogicalAdapter, SqliteLogicalEncoding, SqliteLogicalField, SqliteLogicalMapping};
-    use crate::{FieldValue, LogicalAdapter, MergePolicy, RecordState, RecordView, State, SyncRecord, LamportClock};
+    use super::{
+        SqliteLogicalAdapter, SqliteLogicalEncoding, SqliteLogicalField, SqliteLogicalMapping,
+    };
+    use crate::{
+        FieldValue, LamportClock, LogicalAdapter, MergePolicy, RecordState, RecordView, State,
+        SyncRecord,
+    };
     use rusqlite::Connection;
     use std::collections::BTreeMap;
 
@@ -779,17 +836,73 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("records.sqlite");
 
-        let mapping = SqliteLogicalMapping::new("notes", "id", "schema", "Note")
-            .with_field_def(
-                SqliteLogicalField::new("tags", "tags")
-                    .with_merge_policy(MergePolicy::SetUnion),
-            );
+        let mapping = SqliteLogicalMapping::new("notes", "id", "schema", "Note").with_field_def(
+            SqliteLogicalField::new("tags", "tags").with_merge_policy(MergePolicy::SetUnion),
+        );
 
-        let adapter = SqliteLogicalAdapter::new("logical", "app", &path, "records")
-            .with_mapping(mapping);
+        let adapter =
+            SqliteLogicalAdapter::new("logical", "app", &path, "records").with_mapping(mapping);
 
         assert_eq!(adapter.merge_policy("tags"), MergePolicy::SetUnion);
         assert_eq!(adapter.merge_policy("title"), MergePolicy::LastWriterWins);
+    }
+
+    #[test]
+    fn sqlite_logical_custom_merge_handler_applies_policy() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("records.sqlite");
+        let adapter = SqliteLogicalAdapter::new("logical", "app", &path, "records")
+            .with_merge_policy("count", MergePolicy::Custom("sum".to_string()))
+            .with_custom_merge_handler(
+                "sum",
+                |_field, existing, incoming, _incoming_newer| match (existing, incoming) {
+                    (Some(FieldValue::I64(left)), FieldValue::I64(right)) => {
+                        Some(FieldValue::I64(left + right))
+                    }
+                    _ => None,
+                },
+            );
+
+        let mut state = State::new("device");
+        let mut records = RecordState::new(&mut state, "app");
+        records
+            .set(SyncRecord {
+                schema: "schema".to_string(),
+                entity: "Todo".to_string(),
+                id: "1".to_string(),
+                fields: BTreeMap::from([("count".to_string(), FieldValue::I64(2))]),
+                tombstone: false,
+                clock: LamportClock {
+                    counter: 1,
+                    device_id: "device".to_string(),
+                },
+                updated_at: None,
+            })
+            .expect("set");
+
+        adapter
+            .apply_snapshot(
+                &mut records,
+                vec![SyncRecord {
+                    schema: "schema".to_string(),
+                    entity: "Todo".to_string(),
+                    id: "1".to_string(),
+                    fields: BTreeMap::from([("count".to_string(), FieldValue::I64(3))]),
+                    tombstone: false,
+                    clock: LamportClock {
+                        counter: 2,
+                        device_id: "device".to_string(),
+                    },
+                    updated_at: None,
+                }],
+            )
+            .expect("merge");
+
+        let merged = records
+            .get("schema", "Todo", "1")
+            .expect("get")
+            .expect("record");
+        assert_eq!(merged.fields.get("count"), Some(&FieldValue::I64(5)));
     }
 
     #[test]
@@ -822,8 +935,8 @@ mod tests {
         let mapping = SqliteLogicalMapping::new("todos", "id", "app", "Todo")
             .with_field("title", "title")
             .with_bool_field("done", "done");
-        let adapter = SqliteLogicalAdapter::new("logical", "app", &path, "records")
-            .with_mapping(mapping);
+        let adapter =
+            SqliteLogicalAdapter::new("logical", "app", &path, "records").with_mapping(mapping);
 
         let mut state = State::new("device");
         let mut records = RecordState::new(&mut state, "app");
@@ -833,7 +946,10 @@ mod tests {
                 entity: "Todo".to_string(),
                 id: "1".to_string(),
                 fields: BTreeMap::from([
-                    ("title".to_string(), FieldValue::String("Buy milk".to_string())),
+                    (
+                        "title".to_string(),
+                        FieldValue::String("Buy milk".to_string()),
+                    ),
                     ("done".to_string(), FieldValue::Bool(false)),
                 ]),
                 tombstone: false,
@@ -870,5 +986,98 @@ mod tests {
             snapshot[0].fields.get("done"),
             Some(&FieldValue::Bool(false))
         );
+    }
+
+    #[test]
+    fn sqlite_logical_supports_multiple_table_mappings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("multi-mapped.sqlite");
+        let conn = Connection::open(&path).expect("open");
+        conn.execute(
+            "CREATE TABLE todos (id TEXT PRIMARY KEY, title TEXT, done INTEGER)",
+            [],
+        )
+        .expect("create todos");
+        conn.execute(
+            "CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT, pinned INTEGER)",
+            [],
+        )
+        .expect("create notes");
+
+        let todo_mapping = SqliteLogicalMapping::new("todos", "id", "app", "Todo")
+            .with_field("title", "title")
+            .with_bool_field("done", "done");
+        let note_mapping = SqliteLogicalMapping::new("notes", "id", "app", "Note")
+            .with_field("body", "body")
+            .with_bool_field("pinned", "pinned");
+
+        let adapter = SqliteLogicalAdapter::new("logical", "app", &path, "records")
+            .with_mapping(todo_mapping)
+            .with_mapping(note_mapping);
+
+        let mut state = State::new("device");
+        let mut records = RecordState::new(&mut state, "app");
+        records
+            .set(SyncRecord {
+                schema: "app".to_string(),
+                entity: "Todo".to_string(),
+                id: "todo-1".to_string(),
+                fields: BTreeMap::from([
+                    (
+                        "title".to_string(),
+                        FieldValue::String("Buy milk".to_string()),
+                    ),
+                    ("done".to_string(), FieldValue::Bool(false)),
+                ]),
+                tombstone: false,
+                clock: LamportClock {
+                    counter: 1,
+                    device_id: "device".to_string(),
+                },
+                updated_at: None,
+            })
+            .expect("set todo");
+        records
+            .set(SyncRecord {
+                schema: "app".to_string(),
+                entity: "Note".to_string(),
+                id: "note-1".to_string(),
+                fields: BTreeMap::from([
+                    (
+                        "body".to_string(),
+                        FieldValue::String("Call mom".to_string()),
+                    ),
+                    ("pinned".to_string(), FieldValue::Bool(true)),
+                ]),
+                tombstone: false,
+                clock: LamportClock {
+                    counter: 2,
+                    device_id: "device".to_string(),
+                },
+                updated_at: None,
+            })
+            .expect("set note");
+
+        adapter
+            .apply_records(&RecordView::new(&state, "app"))
+            .expect("apply");
+
+        let todo_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM todos", [], |row| row.get(0))
+            .expect("todo count");
+        let note_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM notes", [], |row| row.get(0))
+            .expect("note count");
+        assert_eq!(todo_count, 1);
+        assert_eq!(note_count, 1);
+
+        let mut reload_state = State::new("device");
+        adapter
+            .load_records(&mut RecordState::new(&mut reload_state, "app"))
+            .expect("load");
+        let snapshot = RecordView::new(&reload_state, "app")
+            .snapshot()
+            .expect("snapshot");
+        assert_eq!(snapshot.len(), 2);
     }
 }

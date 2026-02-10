@@ -1,18 +1,18 @@
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
+use std::net::SocketAddr;
 use std::os::raw::{c_char, c_uchar};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use libresync::{
     AppKey, BackupManager, DataAdapterBackup, DeviceHandler, DeviceKeys, Engine, EngineConfig,
-    FileLogicalAdapter, FileSnapshotStore, Identity, JsonFileAdapter, MergePolicy,
-    RetentionPolicy, SqliteFileAdapter, SqliteLogicalAdapter, SqliteLogicalEncoding,
-    SqliteLogicalField, SqliteLogicalMapping, State,
+    FileLogicalAdapter, FileSnapshotStore, Identity, JsonFileAdapter, MergePolicy, RetentionPolicy,
+    SqliteFileAdapter, SqliteLogicalAdapter, SqliteLogicalEncoding, SqliteLogicalField,
+    SqliteLogicalMapping, State,
 };
 use serde::{Deserialize, Serialize};
 
@@ -73,12 +73,8 @@ struct FfiSqliteLogicalMapping {
 
 impl FfiSqliteLogicalMapping {
     fn to_mapping(self) -> SqliteLogicalMapping {
-        let mut mapping = SqliteLogicalMapping::new(
-            self.data_table,
-            self.id_column,
-            self.schema,
-            self.entity,
-        );
+        let mut mapping =
+            SqliteLogicalMapping::new(self.data_table, self.id_column, self.schema, self.entity);
         if let Some(table) = self.meta_table {
             mapping = mapping.with_meta_table(table);
         }
@@ -96,6 +92,25 @@ impl FfiSqliteLogicalMapping {
             mapping = mapping.with_field_def(mapped);
         }
         mapping
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(untagged)]
+enum FfiSqliteLogicalMappingInput {
+    One(FfiSqliteLogicalMapping),
+    Many(Vec<FfiSqliteLogicalMapping>),
+}
+
+impl FfiSqliteLogicalMappingInput {
+    fn into_mappings(self) -> Vec<SqliteLogicalMapping> {
+        match self {
+            FfiSqliteLogicalMappingInput::One(mapping) => vec![mapping.to_mapping()],
+            FfiSqliteLogicalMappingInput::Many(mappings) => mappings
+                .into_iter()
+                .map(FfiSqliteLogicalMapping::to_mapping)
+                .collect(),
+        }
     }
 }
 
@@ -281,9 +296,8 @@ fn build_engine(config: FfiConfig, state_path: PathBuf) -> Result<EngineHandle, 
     }
 
     let state = if state_path.exists() {
-        State::load_maybe_encrypted(&app_key, &state_path).unwrap_or_else(|_| {
-            State::new(config.device_id.clone())
-        })
+        State::load_maybe_encrypted(&app_key, &state_path)
+            .unwrap_or_else(|_| State::new(config.device_id.clone()))
     } else {
         State::new(config.device_id.clone())
     };
@@ -478,7 +492,10 @@ pub extern "C" fn libresync_engine_register_json_adapter(
         let adapter_id = cstr_to_string(adapter_id)?;
         let path = cstr_to_string(path)?;
         let adapter = JsonFileAdapter::new(adapter_id, path);
-        let mut engine = handle.engine.lock().map_err(|_| "engine lock".to_string())?;
+        let mut engine = handle
+            .engine
+            .lock()
+            .map_err(|_| "engine lock".to_string())?;
         engine
             .register_adapter(Arc::new(adapter))
             .map_err(|error| error.to_string())?;
@@ -498,7 +515,10 @@ pub extern "C" fn libresync_engine_register_logical_file_adapter(
         let namespace = cstr_to_string(namespace)?;
         let path = cstr_to_string(path)?;
         let adapter = FileLogicalAdapter::new(adapter_id, namespace, path);
-        let mut engine = handle.engine.lock().map_err(|_| "engine lock".to_string())?;
+        let mut engine = handle
+            .engine
+            .lock()
+            .map_err(|_| "engine lock".to_string())?;
         engine
             .register_logical_adapter(Arc::new(adapter))
             .map_err(|error| error.to_string())?;
@@ -521,7 +541,10 @@ pub extern "C" fn libresync_engine_register_sqlite_adapter(
         } else {
             SqliteFileAdapter::new(adapter_id, path)
         };
-        let mut engine = handle.engine.lock().map_err(|_| "engine lock".to_string())?;
+        let mut engine = handle
+            .engine
+            .lock()
+            .map_err(|_| "engine lock".to_string())?;
         engine
             .register_adapter(Arc::new(adapter))
             .map_err(|error| error.to_string())?;
@@ -542,12 +565,21 @@ pub extern "C" fn libresync_engine_register_sqlite_logical_adapter(
         let namespace = cstr_to_string(namespace)?;
         let path = cstr_to_string(path)?;
         let mapping_json = cstr_to_string(mapping_json)?;
-        let mapping: FfiSqliteLogicalMapping = serde_json::from_str(&mapping_json)
+        let mapping_input: FfiSqliteLogicalMappingInput = serde_json::from_str(&mapping_json)
             .map_err(|error| format!("invalid mapping JSON: {error}"))?;
-        let mapping = mapping.to_mapping();
-        let adapter = SqliteLogicalAdapter::new(adapter_id, namespace, path, "records")
-            .with_mapping(mapping);
-        let mut engine = handle.engine.lock().map_err(|_| "engine lock".to_string())?;
+        let mappings = mapping_input.into_mappings();
+        if mappings.is_empty() {
+            return Err("invalid mapping JSON: at least one mapping is required".to_string());
+        }
+
+        let mut adapter = SqliteLogicalAdapter::new(adapter_id, namespace, path, "records");
+        for mapping in mappings {
+            adapter = adapter.with_mapping(mapping);
+        }
+        let mut engine = handle
+            .engine
+            .lock()
+            .map_err(|_| "engine lock".to_string())?;
         engine
             .register_logical_adapter(Arc::new(adapter))
             .map_err(|error| error.to_string())?;
@@ -558,8 +590,13 @@ pub extern "C" fn libresync_engine_register_sqlite_logical_adapter(
 #[no_mangle]
 pub extern "C" fn libresync_engine_start_listening(handle: *mut EngineHandle) -> bool {
     with_engine(handle, |handle| {
-        let mut engine = handle.engine.lock().map_err(|_| "engine lock".to_string())?;
-        engine.start_listening().map_err(|error| error.to_string())?;
+        let mut engine = handle
+            .engine
+            .lock()
+            .map_err(|_| "engine lock".to_string())?;
+        engine
+            .start_listening()
+            .map_err(|error| error.to_string())?;
         Ok(())
     })
 }
@@ -567,7 +604,10 @@ pub extern "C" fn libresync_engine_start_listening(handle: *mut EngineHandle) ->
 #[no_mangle]
 pub extern "C" fn libresync_engine_stop_listening(handle: *mut EngineHandle) -> bool {
     with_engine(handle, |handle| {
-        let mut engine = handle.engine.lock().map_err(|_| "engine lock".to_string())?;
+        let mut engine = handle
+            .engine
+            .lock()
+            .map_err(|_| "engine lock".to_string())?;
         engine.stop_listening().map_err(|error| error.to_string())?;
         Ok(())
     })
@@ -591,13 +631,14 @@ pub extern "C" fn libresync_engine_discover(
             return std::ptr::null_mut();
         }
     };
-    let devices = match engine.discover_devices_with_timeout(std::time::Duration::from_millis(timeout_ms)) {
-        Ok(devices) => devices,
-        Err(error) => {
-            set_last_error(error.to_string());
-            return std::ptr::null_mut();
-        }
-    };
+    let devices =
+        match engine.discover_devices_with_timeout(std::time::Duration::from_millis(timeout_ms)) {
+            Ok(devices) => devices,
+            Err(error) => {
+                set_last_error(error.to_string());
+                return std::ptr::null_mut();
+            }
+        };
     let info = devices
         .into_iter()
         .map(|device| FfiDeviceInfo {
@@ -615,7 +656,9 @@ pub extern "C" fn libresync_engine_discover(
             return std::ptr::null_mut();
         }
     };
-    CString::new(json).map(|cstr| cstr.into_raw()).unwrap_or_else(|_| std::ptr::null_mut())
+    CString::new(json)
+        .map(|cstr| cstr.into_raw())
+        .unwrap_or_else(|_| std::ptr::null_mut())
 }
 
 #[no_mangle]
@@ -708,7 +751,9 @@ pub extern "C" fn libresync_engine_link(
             return std::ptr::null_mut();
         }
     };
-    CString::new(json).map(|cstr| cstr.into_raw()).unwrap_or_else(|_| std::ptr::null_mut())
+    CString::new(json)
+        .map(|cstr| cstr.into_raw())
+        .unwrap_or_else(|_| std::ptr::null_mut())
 }
 
 #[no_mangle]
@@ -723,7 +768,10 @@ pub extern "C" fn libresync_engine_sync_now(
         let addr = address
             .parse::<SocketAddr>()
             .map_err(|error| error.to_string())?;
-    let engine = handle.engine.lock().map_err(|_| "engine lock".to_string())?;
+        let engine = handle
+            .engine
+            .lock()
+            .map_err(|_| "engine lock".to_string())?;
         let device = engine
             .sync_now(addr, &adapter_id)
             .map_err(|error| error.to_string())?;
@@ -756,7 +804,10 @@ pub extern "C" fn libresync_engine_save_state(handle: *mut EngineHandle) -> bool
             .handler
             .app_key()
             .map_err(|error| error.to_string())?;
-        let engine = handle.engine.lock().map_err(|_| "engine lock".to_string())?;
+        let engine = handle
+            .engine
+            .lock()
+            .map_err(|_| "engine lock".to_string())?;
         let state = engine.state();
         state
             .lock()
@@ -780,14 +831,28 @@ pub extern "C" fn libresync_backup_prune(
             .handler
             .app_key()
             .map_err(|error| error.to_string())?;
-        let backup_dir = handle.state_path.parent().unwrap_or_else(|| std::path::Path::new(".")).join("backups");
+        let backup_dir = handle
+            .state_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("backups");
         let store = FileSnapshotStore::new(&backup_dir).map_err(|error| error.to_string())?;
         let manager = BackupManager::new(app_key, Arc::new(store));
         let policy = RetentionPolicy {
-            max_snapshots: if max_snapshots == 0 { None } else { Some(max_snapshots) },
-            max_age_secs: if max_age_days == 0 { None } else { Some(max_age_days.saturating_mul(24 * 60 * 60)) },
+            max_snapshots: if max_snapshots == 0 {
+                None
+            } else {
+                Some(max_snapshots)
+            },
+            max_age_secs: if max_age_days == 0 {
+                None
+            } else {
+                Some(max_age_days.saturating_mul(24 * 60 * 60))
+            },
         };
-        manager.prune_snapshots(&adapter_id, policy).map_err(|error| error.to_string())?;
+        manager
+            .prune_snapshots(&adapter_id, policy)
+            .map_err(|error| error.to_string())?;
         Ok(())
     })
 }
@@ -824,7 +889,11 @@ pub extern "C" fn libresync_backup_snapshot(
             return std::ptr::null_mut();
         }
     };
-    let backup_dir = handle.state_path.parent().unwrap_or_else(|| std::path::Path::new(".")).join("backups");
+    let backup_dir = handle
+        .state_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("backups");
     let store = match FileSnapshotStore::new(&backup_dir) {
         Ok(store) => store,
         Err(error) => {
@@ -870,7 +939,9 @@ pub extern "C" fn libresync_backup_snapshot(
             return std::ptr::null_mut();
         }
     };
-    CString::new(json).map(|cstr| cstr.into_raw()).unwrap_or_else(|_| std::ptr::null_mut())
+    CString::new(json)
+        .map(|cstr| cstr.into_raw())
+        .unwrap_or_else(|_| std::ptr::null_mut())
 }
 
 #[no_mangle]
@@ -899,7 +970,11 @@ pub extern "C" fn libresync_backup_list(
             return std::ptr::null_mut();
         }
     };
-    let backup_dir = handle.state_path.parent().unwrap_or_else(|| std::path::Path::new(".")).join("backups");
+    let backup_dir = handle
+        .state_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("backups");
     let store = match FileSnapshotStore::new(&backup_dir) {
         Ok(store) => store,
         Err(error) => {
@@ -922,7 +997,9 @@ pub extern "C" fn libresync_backup_list(
             return std::ptr::null_mut();
         }
     };
-    CString::new(json).map(|cstr| cstr.into_raw()).unwrap_or_else(|_| std::ptr::null_mut())
+    CString::new(json)
+        .map(|cstr| cstr.into_raw())
+        .unwrap_or_else(|_| std::ptr::null_mut())
 }
 
 #[no_mangle]
@@ -959,7 +1036,11 @@ pub extern "C" fn libresync_backup_preview(
             return std::ptr::null_mut();
         }
     };
-    let backup_dir = handle.state_path.parent().unwrap_or_else(|| std::path::Path::new(".")).join("backups");
+    let backup_dir = handle
+        .state_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("backups");
     let store = match FileSnapshotStore::new(&backup_dir) {
         Ok(store) => store,
         Err(error) => {
@@ -1014,7 +1095,9 @@ pub extern "C" fn libresync_backup_preview(
             return std::ptr::null_mut();
         }
     };
-    CString::new(json).map(|cstr| cstr.into_raw()).unwrap_or_else(|_| std::ptr::null_mut())
+    CString::new(json)
+        .map(|cstr| cstr.into_raw())
+        .unwrap_or_else(|_| std::ptr::null_mut())
 }
 
 #[no_mangle]
@@ -1030,10 +1113,17 @@ pub extern "C" fn libresync_backup_restore(
             .handler
             .app_key()
             .map_err(|error| error.to_string())?;
-        let backup_dir = handle.state_path.parent().unwrap_or_else(|| std::path::Path::new(".")).join("backups");
+        let backup_dir = handle
+            .state_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("backups");
         let store = FileSnapshotStore::new(&backup_dir).map_err(|error| error.to_string())?;
         let manager = BackupManager::new(app_key, Arc::new(store));
-        let engine = handle.engine.lock().map_err(|_| "engine lock".to_string())?;
+        let engine = handle
+            .engine
+            .lock()
+            .map_err(|_| "engine lock".to_string())?;
         let adapter = engine
             .adapter(&adapter_id)
             .ok_or("adapter not found".to_string())?;
@@ -1041,7 +1131,12 @@ pub extern "C" fn libresync_backup_restore(
         let state = engine.state();
         let mut state = state.lock().map_err(|_| "state lock".to_string())?;
         manager
-            .restore_snapshot(&adapter, &mut state, &snapshot_id, libresync::RestoreOptions::confirmed())
+            .restore_snapshot(
+                &adapter,
+                &mut state,
+                &snapshot_id,
+                libresync::RestoreOptions::confirmed(),
+            )
             .map_err(|error| error.to_string())?;
         Ok(())
     })
@@ -1067,9 +1162,7 @@ mod tests {
         if ptr.is_null() {
             return None;
         }
-        let message = unsafe { CStr::from_ptr(ptr) }
-            .to_string_lossy()
-            .to_string();
+        let message = unsafe { CStr::from_ptr(ptr) }.to_string_lossy().to_string();
         libresync_string_free(ptr);
         Some(message)
     }
@@ -1103,8 +1196,8 @@ mod tests {
             config["pairing_secret"] = serde_json::Value::String(secret.to_string());
         }
         let config_json = CString::new(config.to_string()).expect("config json");
-        let state_cstr = CString::new(state_path.to_string_lossy().to_string())
-            .expect("state path");
+        let state_cstr =
+            CString::new(state_path.to_string_lossy().to_string()).expect("state path");
         (config_json, state_cstr, tempdir)
     }
 
@@ -1303,7 +1396,10 @@ mod tests {
     fn ffi_pairing_secret_is_optional_and_trimmed() {
         let (_tempdir, handle_ptr) = create_engine_with_secret(Some("shared-secret"));
         let handle = unsafe { &mut *handle_ptr };
-        assert_eq!(handle.handler.pairing_secret.as_deref(), Some("shared-secret"));
+        assert_eq!(
+            handle.handler.pairing_secret.as_deref(),
+            Some("shared-secret")
+        );
         libresync_engine_free(handle_ptr);
 
         let (_tempdir, handle_ptr) = create_engine_with_secret(Some("   "));
@@ -1316,24 +1412,37 @@ mod tests {
     fn ffi_generates_keys_and_registers_sqlite_logical_adapter() {
         let app_key_ptr = libresync_generate_app_key();
         let app_key = take_string(app_key_ptr).expect("app key");
-        let key_bytes = BASE64
-            .decode(app_key.as_bytes())
-            .expect("decode app key");
+        let key_bytes = BASE64.decode(app_key.as_bytes()).expect("decode app key");
         assert_eq!(key_bytes.len(), 32);
 
         let device_id = CString::new("device-a").unwrap();
         let app_id = CString::new("app-a").unwrap();
         let user_id = CString::new("user-a").unwrap();
-        let device_json_ptr = libresync_generate_device_keys(
-            device_id.as_ptr(),
-            app_id.as_ptr(),
-            user_id.as_ptr(),
-        );
+        let device_json_ptr =
+            libresync_generate_device_keys(device_id.as_ptr(), app_id.as_ptr(), user_id.as_ptr());
         let device_json = take_string(device_json_ptr).expect("device keys");
         let keys: serde_json::Value = serde_json::from_str(&device_json).expect("keys");
-        assert!(keys.get("device_cert_der").and_then(|v| v.as_str()).unwrap_or("").len() > 10);
-        assert!(keys.get("device_key_der").and_then(|v| v.as_str()).unwrap_or("").len() > 10);
-        assert!(keys.get("fingerprint").and_then(|v| v.as_str()).unwrap_or("").len() > 10);
+        assert!(
+            keys.get("device_cert_der")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .len()
+                > 10
+        );
+        assert!(
+            keys.get("device_key_der")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .len()
+                > 10
+        );
+        assert!(
+            keys.get("fingerprint")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .len()
+                > 10
+        );
 
         let (config_json, state_path, tempdir) = build_config(None, true, None);
         let handle = libresync_engine_create(config_json.as_ptr(), state_path.as_ptr());
@@ -1352,8 +1461,7 @@ mod tests {
         });
         let adapter_id = CString::new("logical").unwrap();
         let namespace = CString::new("notes").unwrap();
-        let sqlite_path_c =
-            CString::new(sqlite_path.to_string_lossy().to_string()).unwrap();
+        let sqlite_path_c = CString::new(sqlite_path.to_string_lossy().to_string()).unwrap();
         let mapping_c = CString::new(mapping.to_string()).unwrap();
         assert!(libresync_engine_register_sqlite_logical_adapter(
             handle,
@@ -1384,6 +1492,49 @@ mod tests {
             mapping_c.as_ptr(),
         ));
         assert!(last_error().is_some());
+
+        libresync_engine_free(handle);
+    }
+
+    #[test]
+    fn ffi_registers_sqlite_logical_adapter_with_mapping_array() {
+        let (config_json, state_path, tempdir) = build_config(None, true, None);
+        let handle = libresync_engine_create(config_json.as_ptr(), state_path.as_ptr());
+        assert!(!handle.is_null(), "engine should be created");
+
+        let sqlite_path = tempdir.path().join("records.sqlite");
+        std::fs::write(&sqlite_path, []).expect("write sqlite");
+        let mappings = serde_json::json!([
+            {
+                "data_table": "notes",
+                "id_column": "id",
+                "schema": "schema",
+                "entity": "Note",
+                "fields": [
+                    { "column": "title", "field": "title" }
+                ]
+            },
+            {
+                "data_table": "tasks",
+                "id_column": "id",
+                "schema": "schema",
+                "entity": "Task",
+                "fields": [
+                    { "column": "done", "field": "done", "encoding": "bool" }
+                ]
+            }
+        ]);
+        let adapter_id = CString::new("logical").unwrap();
+        let namespace = CString::new("notes").unwrap();
+        let sqlite_path_c = CString::new(sqlite_path.to_string_lossy().to_string()).unwrap();
+        let mapping_c = CString::new(mappings.to_string()).unwrap();
+        assert!(libresync_engine_register_sqlite_logical_adapter(
+            handle,
+            adapter_id.as_ptr(),
+            namespace.as_ptr(),
+            sqlite_path_c.as_ptr(),
+            mapping_c.as_ptr(),
+        ));
 
         libresync_engine_free(handle);
     }

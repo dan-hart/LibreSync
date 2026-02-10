@@ -79,7 +79,7 @@ mod tests {
 
     #[test]
     fn error_source_is_set_for_io() {
-        let io_error = io::Error::new(io::ErrorKind::Other, "boom");
+        let io_error = io::Error::other("boom");
         let error = Error::from(io_error);
         assert!(StdError::source(&error).is_some());
     }

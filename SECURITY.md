@@ -22,7 +22,7 @@ LibreSync is designed for **local-only, device-to-device synchronization** with 
 - Explicit linking and per-app allowlists.
 - Minimal discovery payloads and opt-out discovery flags.
 - App-key rotation and device-key rotation (CLI) with re-encryption/rotation guidance.
-- Planned: key export/import for recovery and assisted revocation workflows.
+- Planned: assisted revocation and guided re-keying workflows.
 
 ## Privacy notes
 - No cloud dependencies or third-party relays in the default flow.
@@ -35,7 +35,7 @@ LibreSync is designed for **local-only, device-to-device synchronization** with 
 - Engine state files and backups are encrypted at rest using the same app-level key.
 - App-key rotation is implemented (state/backups are re-encrypted).
 - Device-key rotation is implemented (new fingerprints require re-linking).
-- Assisted re-keying and export/import flows are still pending.
+- Assisted re-keying workflows are still pending.
 
 ## Key model (current)
 - **Device keys**: per-device TLS keys used for transport security and identity fingerprints.

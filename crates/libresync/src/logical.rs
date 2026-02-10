@@ -1,15 +1,19 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::{FieldValue, LogicalAdapter, MergePolicy, RecordState, RecordView, Result, SyncRecord};
+
+type CustomMergeHandler =
+    dyn Fn(&str, Option<&FieldValue>, &FieldValue, bool) -> Option<FieldValue> + Send + Sync;
 
 pub struct InMemoryLogicalAdapter {
     id: String,
     namespace: String,
     records: Mutex<BTreeMap<(String, String, String), SyncRecord>>,
     merge_policies: HashMap<String, MergePolicy>,
+    custom_merge_handlers: HashMap<String, Arc<CustomMergeHandler>>,
 }
 
 impl InMemoryLogicalAdapter {
@@ -19,11 +23,28 @@ impl InMemoryLogicalAdapter {
             namespace: namespace.into(),
             records: Mutex::new(BTreeMap::new()),
             merge_policies: HashMap::new(),
+            custom_merge_handlers: HashMap::new(),
         }
     }
 
     pub fn with_merge_policy(mut self, field: impl Into<String>, policy: MergePolicy) -> Self {
         self.merge_policies.insert(field.into(), policy);
+        self
+    }
+
+    pub fn with_custom_merge_handler<F>(
+        mut self,
+        policy_name: impl Into<String>,
+        handler: F,
+    ) -> Self
+    where
+        F: Fn(&str, Option<&FieldValue>, &FieldValue, bool) -> Option<FieldValue>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.custom_merge_handlers
+            .insert(policy_name.into(), Arc::new(handler));
         self
     }
 
@@ -46,6 +67,7 @@ pub struct FileLogicalAdapter {
     namespace: String,
     path: PathBuf,
     merge_policies: HashMap<String, MergePolicy>,
+    custom_merge_handlers: HashMap<String, Arc<CustomMergeHandler>>,
 }
 
 impl FileLogicalAdapter {
@@ -59,11 +81,28 @@ impl FileLogicalAdapter {
             namespace: namespace.into(),
             path: path.into(),
             merge_policies: HashMap::new(),
+            custom_merge_handlers: HashMap::new(),
         }
     }
 
     pub fn with_merge_policy(mut self, field: impl Into<String>, policy: MergePolicy) -> Self {
         self.merge_policies.insert(field.into(), policy);
+        self
+    }
+
+    pub fn with_custom_merge_handler<F>(
+        mut self,
+        policy_name: impl Into<String>,
+        handler: F,
+    ) -> Self
+    where
+        F: Fn(&str, Option<&FieldValue>, &FieldValue, bool) -> Option<FieldValue>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.custom_merge_handlers
+            .insert(policy_name.into(), Arc::new(handler));
         self
     }
 
@@ -99,6 +138,19 @@ impl LogicalAdapter for InMemoryLogicalAdapter {
             .unwrap_or(MergePolicy::LastWriterWins)
     }
 
+    fn merge_custom_field(
+        &self,
+        policy_name: &str,
+        field: &str,
+        existing: Option<&FieldValue>,
+        incoming: &FieldValue,
+        incoming_newer: bool,
+    ) -> Option<FieldValue> {
+        self.custom_merge_handlers
+            .get(policy_name)
+            .and_then(|handler| handler(field, existing, incoming, incoming_newer))
+    }
+
     fn load_records(&self, records: &mut RecordState) -> Result<()> {
         let stored = self.records.lock().expect("records lock");
         for record in stored.values().cloned() {
@@ -117,8 +169,19 @@ impl LogicalAdapter for InMemoryLogicalAdapter {
         Ok(())
     }
 
-    fn apply_snapshot(&self, records: &mut RecordState, incoming: Vec<SyncRecord>) -> Result<usize> {
-        apply_snapshot_with_policy(records, incoming, |field| self.merge_policy(field))
+    fn apply_snapshot(
+        &self,
+        records: &mut RecordState,
+        incoming: Vec<SyncRecord>,
+    ) -> Result<usize> {
+        apply_snapshot_with_policy(
+            records,
+            incoming,
+            |field| self.merge_policy(field),
+            |policy_name, field, existing, incoming, incoming_newer| {
+                self.merge_custom_field(policy_name, field, existing, incoming, incoming_newer)
+            },
+        )
     }
 }
 
@@ -138,6 +201,19 @@ impl LogicalAdapter for FileLogicalAdapter {
             .unwrap_or(MergePolicy::LastWriterWins)
     }
 
+    fn merge_custom_field(
+        &self,
+        policy_name: &str,
+        field: &str,
+        existing: Option<&FieldValue>,
+        incoming: &FieldValue,
+        incoming_newer: bool,
+    ) -> Option<FieldValue> {
+        self.custom_merge_handlers
+            .get(policy_name)
+            .and_then(|handler| handler(field, existing, incoming, incoming_newer))
+    }
+
     fn load_records(&self, records: &mut RecordState) -> Result<()> {
         self.ensure_file()?;
         let data = fs::read(&self.path)?;
@@ -146,8 +222,11 @@ impl LogicalAdapter for FileLogicalAdapter {
         }
         let mut snapshot: Vec<SyncRecord> = serde_json::from_slice(&data)?;
         snapshot.sort_by(|left, right| {
-            (left.schema.as_str(), left.entity.as_str(), left.id.as_str())
-                .cmp(&(right.schema.as_str(), right.entity.as_str(), right.id.as_str()))
+            (left.schema.as_str(), left.entity.as_str(), left.id.as_str()).cmp(&(
+                right.schema.as_str(),
+                right.entity.as_str(),
+                right.id.as_str(),
+            ))
         });
         for record in snapshot {
             records.apply(record)?;
@@ -159,32 +238,58 @@ impl LogicalAdapter for FileLogicalAdapter {
         self.ensure_file()?;
         let mut snapshot = records.snapshot()?;
         snapshot.sort_by(|left, right| {
-            (left.schema.as_str(), left.entity.as_str(), left.id.as_str())
-                .cmp(&(right.schema.as_str(), right.entity.as_str(), right.id.as_str()))
+            (left.schema.as_str(), left.entity.as_str(), left.id.as_str()).cmp(&(
+                right.schema.as_str(),
+                right.entity.as_str(),
+                right.id.as_str(),
+            ))
         });
         let data = serde_json::to_vec_pretty(&snapshot)?;
         fs::write(&self.path, data)?;
         Ok(())
     }
 
-    fn apply_snapshot(&self, records: &mut RecordState, incoming: Vec<SyncRecord>) -> Result<usize> {
-        apply_snapshot_with_policy(records, incoming, |field| self.merge_policy(field))
+    fn apply_snapshot(
+        &self,
+        records: &mut RecordState,
+        incoming: Vec<SyncRecord>,
+    ) -> Result<usize> {
+        apply_snapshot_with_policy(
+            records,
+            incoming,
+            |field| self.merge_policy(field),
+            |policy_name, field, existing, incoming, incoming_newer| {
+                self.merge_custom_field(policy_name, field, existing, incoming, incoming_newer)
+            },
+        )
     }
 }
 
 fn record_key(record: &SyncRecord) -> (String, String, String) {
-    (record.schema.clone(), record.entity.clone(), record.id.clone())
+    (
+        record.schema.clone(),
+        record.entity.clone(),
+        record.id.clone(),
+    )
 }
 
 pub(crate) fn apply_snapshot_with_policy(
     records: &mut RecordState,
     incoming: Vec<SyncRecord>,
     policy_for_field: impl Fn(&str) -> MergePolicy,
+    merge_custom: impl Fn(&str, &str, Option<&FieldValue>, &FieldValue, bool) -> Option<FieldValue>,
 ) -> Result<usize> {
     let mut applied = 0;
     for record in incoming {
         let merged = match records.get(&record.schema, &record.entity, &record.id)? {
-            Some(existing) => merge_records(existing, record, |field| policy_for_field(field)),
+            Some(existing) => merge_records(
+                existing,
+                record,
+                |field| policy_for_field(field),
+                |policy_name, field, existing, incoming, incoming_newer| {
+                    merge_custom(policy_name, field, existing, incoming, incoming_newer)
+                },
+            ),
             None => record,
         };
         if records.apply(merged)? {
@@ -198,6 +303,7 @@ fn merge_records(
     existing: SyncRecord,
     incoming: SyncRecord,
     policy_for_field: impl Fn(&str) -> MergePolicy,
+    merge_custom: impl Fn(&str, &str, Option<&FieldValue>, &FieldValue, bool) -> Option<FieldValue>,
 ) -> SyncRecord {
     let incoming_newer = incoming.clock >= existing.clock;
 
@@ -213,7 +319,14 @@ fn merge_records(
     for (field, incoming_value) in incoming.fields.into_iter() {
         let policy = policy_for_field(&field);
         let existing_value = fields.get(&field).cloned();
-        let merged = merge_field(policy, existing_value, incoming_value, incoming_newer);
+        let merged = merge_field(
+            policy,
+            &field,
+            existing_value,
+            incoming_value,
+            incoming_newer,
+            &merge_custom,
+        );
         fields.insert(field, merged);
     }
 
@@ -242,9 +355,11 @@ fn merge_records(
 
 fn merge_field(
     policy: MergePolicy,
+    field: &str,
     existing: Option<FieldValue>,
     incoming: FieldValue,
     incoming_newer: bool,
+    merge_custom: &impl Fn(&str, &str, Option<&FieldValue>, &FieldValue, bool) -> Option<FieldValue>,
 ) -> FieldValue {
     match policy {
         MergePolicy::LastWriterWins => {
@@ -265,14 +380,16 @@ fn merge_field(
             }
             (Some(FieldValue::Map(mut left)), FieldValue::Map(right)) => {
                 for (key, value) in right {
-                    if !left.contains_key(&key) {
-                        left.insert(key, value);
-                    }
+                    left.entry(key).or_insert(value);
                 }
                 FieldValue::Map(left)
             }
             (Some(value), incoming) => {
-                if incoming_newer { incoming } else { value }
+                if incoming_newer {
+                    incoming
+                } else {
+                    value
+                }
             }
             (None, incoming) => incoming,
         },
@@ -284,7 +401,11 @@ fn merge_field(
                             FieldValue::I64((*existing).max(incoming))
                         }
                         (Some(existing), incoming) => {
-                            if incoming_newer { incoming } else { existing.clone() }
+                            if incoming_newer {
+                                incoming
+                            } else {
+                                existing.clone()
+                            }
                         }
                         (None, incoming) => incoming,
                     };
@@ -300,7 +421,11 @@ fn merge_field(
                 }
             }
             (Some(value), incoming) => {
-                if incoming_newer { incoming } else { value }
+                if incoming_newer {
+                    incoming
+                } else {
+                    value
+                }
             }
             (None, incoming) => incoming,
         },
@@ -314,12 +439,24 @@ fn merge_field(
                 FieldValue::List(left)
             }
             (Some(value), incoming) => {
-                if incoming_newer { incoming } else { value }
+                if incoming_newer {
+                    incoming
+                } else {
+                    value
+                }
             }
             (None, incoming) => incoming,
         },
-        MergePolicy::Custom(_) => {
-            if incoming_newer {
+        MergePolicy::Custom(policy_name) => {
+            if let Some(merged) = merge_custom(
+                &policy_name,
+                field,
+                existing.as_ref(),
+                &incoming,
+                incoming_newer,
+            ) {
+                merged
+            } else if incoming_newer {
                 incoming
             } else {
                 existing.unwrap_or(incoming)
@@ -539,10 +676,84 @@ mod tests {
         records
             .apply(record(
                 5,
-                BTreeMap::from([(
-                    "title".to_string(),
-                    FieldValue::String("newer".to_string()),
-                )]),
+                BTreeMap::from([("title".to_string(), FieldValue::String("newer".to_string()))]),
+            ))
+            .expect("apply");
+
+        adapter
+            .apply_snapshot(
+                &mut records,
+                vec![record(
+                    2,
+                    BTreeMap::from([(
+                        "title".to_string(),
+                        FieldValue::String("older".to_string()),
+                    )]),
+                )],
+            )
+            .expect("merge");
+
+        let merged = records
+            .get("schema", "Todo", "1")
+            .expect("get")
+            .expect("record");
+        assert_eq!(
+            merged.fields.get("title"),
+            Some(&FieldValue::String("newer".to_string()))
+        );
+    }
+
+    #[test]
+    fn merge_policy_custom_uses_registered_handler() {
+        let adapter = InMemoryLogicalAdapter::new("logical", "app")
+            .with_merge_policy("count", MergePolicy::Custom("sum".to_string()))
+            .with_custom_merge_handler(
+                "sum",
+                |_field, existing, incoming, _incoming_newer| match (existing, incoming) {
+                    (Some(FieldValue::I64(left)), FieldValue::I64(right)) => {
+                        Some(FieldValue::I64(left + right))
+                    }
+                    _ => None,
+                },
+            );
+
+        let mut state = State::new("device");
+        let mut records = RecordState::new(&mut state, "app");
+        records
+            .apply(record(
+                1,
+                BTreeMap::from([("count".to_string(), FieldValue::I64(2))]),
+            ))
+            .expect("apply");
+
+        adapter
+            .apply_snapshot(
+                &mut records,
+                vec![record(
+                    2,
+                    BTreeMap::from([("count".to_string(), FieldValue::I64(3))]),
+                )],
+            )
+            .expect("merge");
+
+        let merged = records
+            .get("schema", "Todo", "1")
+            .expect("get")
+            .expect("record");
+        assert_eq!(merged.fields.get("count"), Some(&FieldValue::I64(5)));
+    }
+
+    #[test]
+    fn merge_policy_custom_falls_back_to_lww_without_handler() {
+        let adapter = InMemoryLogicalAdapter::new("logical", "app")
+            .with_merge_policy("title", MergePolicy::Custom("unknown".to_string()));
+
+        let mut state = State::new("device");
+        let mut records = RecordState::new(&mut state, "app");
+        records
+            .apply(record(
+                5,
+                BTreeMap::from([("title".to_string(), FieldValue::String("newer".to_string()))]),
             ))
             .expect("apply");
 

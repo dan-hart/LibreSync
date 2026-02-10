@@ -5,6 +5,7 @@ This directory contains starter SDKs for Swift and Kotlin that wrap the C ABI in
 - `include/` holds the C header used by the bindings.
 - `swift/` provides a Swift Package wrapper and sample.
 - `kotlin/` provides a JNI-style wrapper and sample.
+- Swift/Kotlin samples now include SQLite logical mapping examples for SwiftData/Room-style schemas.
 
 These bindings are intentionally minimal and intended to evolve alongside the stable API surface.
 

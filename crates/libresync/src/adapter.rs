@@ -1,12 +1,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Entry, Error, MergePolicy, RecordState, RecordView, Result, State, SyncRecord,
+    Entry, Error, FieldValue, MergePolicy, RecordState, RecordView, Result, State, SyncRecord,
 };
 
 #[derive(Clone, Debug)]
@@ -87,6 +87,16 @@ pub trait LogicalAdapter: Send + Sync {
     fn merge_policy(&self, _field: &str) -> MergePolicy {
         MergePolicy::LastWriterWins
     }
+    fn merge_custom_field(
+        &self,
+        _policy_name: &str,
+        _field: &str,
+        _existing: Option<&FieldValue>,
+        _incoming: &FieldValue,
+        _incoming_newer: bool,
+    ) -> Option<FieldValue> {
+        None
+    }
     fn capabilities(&self) -> AdapterCapabilities {
         AdapterCapabilities::logical_snapshot()
     }
@@ -98,7 +108,11 @@ pub trait LogicalAdapter: Send + Sync {
         records.snapshot()
     }
 
-    fn apply_snapshot(&self, records: &mut RecordState, incoming: Vec<SyncRecord>) -> Result<usize> {
+    fn apply_snapshot(
+        &self,
+        records: &mut RecordState,
+        incoming: Vec<SyncRecord>,
+    ) -> Result<usize> {
         records.merge_snapshot(incoming)
     }
 }
@@ -400,7 +414,7 @@ struct PageDelta {
 }
 
 fn compute_page_delta(base: &[u8], current: &[u8], page_size: usize) -> SqliteDelta {
-    let page_count = (current.len() + page_size - 1) / page_size;
+    let page_count = current.len().div_ceil(page_size);
     let mut pages = Vec::new();
 
     for index in 0..page_count {
@@ -621,9 +635,8 @@ impl WatchedFileAdapter {
         ensure_file_with_default(&path, &default_bytes)?;
 
         let (tx, rx) = mpsc::channel();
-        let mut watcher =
-            RecommendedWatcher::new(tx, notify::Config::default())
-                .map_err(|error| Error::Protocol(error.to_string()))?;
+        let mut watcher = RecommendedWatcher::new(tx, notify::Config::default())
+            .map_err(|error| Error::Protocol(error.to_string()))?;
         watcher
             .watch(&path, RecursiveMode::NonRecursive)
             .map_err(|error| Error::Protocol(error.to_string()))?;
@@ -859,8 +872,7 @@ mod tests {
         adapter.load_into_state(&mut state).expect("load");
 
         let delta = state.get("db:delta").expect("delta");
-        let decoded: super::SqliteDelta =
-            bincode::deserialize(delta).expect("decode delta");
+        let decoded: super::SqliteDelta = bincode::deserialize(delta).expect("decode delta");
         assert!(!decoded.pages.is_empty());
     }
 
