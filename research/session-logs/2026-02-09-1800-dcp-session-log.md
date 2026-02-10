@@ -39,14 +39,14 @@
 ## Verification and Safety
 
 - Preflight command(s) run: `./scripts/utilities/asp-preflight.sh --staged --strict`
-- Result: PASS
+- Result: initial strict run required explicit data-path acknowledgement; passed with `./scripts/utilities/asp-preflight.sh --staged --strict --ack-data-path`
 - Sensitive data check: no credentials/secrets intentionally added; staged set passed ASP strict preflight.
 
 ## Commit and Push
 
-- Commit hash: TBD
-- Commit message: TBD
-- Remotes pushed: TBD
+- Commit hash: `426aced`
+- Commit message: `Ship custom logical merge hooks and SDK updates`
+- Remotes pushed: `NelsonGitea` (`main`), `origin` (`main`)
 
 ## Follow-Ups (Optional)
 
