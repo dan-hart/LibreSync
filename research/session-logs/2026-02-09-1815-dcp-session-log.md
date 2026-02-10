@@ -40,15 +40,15 @@
 
 ## Verification and Safety
 
-- Preflight command(s) run: pending
-- Result: pending
+- Preflight command(s) run: `cargo test`; `./scripts/utilities/asp-preflight.sh --staged --strict`
+- Result: `cargo test` passed (all workspace tests green); ASP preflight passed (`git-secrets scan: OK`).
 - Sensitive data check: reviewed diffs; no credentials, secrets, or personal data found.
 
 ## Commit and Push
 
-- Commit hash: pending
-- Commit message: pending
-- Remotes pushed: pending
+- Commit hash: `b35589d`
+- Commit message: `Add private overlay discovery for device sync`
+- Remotes pushed: `NelsonGitea/main`, `origin/main`
 
 ## Follow-Ups (Optional)
 
