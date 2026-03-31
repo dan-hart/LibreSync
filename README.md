@@ -156,5 +156,6 @@ AGPLv3 - Why? Because it's what we decided upon.
 - [SDK surface](docs/SDK.md)
 - [Bindings](bindings/README.md)
 - [Debugging](docs/DEBUGGING.md)
+- [Releasing](docs/RELEASING.md)
 - [Releases](RELEASES.md)
 - [License](LICENSE)

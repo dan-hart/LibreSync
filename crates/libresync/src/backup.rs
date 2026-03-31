@@ -346,7 +346,7 @@ fn reclock_entries_for_restore(state: &mut State, entries: Vec<Entry>) -> Vec<En
         .collect()
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DiffCounts {
     pub new_entries: usize,
     pub changed_entries: usize,
@@ -354,7 +354,7 @@ pub struct DiffCounts {
     pub missing_entries: usize,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SnapshotDiffSummary {
     pub total_snapshot_entries: usize,
     pub total_state_entries: usize,

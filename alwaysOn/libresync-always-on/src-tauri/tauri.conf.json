@@ -11,6 +11,9 @@
   },
   "tauri": {
     "allowlist": {},
+    "systemTray": {
+      "iconPath": "icons/icon.png"
+    },
     "windows": [
       {
         "title": "LibreSyncAlwaysOn",
