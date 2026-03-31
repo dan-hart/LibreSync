@@ -23,9 +23,9 @@ This design does not cover:
 
 Adopt a lightweight release-ready lane:
 
-1. Treat manifest versions plus release notes as a coordinated release surface.
-2. Add one release-prep script that validates the current repo state.
-3. Expand CI to run the same validation plus a Tauri packaging smoke test.
+1. Treat the versioned manifests plus release notes as a coordinated release surface.
+2. Add one release-prep script that performs metadata-only validation of that surface.
+3. Expand CI to run that validation plus an AlwaysOn desktop smoke build.
 4. Document the release workflow in repository docs.
 
 This keeps the process small enough for the current repo while removing the biggest sources of drift and manual error.
@@ -34,44 +34,61 @@ This keeps the process small enough for the current repo while removing the bigg
 
 ### Release source of truth
 
-The source of truth remains distributed but explicitly checked:
+The source of truth remains distributed but explicitly checked. The validator owns this exact version surface:
 
-- Rust crate versions in workspace manifests.
-- Tauri app version in `alwaysOn/libresync-always-on/src-tauri/tauri.conf.json`.
-- Current release entry in `RELEASES.md`.
+- `crates/libresync/Cargo.toml`
+- `crates/libresync-cli/Cargo.toml`
+- `crates/libresync-ffi/Cargo.toml`
+- `crates/libresync-alwayson-daemon/Cargo.toml`
+- `alwaysOn/libresync-always-on/src-tauri/Cargo.toml`
+- `alwaysOn/libresync-always-on/src-tauri/tauri.conf.json`
+- The latest release heading in `RELEASES.md`
+
+The root [Cargo.toml](/Users/danhart/Developer/LibreSync/Cargo.toml) is a workspace container and is not versioned, so it is not part of the release surface. `Cargo.lock` is generated output and should change as a consequence of version bumps, but it is not an authoritative release input.
 
 Instead of introducing a new manifest file, LibreSync will enforce consistency by script. That fits the current repository style and avoids creating a second system maintainers must remember to update.
 
 ### Release validation script
 
-Add a script under `scripts/utilities/` that validates:
+Add a script under `scripts/utilities/` that performs metadata-only validation:
 
 - All expected crate versions match.
-- Tauri app version matches the crate version.
-- `RELEASES.md` contains an entry for the current version.
-- The working tree can pass standard release checks when run locally.
+- Tauri app Rust crate and `tauri.conf.json` versions match the core crate version.
+- `RELEASES.md` contains a latest topmost heading formatted as `## vX.Y.Z` for the current version.
 
-The script should fail clearly and print actionable messages when any check is out of sync.
+The script does not run `cargo test`, coverage, or the AlwaysOn smoke build. Those remain separate commands in CI and in the maintainer release checklist. The script should fail clearly and print actionable messages when any check is out of sync.
 
 ### CI expansion
 
 Keep the current `cargo test` and coverage job, then add release-focused checks:
 
 - Run the release validation script.
-- Build the Tauri app in a smoke-test mode to catch packaging regressions.
+- Run an AlwaysOn desktop smoke build with the exact command:
+  - `cargo check --manifest-path alwaysOn/libresync-always-on/src-tauri/Cargo.toml`
 - Keep the CI shape simple so local and CI commands stay close.
 
-The goal is not to produce distributable binaries yet. The goal is to prove the repo still packages cleanly.
+To keep the initial dependency model stable, pin the Linux CI runner to `ubuntu-22.04` for this track. The job should install the minimum packages required by the Tauri v1 app and system tray support:
+
+- `libwebkit2gtk-4.0-dev`
+- `libgtk-3-dev`
+- `libayatana-appindicator3-dev`
+- `librsvg2-dev`
+
+This package set is an inference from Tauri v1 Linux prerequisite documentation and system tray guidance, and it serves as the initial smoke-build baseline for LibreSync.
+
+The goal is not to produce distributable binaries yet. The goal is to prove the repo still builds cleanly and that the AlwaysOn app has not silently regressed.
 
 ### Maintainer workflow
 
 Document a simple manual release sequence:
 
 1. Update versions if needed.
-2. Add or update the matching `RELEASES.md` entry.
-3. Run the release validation script.
-4. Run tests and packaging smoke checks.
-5. Tag and publish through the maintainer’s normal Git workflow.
+2. Add or update the matching `RELEASES.md` entry using the heading format `## vX.Y.Z`.
+3. Ensure that entry is the topmost versioned heading in `RELEASES.md`.
+4. Run the metadata validation script.
+5. Run tests, coverage, and the AlwaysOn smoke build.
+6. Confirm the working tree is clean before cutting the release tag.
+7. Create the git tag using the same `vX.Y.Z` format and publish through the maintainer’s normal Git workflow.
 
 This gives the project a clear path for `v0.3.0` and future releases without requiring secrets or new infrastructure now.
 
@@ -96,7 +113,8 @@ Add a shell script that contributors and CI can both run. The script should:
 
 - Read versions from expected files
 - Compare them against the core crate version
-- Verify `RELEASES.md` includes the matching heading
+- Verify `RELEASES.md` includes the matching `## v<version>` heading
+- Verify that `## v<version>` is the first versioned heading in `RELEASES.md`
 - Exit non-zero on drift
 
 ### 4. CI workflow updates
@@ -104,9 +122,9 @@ Add a shell script that contributors and CI can both run. The script should:
 Extend `.github/workflows/ci.yml` with:
 
 - A release-consistency step
-- A Tauri packaging smoke-test step
+- An AlwaysOn desktop smoke-build step using `cargo check --manifest-path alwaysOn/libresync-always-on/src-tauri/Cargo.toml`
 
-If the Tauri smoke test needs extra Linux packages, install only the minimum required dependencies in the workflow.
+Pin the runner to `ubuntu-22.04` and install only the minimum required Linux packages in the workflow.
 
 ## Data flow
 
@@ -115,7 +133,7 @@ The release data flow is simple:
 1. Maintainer updates versioned files and release notes.
 2. Validation script reads manifest versions and release notes.
 3. CI reruns the same validation.
-4. Packaging smoke test confirms the AlwaysOn app still builds.
+4. The AlwaysOn smoke build confirms the desktop app still builds.
 
 This creates one feedback loop shared by local development and CI.
 
@@ -136,24 +154,24 @@ Validation for this track consists of:
 - Running the release validation script locally
 - Running `cargo test`
 - Running the updated CI steps in the local repo where practical
-- Verifying the Tauri packaging smoke test command succeeds
+- Verifying the AlwaysOn smoke build command succeeds
 
 Because this track is mostly tooling and docs, confidence comes from command-level verification rather than unit tests alone.
 
 ## Risks and mitigations
 
-### Risk: Tauri packaging adds heavy CI complexity
+### Risk: Tauri smoke build adds heavy CI complexity
 
 Mitigation:
 
-- Start with a Linux-only smoke build in CI.
+- Start with a Linux-only smoke build in CI pinned to `ubuntu-22.04`.
 - Avoid artifact publishing and signing in this track.
 
 ### Risk: Release notes become hand-maintained drift again
 
 Mitigation:
 
-- Enforce presence of a release heading for the current version in the validation script.
+- Enforce presence of the latest topmost release heading for the current version in the validation script.
 
 ### Risk: New scripts duplicate existing contributor guidance
 
@@ -166,7 +184,7 @@ Mitigation:
 - `RELEASES.md` updated with `v0.3.0`
 - New release process doc in `docs/`
 - New release validation script in `scripts/utilities/`
-- CI workflow expanded for release consistency and packaging smoke checks
+- CI workflow expanded for release consistency and AlwaysOn smoke checks
 - README and contributor docs updated to point at the release flow
 
 ## Success criteria
@@ -176,7 +194,7 @@ Track 1 is complete when:
 - Repo versions and release notes are aligned on `0.3.0`
 - Contributors have one documented release checklist
 - CI fails on version drift
-- CI verifies the AlwaysOn app still packages on Linux
+- CI verifies the AlwaysOn app still builds on Linux via the smoke-build command
 
 ## Follow-on tracks
 
