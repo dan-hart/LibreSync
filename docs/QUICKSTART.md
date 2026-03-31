@@ -2,19 +2,30 @@
 
 LibreSync lets apps sync data directly between devices on the same LAN with mandatory E2EE.
 
-## 1) Build
+## 1) Install
+Choose one:
+```
+brew install dan-hart/tap/libresync
+```
+Or from a local checkout:
+```
+cargo install --path crates/libresync-cli --force
+```
+
+## 2) Build from source (optional)
+If you are developing from the repo:
 ```
 cargo build
 ```
 
-## 2) Initialize configs
+## 3) Initialize configs
 On each device:
 ```
 libresync init
 ```
 Output hint: prints the config path, device ID, and fingerprint.
 
-## 3) Pick an adapter to sync
+## 4) Pick an adapter to sync
 Logical record sync is the preferred integration path:
 ```
 libresync select --id records --kind logical-file --file ~/libresync-records.json
@@ -32,17 +43,17 @@ Optional: enable page-delta for SQLite:
 libresync select --id db --kind sqlite --page-delta 4096 --file ~/libresync.db
 ```
 
-## 4) Start listeners
+## 5) Start listeners
 ```
 libresync listen
 ```
 
-## 5) Link devices (trust only)
+## 6) Link devices (trust only)
 ```
 libresync link
 ```
 
-## 6) Refresh
+## 7) Refresh
 ```
 libresync refresh
 ```
@@ -51,17 +62,17 @@ Refresh all selected adapters:
 libresync refresh --all-adapters
 ```
 
-## 7) Watch for changes
+## 8) Watch for changes
 ```
 libresync watch
 ```
 
-## 8) Diagnostics
+## 9) Diagnostics
 ```
 libresync diagnose
 ```
 
-## 9) AlwaysOn (optional)
+## 10) AlwaysOn (optional)
 For background sync on Linux, you can run the headless daemon:
 ```
 cargo run -p libresync-alwayson-daemon -- --auto-accept --pairing-secret "my-shared-secret"

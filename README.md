@@ -76,6 +76,10 @@ let _auto = engine.auto_refresh("file", "./state.json")?;
 ## CLI (libresync)
 The CLI is a device-to-device testing tool that uses LAN/private-overlay discovery, device linking, and JSON/SQLite adapter refresh.
 
+### Install
+- From Homebrew: `brew install dan-hart/tap/libresync`
+- From a local checkout: `cargo install --path crates/libresync-cli --force`
+
 ### Quick start
 1. Initialize a config on each device:
    - `libresync init`
