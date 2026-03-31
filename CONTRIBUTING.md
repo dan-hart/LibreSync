@@ -31,5 +31,10 @@ Thanks for helping with LibreSync. This project is security- and privacy-first. 
 - Keep PRs focused and explain the security/privacy impact (or lack thereof).
 - If you add new build artifacts, update `.gitignore` before committing.
 
+## Releases
+- Keep crate manifests, the LibreSyncAlwaysOn app version, and `RELEASES.md` aligned.
+- Run `./scripts/utilities/check-release-readiness.sh` before cutting a release.
+- Follow `docs/RELEASING.md` for the full release checklist, including coverage, smoke build, clean-tree verification, and `vX.Y.Z` tag creation.
+
 ## Questions
 If unsure about a change that could impact security, privacy, or data integrity, open an issue or start a discussion before proceeding.

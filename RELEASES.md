@@ -1,5 +1,10 @@
 # Releases
 
+## v0.3.0 (2026-02-09)
+- Added private overlay discovery for device sync, including Tailscale/Headscale peers and static `LIBRESYNC_OVERLAY_PEERS`.
+- Shipped custom logical merge hooks and SDK updates for the logical-record integration path.
+- Bumped workspace crates and LibreSyncAlwaysOn app manifests to `0.3.0`.
+
 ## v0.2.0 (2026-02-09)
 - Production MVP (desktop-only) with hardened stability gates.
 - Linux systemd user service support for the always-on daemon.

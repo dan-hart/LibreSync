@@ -45,7 +45,7 @@ fn main() {
     tauri::Builder::default()
         .system_tray(SystemTray::new().with_menu(tray_menu))
         .setup(|app| {
-            let paths = app_paths(app).map_err(|error| error.to_string())?;
+            let paths = app_paths(&app.handle()).map_err(|error| error.to_string())?;
             let (mut config, keys) = load_or_init_config(&paths.config, &paths.data)
                 .map_err(|error| error.to_string())?;
             ensure_backup_policy(&mut config, &paths.backups)
@@ -195,7 +195,6 @@ fn main() {
         .expect("error while running LibreSyncAlwaysOn");
 }
 
-#[derive(Clone)]
 struct AlwaysOnRuntime {
     engine: Arc<Mutex<Engine>>,
     config: Arc<Mutex<AlwaysOnConfig>>,
@@ -344,7 +343,7 @@ fn manual_refresh_internal(state: &AlwaysOnRuntime) -> Result<RefreshSummary, St
         let state_guard = engine.state();
         if let Ok(state_lock) = state_guard.lock() {
             let _ = state_lock.save_encrypted(&app_key, &state_path);
-        }
+        };
     }
 
     let mut status = state.status.lock().map_err(|_| "status lock".to_string())?;
@@ -462,7 +461,8 @@ fn create_snapshot(
     let adapter_arc: Arc<dyn DataAdapter> = Arc::new(adapter.clone());
     let backup_adapter = DataAdapterBackup::new(adapter_arc);
     let mut engine = state.engine.lock().map_err(|_| "engine lock".to_string())?;
-    let mut state_lock = engine.state().lock().map_err(|_| "state lock".to_string())?;
+    let state_guard = engine.state();
+    let mut state_lock = state_guard.lock().map_err(|_| "state lock".to_string())?;
 
     adapter
         .load_into_state(&mut state_lock)
@@ -530,7 +530,8 @@ fn preview_snapshot(
 ) -> Result<SnapshotDiffSummary, String> {
     let (manager, adapter, _policy) = backup_manager_for_app(&state, &app_id)?;
     let mut engine = state.engine.lock().map_err(|_| "engine lock".to_string())?;
-    let mut state_lock = engine.state().lock().map_err(|_| "state lock".to_string())?;
+    let state_guard = engine.state();
+    let mut state_lock = state_guard.lock().map_err(|_| "state lock".to_string())?;
 
     adapter
         .load_into_state(&mut state_lock)
@@ -560,7 +561,8 @@ fn restore_snapshot(
     let adapter_arc: Arc<dyn DataAdapter> = Arc::new(adapter.clone());
     let backup_adapter = DataAdapterBackup::new(adapter_arc);
     let mut engine = state.engine.lock().map_err(|_| "engine lock".to_string())?;
-    let mut state_lock = engine.state().lock().map_err(|_| "state lock".to_string())?;
+    let state_guard = engine.state();
+    let mut state_lock = state_guard.lock().map_err(|_| "state lock".to_string())?;
 
     manager
         .restore_snapshot(
@@ -615,14 +617,14 @@ fn backup_manager_for_app(
     let backup_dir = policy
         .backup_dir
         .clone()
-        .unwrap_or_else(|| state.config_path.parent().unwrap_or(Path::new(\".\")).join(\"backups\"));
+        .unwrap_or_else(|| state.config_path.parent().unwrap_or(Path::new(".")).join("backups"));
     let store = FileSnapshotStore::new(&backup_dir).map_err(|error| error.to_string())?;
     let app_key = config.app_key().map_err(|error| error.to_string())?;
     let manager = BackupManager::new(app_key, Arc::new(store));
     let data_path = config
         .data_path
         .clone()
-        .ok_or_else(|| \"no data path configured\".to_string())?;
+        .ok_or_else(|| "no data path configured".to_string())?;
     let adapter = JsonFileAdapter::new(FILE_KEY, data_path);
     Ok((manager, adapter, policy))
 }
@@ -1018,9 +1020,9 @@ struct AlwaysOnPaths {
 
 fn app_paths(app: &AppHandle) -> Result<AlwaysOnPaths, String> {
     let base = app
-        .path()
+        .path_resolver()
         .app_data_dir()
-        .map_err(|error| error.to_string())?;
+        .ok_or_else(|| "could not resolve app data directory".to_string())?;
     fs::create_dir_all(&base).map_err(|error| error.to_string())?;
     Ok(AlwaysOnPaths {
         config: base.join("config.json"),

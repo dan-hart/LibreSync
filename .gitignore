@@ -43,6 +43,7 @@ local.properties
 
 # Rust
 /target/
+/alwaysOn/libresync-always-on/src-tauri/target/
 
 # Build artifacts (general)
 build/

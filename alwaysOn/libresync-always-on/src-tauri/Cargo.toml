@@ -19,3 +19,5 @@ tauri = { version = "1", features = ["system-tray"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+
+[workspace]
