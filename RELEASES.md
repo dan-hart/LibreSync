@@ -1,5 +1,11 @@
 # Releases
 
+## v0.5.0 (2026-06-05)
+- Removed vulnerable dependency paths and moved the SQLite page delta format to a local bounded codec.
+- Updated TLS, certificate, and random-number dependencies while preserving LibreSync's fingerprint-based device trust model.
+- Added CI coverage for security audit, dependency audit, strict clippy, and Swift bindings.
+- Fixed Swift package build metadata and AlwaysOn smoke-build warning cleanup.
+
 ## v0.4.0 (2026-03-31)
 - Added a release-readiness checker, release guide, and CI smoke-build coverage so version drift gets caught before tagging.
 - Fixed the AlwaysOn standalone Tauri build path and tray asset packaging for reproducible release validation.
