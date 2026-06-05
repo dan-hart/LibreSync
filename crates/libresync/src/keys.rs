@@ -1,7 +1,7 @@
-use rcgen::{Certificate, CertificateParams, DistinguishedName, DnType, SanType};
+use rcgen::{CertificateParams, DistinguishedName, DnType, SanType};
 use sha2::{Digest, Sha256};
 
-use crate::{Error, Identity, Result};
+use crate::{Identity, Result};
 
 #[derive(Clone, Debug)]
 pub struct DeviceKeys {
@@ -12,7 +12,7 @@ pub struct DeviceKeys {
 
 impl DeviceKeys {
     pub fn generate(identity: &Identity) -> Result<Self> {
-        let mut params = CertificateParams::new(vec![identity.device_id.clone()]);
+        let mut params = CertificateParams::new(vec![identity.device_id.clone()])?;
         params.distinguished_name = DistinguishedName::new();
         params
             .distinguished_name
@@ -24,16 +24,14 @@ impl DeviceKeys {
             .distinguished_name
             .push(DnType::OrganizationalUnitName, identity.user_id.clone());
         params.subject_alt_names = vec![
-            SanType::DnsName(identity.device_id.clone()),
-            SanType::Rfc822Name(identity.app_id.clone()),
+            SanType::DnsName(identity.device_id.clone().try_into()?),
+            SanType::Rfc822Name(identity.app_id.clone().try_into()?),
         ];
 
-        let cert = Certificate::from_params(params)
-            .map_err(|error| Error::Crypto(error.to_string()))?;
-        let cert_der = cert
-            .serialize_der()
-            .map_err(|error| Error::Crypto(error.to_string()))?;
-        let key_der = cert.serialize_private_key_der();
+        let signing_key = rcgen::KeyPair::generate()?;
+        let cert = params.self_signed(&signing_key)?;
+        let cert_der = cert.der().to_vec();
+        let key_der = signing_key.serialize_der();
         let fingerprint = fingerprint_cert(&cert_der);
 
         Ok(Self {

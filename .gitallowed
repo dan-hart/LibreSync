@@ -1,10 +1,10 @@
 # Allow literal secret-pattern examples in scripts/docs (not actual secrets).
-^\.gitallowed:
-^\.gitignore:
-^scripts/automation/setup-repo-security\.sh:
-frankly/src-tauri/src/main\.rs:.*CREATE TABLE IF NOT EXISTS todos
-crates/libresync/src/sqlite_logical\.rs:.*PRIMARY KEY
-crates/libresync/tests/sqlite_integration\.rs:.*PRIMARY KEY
+(^|[0-9a-f]{40}:)\.gitallowed:
+(^|[0-9a-f]{40}:)\.gitignore:
+(^|[0-9a-f]{40}:)scripts/automation/setup-repo-security\.sh:
+(^|[0-9a-f]{40}:)frankly/src-tauri/src/main\.rs:.*CREATE TABLE IF NOT EXISTS todos
+(^|[0-9a-f]{40}:)crates/libresync/src/sqlite_logical\.rs:.*PRIMARY KEY
+(^|[0-9a-f]{40}:)crates/libresync/tests/sqlite_integration\.rs:.*PRIMARY KEY
 sk-proj-\[A-Za-z0-9_-\]\{20,\}
 sk-\[A-Za-z0-9\]\{20,\}
 ghp_\[A-Za-z0-9\]\{36\}

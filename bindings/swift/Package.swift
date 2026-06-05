@@ -3,6 +3,10 @@ import PackageDescription
 
 let package = Package(
     name: "LibreSync",
+    platforms: [
+        .macOS(.v10_15),
+        .iOS(.v14),
+    ],
     products: [
         .library(name: "LibreSync", targets: ["LibreSync"]),
     ],

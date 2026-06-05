@@ -359,8 +359,7 @@ impl SqliteFileAdapter {
         if let (Some(page_size), Some(base)) = (self.page_delta, current.clone()) {
             let delta = compute_page_delta(&base, &bytes, page_size);
             if !delta.pages.is_empty() {
-                let delta_bytes = bincode::serialize(&delta)
-                    .map_err(|error| Error::Protocol(error.to_string()))?;
+                let delta_bytes = encode_sqlite_delta(&delta)?;
                 if delta_bytes.len() < bytes.len() {
                     if delta_current.as_deref() != Some(delta_bytes.as_slice()) {
                         state.set(delta_key, delta_bytes);
@@ -388,10 +387,7 @@ impl SqliteFileAdapter {
         let delta_key = self.delta_key();
         if let Some(delta_bytes) = state.get(&delta_key) {
             if !delta_bytes.is_empty() {
-                if let (Some(base), Ok(delta)) = (
-                    base.clone(),
-                    bincode::deserialize::<SqliteDelta>(delta_bytes),
-                ) {
+                if let (Some(base), Ok(delta)) = (base.clone(), decode_sqlite_delta(delta_bytes)) {
                     return Ok(Some(apply_page_delta(&base, &delta)));
                 }
             }
@@ -411,6 +407,81 @@ struct SqliteDelta {
 struct PageDelta {
     index: u32,
     bytes: Vec<u8>,
+}
+
+const SQLITE_DELTA_MAGIC: &[u8; 4] = b"LSD1";
+
+fn encode_sqlite_delta(delta: &SqliteDelta) -> Result<Vec<u8>> {
+    let page_count = u32::try_from(delta.pages.len())
+        .map_err(|_| Error::Protocol("sqlite delta has too many pages".to_string()))?;
+    let mut out = Vec::new();
+    out.extend_from_slice(SQLITE_DELTA_MAGIC);
+    out.extend_from_slice(&delta.page_size.to_le_bytes());
+    out.extend_from_slice(&delta.file_size.to_le_bytes());
+    out.extend_from_slice(&page_count.to_le_bytes());
+    for page in &delta.pages {
+        let page_len = u32::try_from(page.bytes.len())
+            .map_err(|_| Error::Protocol("sqlite delta page is too large".to_string()))?;
+        out.extend_from_slice(&page.index.to_le_bytes());
+        out.extend_from_slice(&page_len.to_le_bytes());
+        out.extend_from_slice(&page.bytes);
+    }
+    Ok(out)
+}
+
+fn decode_sqlite_delta(bytes: &[u8]) -> Result<SqliteDelta> {
+    let mut offset = 0usize;
+    let magic = read_delta_bytes(bytes, &mut offset, SQLITE_DELTA_MAGIC.len())?;
+    if magic != SQLITE_DELTA_MAGIC {
+        return Err(Error::Protocol("invalid sqlite delta encoding".to_string()));
+    }
+
+    let page_size = read_delta_u32(bytes, &mut offset)?;
+    let file_size = read_delta_u64(bytes, &mut offset)?;
+    let page_count = read_delta_u32(bytes, &mut offset)? as usize;
+    let mut pages = Vec::with_capacity(page_count);
+    for _ in 0..page_count {
+        let index = read_delta_u32(bytes, &mut offset)?;
+        let page_len = read_delta_u32(bytes, &mut offset)? as usize;
+        let page_bytes = read_delta_bytes(bytes, &mut offset, page_len)?.to_vec();
+        pages.push(PageDelta {
+            index,
+            bytes: page_bytes,
+        });
+    }
+    if offset != bytes.len() {
+        return Err(Error::Protocol("trailing sqlite delta bytes".to_string()));
+    }
+
+    Ok(SqliteDelta {
+        page_size,
+        file_size,
+        pages,
+    })
+}
+
+fn read_delta_u32(bytes: &[u8], offset: &mut usize) -> Result<u32> {
+    let raw = read_delta_bytes(bytes, offset, 4)?;
+    Ok(u32::from_le_bytes(raw.try_into().map_err(|_| {
+        Error::Protocol("invalid sqlite delta u32".to_string())
+    })?))
+}
+
+fn read_delta_u64(bytes: &[u8], offset: &mut usize) -> Result<u64> {
+    let raw = read_delta_bytes(bytes, offset, 8)?;
+    Ok(u64::from_le_bytes(raw.try_into().map_err(|_| {
+        Error::Protocol("invalid sqlite delta u64".to_string())
+    })?))
+}
+
+fn read_delta_bytes<'a>(bytes: &'a [u8], offset: &mut usize, len: usize) -> Result<&'a [u8]> {
+    let end = offset
+        .checked_add(len)
+        .filter(|end| *end <= bytes.len())
+        .ok_or_else(|| Error::Protocol("truncated sqlite delta".to_string()))?;
+    let slice = &bytes[*offset..end];
+    *offset = end;
+    Ok(slice)
 }
 
 fn compute_page_delta(base: &[u8], current: &[u8], page_size: usize) -> SqliteDelta {
@@ -872,8 +943,25 @@ mod tests {
         adapter.load_into_state(&mut state).expect("load");
 
         let delta = state.get("db:delta").expect("delta");
-        let decoded: super::SqliteDelta = bincode::deserialize(delta).expect("decode delta");
+        let decoded = super::decode_sqlite_delta(delta).expect("decode delta");
         assert!(!decoded.pages.is_empty());
+    }
+
+    #[test]
+    fn sqlite_delta_codec_round_trip() {
+        let delta = super::SqliteDelta {
+            page_size: 512,
+            file_size: 2048,
+            pages: vec![super::PageDelta {
+                index: 2,
+                bytes: vec![1, 2, 3, 4],
+            }],
+        };
+
+        let encoded = super::encode_sqlite_delta(&delta).expect("encode");
+        let decoded = super::decode_sqlite_delta(&encoded).expect("decode");
+
+        assert_eq!(decoded, delta);
     }
 
     #[test]
@@ -885,7 +973,7 @@ mod tests {
         let mut current = base.clone();
         current[100] = 7;
         let delta = super::compute_page_delta(&base, &current, 512);
-        let delta_bytes = bincode::serialize(&delta).expect("serialize");
+        let delta_bytes = super::encode_sqlite_delta(&delta).expect("serialize");
 
         let adapter = SqliteFileAdapter::new("db", &db_path).with_page_delta(512);
         let mut state = State::new("device");

@@ -11,10 +11,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use libresync::{
-    AppKey, AutoRefresh, AutoRefreshConfig, BackupManager, DataAdapter, DataAdapterBackup, DeviceInfo,
-    DeviceKeys, Engine, EngineConfig, Event, EventStream, FileSnapshotStore, Identity,
-    JsonFileAdapter, MdnsAdvertiser, RestoreOptions, RetentionPolicy, SnapshotDiffSummary,
-    SnapshotMetadata, State, summarize_snapshot_diff, register_mdns,
+    register_mdns, summarize_snapshot_diff, AppKey, AutoRefresh, AutoRefreshConfig, BackupManager,
+    DataAdapter, DataAdapterBackup, DeviceInfo, DeviceKeys, Engine, EngineConfig, Event,
+    EventStream, FileSnapshotStore, Identity, JsonFileAdapter, MdnsAdvertiser, RestoreOptions,
+    RetentionPolicy, SnapshotDiffSummary, SnapshotMetadata, State,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{
@@ -48,15 +48,13 @@ fn main() {
             let paths = app_paths(&app.handle()).map_err(|error| error.to_string())?;
             let (mut config, keys) = load_or_init_config(&paths.config, &paths.data)
                 .map_err(|error| error.to_string())?;
-            ensure_backup_policy(&mut config, &paths.backups)
-                .map_err(|error| error.to_string())?;
+            ensure_backup_policy(&mut config, &paths.backups).map_err(|error| error.to_string())?;
             save_config(&paths.config, &config).map_err(|error| error.to_string())?;
 
             let app_key = config.app_key().map_err(|error| error.to_string())?;
             let identity = config.identity();
             let listen_addr = config.listen_addr().map_err(|error| error.to_string())?;
-            let state = load_or_init_state(&config, &app_key)
-                .map_err(|error| error.to_string())?;
+            let state = load_or_init_state(&config, &app_key).map_err(|error| error.to_string())?;
 
             let config_arc = Arc::new(Mutex::new(config));
             let handler = Arc::new(AlwaysOnHandler {
@@ -72,12 +70,7 @@ fn main() {
                 handler,
             );
 
-            if let Some(data_path) = config_arc
-                .lock()
-                .expect("config lock")
-                .data_path
-                .clone()
-            {
+            if let Some(data_path) = config_arc.lock().expect("config lock").data_path.clone() {
                 let adapter = Arc::new(JsonFileAdapter::new(FILE_KEY, data_path));
                 engine
                     .register_adapter(adapter)
@@ -87,8 +80,8 @@ fn main() {
             let listener_addr = engine
                 .start_listening()
                 .map_err(|error| error.to_string())?;
-            let mdns = register_mdns(&identity, listener_addr)
-                .map_err(|error| error.to_string())?;
+            let mdns =
+                register_mdns(&identity, listener_addr).map_err(|error| error.to_string())?;
 
             let auto_refresh = if config_arc.lock().expect("config lock").data_path.is_some() {
                 let fallback_addresses = config_arc
@@ -138,9 +131,9 @@ fn main() {
                 config: config_arc,
                 config_path: paths.config,
                 status,
-                auto_refresh: Mutex::new(auto_refresh),
-                mdns: Mutex::new(Some(mdns)),
-                listener_addr,
+                _auto_refresh: Mutex::new(auto_refresh),
+                _mdns: Mutex::new(Some(mdns)),
+                _listener_addr: listener_addr,
             });
 
             Ok(())
@@ -200,9 +193,9 @@ struct AlwaysOnRuntime {
     config: Arc<Mutex<AlwaysOnConfig>>,
     config_path: PathBuf,
     status: Arc<Mutex<AlwaysOnStatus>>,
-    auto_refresh: Mutex<Option<AutoRefresh>>,
-    mdns: Mutex<Option<MdnsAdvertiser>>,
-    listener_addr: SocketAddr,
+    _auto_refresh: Mutex<Option<AutoRefresh>>,
+    _mdns: Mutex<Option<MdnsAdvertiser>>,
+    _listener_addr: SocketAddr,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -278,7 +271,7 @@ fn get_status(state: TauriState<AlwaysOnRuntime>) -> Result<AlwaysOnStatus, Stri
 }
 
 fn manual_refresh_internal(state: &AlwaysOnRuntime) -> Result<RefreshSummary, String> {
-    let mut engine = state.engine.lock().map_err(|_| "engine lock".to_string())?;
+    let engine = state.engine.lock().map_err(|_| "engine lock".to_string())?;
     let (state_path, app_key, fallback_records) = {
         let config = state.config.lock().map_err(|_| "config lock".to_string())?;
         if config.data_path.is_none() {
@@ -326,7 +319,7 @@ fn manual_refresh_internal(state: &AlwaysOnRuntime) -> Result<RefreshSummary, St
         }
     }
 
-    for (device, addr) in address_book {
+    for (_device, addr) in address_book {
         attempted += 1;
         match engine.sync_now(addr, FILE_KEY) {
             Ok(remote) => {
@@ -368,11 +361,14 @@ fn manual_refresh(state: TauriState<AlwaysOnRuntime>) -> Result<RefreshSummary, 
 }
 
 #[tauri::command]
-fn link_device(state: TauriState<AlwaysOnRuntime>, address: String) -> Result<AlwaysOnStatus, String> {
+fn link_device(
+    state: TauriState<AlwaysOnRuntime>,
+    address: String,
+) -> Result<AlwaysOnStatus, String> {
     let addr = address
         .parse::<SocketAddr>()
         .map_err(|_| "invalid address".to_string())?;
-    let mut engine = state.engine.lock().map_err(|_| "engine lock".to_string())?;
+    let engine = state.engine.lock().map_err(|_| "engine lock".to_string())?;
     let remote = engine
         .request_link(addr)
         .map_err(|error| error.to_string())?;
@@ -387,7 +383,10 @@ fn link_device(state: TauriState<AlwaysOnRuntime>, address: String) -> Result<Al
 }
 
 #[tauri::command]
-fn unlink_device(state: TauriState<AlwaysOnRuntime>, device_id: String) -> Result<AlwaysOnStatus, String> {
+fn unlink_device(
+    state: TauriState<AlwaysOnRuntime>,
+    device_id: String,
+) -> Result<AlwaysOnStatus, String> {
     let mut config = state.config.lock().map_err(|_| "config lock".to_string())?;
     config.devices.remove(&device_id);
     save_config(&state.config_path, &config)?;
@@ -460,7 +459,7 @@ fn create_snapshot(
     let (manager, adapter, policy) = backup_manager_for_app(&state, &app_id)?;
     let adapter_arc: Arc<dyn DataAdapter> = Arc::new(adapter.clone());
     let backup_adapter = DataAdapterBackup::new(adapter_arc);
-    let mut engine = state.engine.lock().map_err(|_| "engine lock".to_string())?;
+    let engine = state.engine.lock().map_err(|_| "engine lock".to_string())?;
     let state_guard = engine.state();
     let mut state_lock = state_guard.lock().map_err(|_| "state lock".to_string())?;
 
@@ -514,7 +513,10 @@ fn set_backup_policy(
 }
 
 #[tauri::command]
-fn list_snapshots(state: TauriState<AlwaysOnRuntime>, app_id: String) -> Result<Vec<SnapshotMetadata>, String> {
+fn list_snapshots(
+    state: TauriState<AlwaysOnRuntime>,
+    app_id: String,
+) -> Result<Vec<SnapshotMetadata>, String> {
     let (manager, _adapter_id, _policy) = backup_manager_for_app(&state, &app_id)?;
     let snapshots = manager
         .list_snapshots(FILE_KEY)
@@ -529,7 +531,7 @@ fn preview_snapshot(
     snapshot_id: String,
 ) -> Result<SnapshotDiffSummary, String> {
     let (manager, adapter, _policy) = backup_manager_for_app(&state, &app_id)?;
-    let mut engine = state.engine.lock().map_err(|_| "engine lock".to_string())?;
+    let engine = state.engine.lock().map_err(|_| "engine lock".to_string())?;
     let state_guard = engine.state();
     let mut state_lock = state_guard.lock().map_err(|_| "state lock".to_string())?;
 
@@ -560,7 +562,7 @@ fn restore_snapshot(
     }
     let adapter_arc: Arc<dyn DataAdapter> = Arc::new(adapter.clone());
     let backup_adapter = DataAdapterBackup::new(adapter_arc);
-    let mut engine = state.engine.lock().map_err(|_| "engine lock".to_string())?;
+    let engine = state.engine.lock().map_err(|_| "engine lock".to_string())?;
     let state_guard = engine.state();
     let mut state_lock = state_guard.lock().map_err(|_| "state lock".to_string())?;
 
@@ -606,18 +608,17 @@ fn backup_manager_for_app(
     app_id: &str,
 ) -> Result<(BackupManager, JsonFileAdapter, BackupPolicy), String> {
     let config = state.config.lock().map_err(|_| "config lock".to_string())?;
-    let policy = config
-        .backup
-        .get(app_id)
-        .cloned()
-        .unwrap_or_default();
+    let policy = config.backup.get(app_id).cloned().unwrap_or_default();
     if !policy.enabled {
         return Err("backups are not enabled for this app".to_string());
     }
-    let backup_dir = policy
-        .backup_dir
-        .clone()
-        .unwrap_or_else(|| state.config_path.parent().unwrap_or(Path::new(".")).join("backups"));
+    let backup_dir = policy.backup_dir.clone().unwrap_or_else(|| {
+        state
+            .config_path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("backups")
+    });
     let store = FileSnapshotStore::new(&backup_dir).map_err(|error| error.to_string())?;
     let app_key = config.app_key().map_err(|error| error.to_string())?;
     let manager = BackupManager::new(app_key, Arc::new(store));
@@ -818,11 +819,14 @@ impl libresync::DeviceHandler for AlwaysOnHandler {
     fn set_app_key(&self, app_key: &AppKey) -> libresync::Result<()> {
         let mut config = self.config.lock().expect("config lock");
         config.set_app_key(app_key);
-        save_config(&self.config_path, &config)
-            .map_err(|error| libresync::Error::Protocol(error))
+        save_config(&self.config_path, &config).map_err(|error| libresync::Error::Protocol(error))
     }
 
-    fn is_linked_with_fingerprint(&self, identity: &libresync::Identity, fingerprint: &str) -> bool {
+    fn is_linked_with_fingerprint(
+        &self,
+        identity: &libresync::Identity,
+        fingerprint: &str,
+    ) -> bool {
         if fingerprint.is_empty() {
             return self.is_linked(identity);
         }
@@ -901,7 +905,9 @@ impl BackupPolicy {
     fn retention_policy(&self) -> RetentionPolicy {
         RetentionPolicy {
             max_snapshots: self.max_snapshots,
-            max_age_secs: self.max_age_days.map(|days| days.saturating_mul(24 * 60 * 60)),
+            max_age_secs: self
+                .max_age_days
+                .map(|days| days.saturating_mul(24 * 60 * 60)),
         }
     }
 }
@@ -1032,7 +1038,10 @@ fn app_paths(app: &AppHandle) -> Result<AlwaysOnPaths, String> {
     })
 }
 
-fn load_or_init_config(path: &Path, data_path: &Path) -> Result<(AlwaysOnConfig, DeviceKeys), String> {
+fn load_or_init_config(
+    path: &Path,
+    data_path: &Path,
+) -> Result<(AlwaysOnConfig, DeviceKeys), String> {
     if path.exists() {
         let data = fs::read(path).map_err(|error| error.to_string())?;
         let config: AlwaysOnConfig =

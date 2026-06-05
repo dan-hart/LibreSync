@@ -7,7 +7,9 @@ use crate::{Entry, Error, Identity, Result};
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(tag = "type", content = "payload")]
 pub enum Message {
-    Hello { identity: Identity },
+    Hello {
+        identity: Identity,
+    },
     LinkRequest {
         identity: Identity,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -22,7 +24,9 @@ pub enum Message {
         app_key: Option<Vec<u8>>,
     },
     SnapshotRequest,
-    Snapshot { entries: Vec<Entry> },
+    Snapshot {
+        entries: Vec<Entry>,
+    },
     Ack,
 }
 

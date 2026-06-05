@@ -8,7 +8,11 @@ pub struct Identity {
 }
 
 impl Identity {
-    pub fn new(device_id: impl Into<String>, app_id: impl Into<String>, user_id: impl Into<String>) -> Self {
+    pub fn new(
+        device_id: impl Into<String>,
+        app_id: impl Into<String>,
+        user_id: impl Into<String>,
+    ) -> Self {
         Self {
             device_id: device_id.into(),
             app_id: app_id.into(),

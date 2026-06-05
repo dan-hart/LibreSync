@@ -114,13 +114,14 @@ fn cli_link_and_refresh_updates_file() {
         .success();
 
     let config_raw = fs::read_to_string(&config_path).expect("read config");
-    let config_json: serde_json::Value =
-        serde_json::from_str(&config_raw).expect("parse config");
+    let config_json: serde_json::Value = serde_json::from_str(&config_raw).expect("parse config");
     let app_key_raw = config_json
         .get("app_key")
         .and_then(|value| value.as_str())
         .expect("app key");
-    let app_key_bytes = BASE64.decode(app_key_raw.as_bytes()).expect("decode app key");
+    let app_key_bytes = BASE64
+        .decode(app_key_raw.as_bytes())
+        .expect("decode app key");
     let app_key = AppKey::from_slice(&app_key_bytes).expect("app key bytes");
 
     let listener_identity = Identity::new("listener-device", APP_ID, "listener-user");
@@ -234,8 +235,7 @@ fn cli_device_auto_approve_toggles() {
         .success();
 
     let config_raw = fs::read_to_string(&config_path).expect("read config");
-    let config_json: serde_json::Value =
-        serde_json::from_str(&config_raw).expect("parse config");
+    let config_json: serde_json::Value = serde_json::from_str(&config_raw).expect("parse config");
     assert!(config_json
         .get("auto_approve")
         .and_then(|v| v.as_bool())
@@ -254,8 +254,7 @@ fn cli_device_auto_approve_toggles() {
         .success();
 
     let config_raw = fs::read_to_string(&config_path).expect("read config");
-    let config_json: serde_json::Value =
-        serde_json::from_str(&config_raw).expect("parse config");
+    let config_json: serde_json::Value = serde_json::from_str(&config_raw).expect("parse config");
     assert!(!config_json
         .get("auto_approve")
         .and_then(|v| v.as_bool())
@@ -293,8 +292,7 @@ fn cli_device_pairing_secret_sets_and_clears() {
         .success();
 
     let config_raw = fs::read_to_string(&config_path).expect("read config");
-    let config_json: serde_json::Value =
-        serde_json::from_str(&config_raw).expect("parse config");
+    let config_json: serde_json::Value = serde_json::from_str(&config_raw).expect("parse config");
     assert_eq!(
         config_json.get("pairing_secret").and_then(|v| v.as_str()),
         Some("shared-secret")
@@ -312,8 +310,7 @@ fn cli_device_pairing_secret_sets_and_clears() {
         .success();
 
     let config_raw = fs::read_to_string(&config_path).expect("read config");
-    let config_json: serde_json::Value =
-        serde_json::from_str(&config_raw).expect("parse config");
+    let config_json: serde_json::Value = serde_json::from_str(&config_raw).expect("parse config");
     let pairing = config_json.get("pairing_secret");
     assert!(pairing.is_none() || pairing == Some(&serde_json::Value::Null));
 }
@@ -414,12 +411,7 @@ fn cli_backup_snapshot_preview_restore() {
         .expect("snapshot id");
 
     cargo_bin_cmd!("libresync")
-        .args([
-            "backup",
-            "list",
-            "--config",
-            config_path.to_str().unwrap(),
-        ])
+        .args(["backup", "list", "--config", config_path.to_str().unwrap()])
         .assert()
         .success()
         .stdout(contains(snapshot_id));

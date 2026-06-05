@@ -47,6 +47,7 @@ local.properties
 
 # Build artifacts (general)
 build/
+.build/
 dist/
 coverage/
 *.o
