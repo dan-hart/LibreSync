@@ -1,3 +1,5 @@
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::net::SocketAddr;
@@ -72,7 +74,7 @@ struct FfiSqliteLogicalMapping {
 }
 
 impl FfiSqliteLogicalMapping {
-    fn to_mapping(self) -> SqliteLogicalMapping {
+    fn into_mapping(self) -> SqliteLogicalMapping {
         let mut mapping =
             SqliteLogicalMapping::new(self.data_table, self.id_column, self.schema, self.entity);
         if let Some(table) = self.meta_table {
@@ -105,10 +107,10 @@ enum FfiSqliteLogicalMappingInput {
 impl FfiSqliteLogicalMappingInput {
     fn into_mappings(self) -> Vec<SqliteLogicalMapping> {
         match self {
-            FfiSqliteLogicalMappingInput::One(mapping) => vec![mapping.to_mapping()],
+            FfiSqliteLogicalMappingInput::One(mapping) => vec![mapping.into_mapping()],
             FfiSqliteLogicalMappingInput::Many(mappings) => mappings
                 .into_iter()
-                .map(FfiSqliteLogicalMapping::to_mapping)
+                .map(FfiSqliteLogicalMapping::into_mapping)
                 .collect(),
         }
     }

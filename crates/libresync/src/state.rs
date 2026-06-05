@@ -4,7 +4,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{AppKey, Entry, LamportClock, Result, decrypt_blob, encrypt_blob};
+use crate::{decrypt_blob, encrypt_blob, AppKey, Entry, LamportClock, Result};
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct State {

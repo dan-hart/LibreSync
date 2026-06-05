@@ -99,7 +99,10 @@ pub fn decrypt_entry(app_key: &AppKey, entry: Entry) -> Result<Entry> {
 pub fn encrypt_blob(app_key: &AppKey, plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
     let cipher = XChaCha20Poly1305::new(Key::from_slice(app_key.as_bytes()));
     let nonce = random_nonce();
-    let payload = Payload { msg: plaintext, aad };
+    let payload = Payload {
+        msg: plaintext,
+        aad,
+    };
     let ciphertext = cipher
         .encrypt(&nonce, payload)
         .map_err(|_| Error::Crypto("failed to encrypt blob".to_string()))?;
@@ -120,7 +123,10 @@ pub fn decrypt_blob(app_key: &AppKey, blob: &[u8], aad: &[u8]) -> Result<Vec<u8>
     }
     let nonce = XNonce::from_slice(&blob[1..1 + NONCE_LEN]);
     let ciphertext = &blob[1 + NONCE_LEN..];
-    let payload = Payload { msg: ciphertext, aad };
+    let payload = Payload {
+        msg: ciphertext,
+        aad,
+    };
     let plaintext = XChaCha20Poly1305::new(Key::from_slice(app_key.as_bytes()))
         .decrypt(nonce, payload)
         .map_err(|_| Error::Crypto("failed to decrypt blob".to_string()))?;

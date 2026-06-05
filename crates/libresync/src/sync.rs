@@ -2,16 +2,20 @@ use std::io::BufReader;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
-use rustls::client::{ServerCertVerified, ServerCertVerifier};
-use rustls::server::{ClientCertVerified, ClientCertVerifier};
-use rustls::{Certificate, ClientConfig, ClientConnection, ServerConfig, ServerConnection, StreamOwned};
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
+use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
+use rustls::{
+    ClientConfig, ClientConnection, DigitallySignedStruct, ServerConfig, ServerConnection,
+    SignatureScheme, StreamOwned,
+};
 
 use crate::protocol::{read_message, write_message, Message};
 use crate::{
-    AppKey, DeviceHandler, DeviceKeys, Error, Identity, Result, State, decrypt_entries,
-    encrypt_entries,
+    decrypt_entries, encrypt_entries, AppKey, DeviceHandler, DeviceKeys, Error, Identity, Result,
+    State,
 };
 
 pub struct SyncListener {
@@ -141,13 +145,14 @@ pub fn link_with_device(
         )));
     }
 
-    let key_bytes = remote_app_key.ok_or_else(|| {
-        Error::Protocol("linking response missing app key".to_string())
-    })?;
+    let key_bytes = remote_app_key
+        .ok_or_else(|| Error::Protocol("linking response missing app key".to_string()))?;
     let remote_app_key = AppKey::from_slice(&key_bytes)?;
 
     if remote_identity.app_id != identity.app_id {
-        return Err(Error::Protocol("app id mismatch during linking".to_string()));
+        return Err(Error::Protocol(
+            "app id mismatch during linking".to_string(),
+        ));
     }
 
     Ok((remote_identity, fingerprint, remote_app_key))
@@ -178,30 +183,34 @@ fn handle_connection(
             pairing_secret,
         } => {
             if !device_identity.matches_app(handler.app_id()) {
-                write_message(reader.get_mut(), &Message::LinkResponse {
-                    identity: identity.clone(),
-                    accepted: false,
-                    app_key: None,
-                })?;
+                write_message(
+                    reader.get_mut(),
+                    &Message::LinkResponse {
+                        identity: identity.clone(),
+                        accepted: false,
+                        app_key: None,
+                    },
+                )?;
                 return Ok(());
             }
             if let Some(expected) = handler.pairing_secret() {
                 let provided = pairing_secret.unwrap_or_default();
                 if provided != expected {
-                    write_message(reader.get_mut(), &Message::LinkResponse {
-                        identity: identity.clone(),
-                        accepted: false,
-                        app_key: None,
-                    })?;
+                    write_message(
+                        reader.get_mut(),
+                        &Message::LinkResponse {
+                            identity: identity.clone(),
+                            accepted: false,
+                            app_key: None,
+                        },
+                    )?;
                     return Ok(());
                 }
             }
-            let incoming_key = remote_app_key.ok_or_else(|| {
-                Error::Protocol("linking request missing app key".to_string())
-            })?;
+            let incoming_key = remote_app_key
+                .ok_or_else(|| Error::Protocol("linking request missing app key".to_string()))?;
             let incoming_key = AppKey::from_slice(&incoming_key)?;
-            let accepted =
-                handler.approve_link_with_fingerprint(&device_identity, &fingerprint)?;
+            let accepted = handler.approve_link_with_fingerprint(&device_identity, &fingerprint)?;
             if accepted && incoming_key != app_key {
                 handler.set_app_key(&incoming_key)?;
             }
@@ -210,20 +219,30 @@ fn handle_connection(
             } else {
                 None
             };
-            write_message(reader.get_mut(), &Message::LinkResponse {
-                identity: identity.clone(),
-                accepted,
-                app_key: response_key,
-            })?;
+            write_message(
+                reader.get_mut(),
+                &Message::LinkResponse {
+                    identity: identity.clone(),
+                    accepted,
+                    app_key: response_key,
+                },
+            )?;
         }
-        Message::Hello { identity: device_identity } => {
+        Message::Hello {
+            identity: device_identity,
+        } => {
             if !device_identity.matches_app(handler.app_id()) {
                 return Err(Error::Protocol("app id mismatch".to_string()));
             }
             if !handler.is_linked_with_fingerprint(&device_identity, &fingerprint) {
                 return Err(Error::Protocol("device not linked".to_string()));
             }
-            write_message(reader.get_mut(), &Message::Hello { identity: identity.clone() })?;
+            write_message(
+                reader.get_mut(),
+                &Message::Hello {
+                    identity: identity.clone(),
+                },
+            )?;
 
             match read_message(&mut reader)? {
                 Message::SnapshotRequest => {
@@ -246,7 +265,11 @@ fn handle_connection(
                 }
             }
         }
-        _ => return Err(Error::Protocol("expected hello or link request".to_string())),
+        _ => {
+            return Err(Error::Protocol(
+                "expected hello or link request".to_string(),
+            ))
+        }
     }
 
     Ok(())
@@ -270,7 +293,12 @@ where
     let stream = tls_client_stream(stream, device_keys)?;
     let mut reader = BufReader::new(stream);
 
-    write_message(reader.get_mut(), &Message::Hello { identity: identity.clone() })?;
+    write_message(
+        reader.get_mut(),
+        &Message::Hello {
+            identity: identity.clone(),
+        },
+    )?;
     let remote_identity = read_hello(&mut reader, identity)?;
     let fingerprint = device_fingerprint(reader.get_mut().conn.peer_certificates())?;
     device_check(&remote_identity, &fingerprint)?;
@@ -302,7 +330,12 @@ pub(crate) fn pull_snapshot(
     let stream = tls_client_stream(stream, device_keys)?;
     let mut reader = BufReader::new(stream);
 
-    write_message(reader.get_mut(), &Message::Hello { identity: identity.clone() })?;
+    write_message(
+        reader.get_mut(),
+        &Message::Hello {
+            identity: identity.clone(),
+        },
+    )?;
     let remote_identity = read_hello(&mut reader, identity)?;
     if remote_identity != *expected_remote {
         return Err(Error::Protocol("device identity changed".to_string()));
@@ -342,7 +375,7 @@ fn tls_client_stream(
     device_keys: &DeviceKeys,
 ) -> Result<StreamOwned<ClientConnection, TcpStream>> {
     let config = client_config(device_keys)?;
-    let server_name = rustls::ServerName::try_from("libresync.local")
+    let server_name = ServerName::try_from("libresync.local")
         .map_err(|_| Error::Protocol("invalid server name".to_string()))?;
     let conn = ClientConnection::new(config, server_name)?;
     Ok(StreamOwned::new(conn, stream))
@@ -358,98 +391,148 @@ fn tls_server_stream(
 }
 
 fn client_config(device_keys: &DeviceKeys) -> Result<Arc<ClientConfig>> {
-    let certs = vec![Certificate(device_keys.cert_der().to_vec())];
-    let key = rustls::PrivateKey(device_keys.key_der().to_vec());
+    let certs = vec![CertificateDer::from(device_keys.cert_der().to_vec())];
+    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(device_keys.key_der().to_vec()));
     let verifier = Arc::new(AcceptAnyServerVerifier);
 
     let config = ClientConfig::builder()
-        .with_safe_defaults()
+        .dangerous()
         .with_custom_certificate_verifier(verifier)
         .with_client_auth_cert(certs, key)?;
     Ok(Arc::new(config))
 }
 
 fn server_config(device_keys: &DeviceKeys) -> Result<Arc<ServerConfig>> {
-    let certs = vec![Certificate(device_keys.cert_der().to_vec())];
-    let key = rustls::PrivateKey(device_keys.key_der().to_vec());
+    let certs = vec![CertificateDer::from(device_keys.cert_der().to_vec())];
+    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(device_keys.key_der().to_vec()));
     let verifier = Arc::new(AcceptAnyClientVerifier);
 
     let config = ServerConfig::builder()
-        .with_safe_defaults()
         .with_client_cert_verifier(verifier)
         .with_single_cert(certs, key)?;
     Ok(Arc::new(config))
 }
 
-fn device_fingerprint(certs: Option<&[Certificate]>) -> Result<String> {
+fn device_fingerprint(certs: Option<&[CertificateDer<'static>]>) -> Result<String> {
     let cert = certs
         .and_then(|certs| certs.first())
         .ok_or_else(|| Error::Protocol("missing device certificate".to_string()))?;
-    Ok(crate::keys::fingerprint_cert(&cert.0))
+    Ok(crate::keys::fingerprint_cert(cert.as_ref()))
 }
 
+#[derive(Debug)]
 struct AcceptAnyServerVerifier;
 
 impl ServerCertVerifier for AcceptAnyServerVerifier {
     fn verify_server_cert(
         &self,
-        _end_entity: &Certificate,
-        _intermediates: &[Certificate],
-        _server_name: &rustls::ServerName,
-        _scts: &mut dyn Iterator<Item = &[u8]>,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
         _ocsp_response: &[u8],
-        _now: SystemTime,
+        _now: UnixTime,
     ) -> std::result::Result<ServerCertVerified, rustls::Error> {
         Ok(ServerCertVerified::assertion())
     }
 
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        vec![
-            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-            rustls::SignatureScheme::ED25519,
-            rustls::SignatureScheme::RSA_PSS_SHA256,
-            rustls::SignatureScheme::RSA_PKCS1_SHA256,
-        ]
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls12_handshake_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls13_handshake_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        supported_signature_schemes()
     }
 }
 
+#[derive(Debug)]
 struct AcceptAnyClientVerifier;
 
 impl ClientCertVerifier for AcceptAnyClientVerifier {
-    fn client_auth_root_subjects(&self) -> &[rustls::DistinguishedName] {
+    fn root_hint_subjects(&self) -> &[rustls::DistinguishedName] {
         &[]
     }
 
     fn verify_client_cert(
         &self,
-        _end_entity: &Certificate,
-        _intermediates: &[Certificate],
-        _now: SystemTime,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _now: UnixTime,
     ) -> std::result::Result<ClientCertVerified, rustls::Error> {
         Ok(ClientCertVerified::assertion())
     }
 
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        vec![
-            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-            rustls::SignatureScheme::ED25519,
-            rustls::SignatureScheme::RSA_PSS_SHA256,
-            rustls::SignatureScheme::RSA_PKCS1_SHA256,
-        ]
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls12_handshake_signature(message, cert, dss)
     }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls13_handshake_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        supported_signature_schemes()
+    }
+}
+
+fn supported_signature_schemes() -> Vec<SignatureScheme> {
+    rustls::crypto::ring::default_provider()
+        .signature_verification_algorithms
+        .supported_schemes()
+}
+
+fn verify_tls12_handshake_signature(
+    message: &[u8],
+    cert: &CertificateDer<'_>,
+    dss: &DigitallySignedStruct,
+) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+    let supported = rustls::crypto::ring::default_provider().signature_verification_algorithms;
+    rustls::crypto::verify_tls12_signature(message, cert, dss, &supported)
+}
+
+fn verify_tls13_handshake_signature(
+    message: &[u8],
+    cert: &CertificateDer<'_>,
+    dss: &DigitallySignedStruct,
+) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+    let supported = rustls::crypto::ring::default_provider().signature_verification_algorithms;
+    rustls::crypto::verify_tls13_signature(message, cert, dss, &supported)
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};
-    use std::sync::{Arc, Mutex};
     use std::net::{TcpListener, TcpStream};
+    use std::sync::{Arc, Mutex};
     use std::thread;
 
     use super::{tls_client_stream, tls_server_stream};
     use crate::{
-        read_message, sync_with_device, write_message, DeviceHandler, Identity, Message, Result,
-        State, SyncListener, AppKey,
+        read_message, sync_with_device, write_message, AppKey, DeviceHandler, Identity, Message,
+        Result, State, SyncListener,
     };
 
     struct AllowAllHandler {
@@ -611,7 +694,7 @@ mod tests {
             &device_app_key,
             |_, _| Ok(()),
         )
-            .expect("sync");
+        .expect("sync");
 
         assert_eq!(device_state.get("alpha"), Some("one".as_bytes()));
         assert_eq!(device_state.get("beta"), Some("two".as_bytes()));

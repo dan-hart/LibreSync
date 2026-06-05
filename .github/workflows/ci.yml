@@ -12,12 +12,21 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: llvm-tools-preview
+          components: clippy, llvm-tools-preview
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
       - name: Release readiness
         run: ./scripts/utilities/check-release-readiness.sh
+      - name: Security audit
+        run: ./scripts/utilities/security-audit.sh
+      - name: Cargo audit
+        run: cargo audit
+      - name: Cargo clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Cargo test
         run: cargo test
       - name: Coverage gate
@@ -28,3 +37,10 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.0-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
       - name: AlwaysOn smoke build
         run: cargo check --manifest-path alwaysOn/libresync-always-on/src-tauri/Cargo.toml
+
+  swift-bindings:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift build
+        run: swift build --package-path bindings/swift

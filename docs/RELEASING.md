@@ -23,7 +23,9 @@ Keep these files aligned on the same version:
 ## Prerequisites
 
 - Install `cargo-llvm-cov` locally before running the coverage check.
+- Install `cargo-audit` locally before running the dependency audit.
 - Install the Rust `llvm-tools-preview` component before running `cargo llvm-cov`.
+- Install a Swift toolchain before running the Swift bindings build.
 - The AlwaysOn smoke build requires a Tauri-capable local environment. On Linux, install `libwebkit2gtk-4.0-dev`, `libgtk-3-dev`, `libayatana-appindicator3-dev`, and `librsvg2-dev`.
 
 ## Release checklist
@@ -32,9 +34,13 @@ Run these from the repo root:
 
 ```bash
 ./scripts/utilities/check-release-readiness.sh
+./scripts/utilities/security-audit.sh
+cargo audit
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test
 cargo llvm-cov --workspace --summary-only --fail-under-regions 75
 cargo check --manifest-path alwaysOn/libresync-always-on/src-tauri/Cargo.toml
+swift build --package-path bindings/swift
 git status --short
 git tag vX.Y.Z
 git push origin main vX.Y.Z

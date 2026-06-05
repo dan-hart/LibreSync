@@ -55,7 +55,8 @@ impl FileSnapshotStore {
     }
 
     fn snapshot_path(&self, adapter_id: &str, snapshot_id: &str) -> PathBuf {
-        self.adapter_dir(adapter_id).join(format!("{snapshot_id}.json"))
+        self.adapter_dir(adapter_id)
+            .join(format!("{snapshot_id}.json"))
     }
 }
 
@@ -88,7 +89,7 @@ impl SnapshotStore for FileSnapshotStore {
             let snapshot: Snapshot = serde_json::from_slice(&data)?;
             snapshots.push(snapshot.metadata);
         }
-        snapshots.sort_by(|a, b| a.created_at_unix_secs.cmp(&b.created_at_unix_secs));
+        snapshots.sort_by_key(|snapshot| snapshot.created_at_unix_secs);
         Ok(snapshots)
     }
 
@@ -238,13 +239,9 @@ impl BackupManager {
         Ok(snapshot.metadata)
     }
 
-    pub fn plan_prune(
-        &self,
-        adapter_id: &str,
-        policy: RetentionPolicy,
-    ) -> Result<PrunePlan> {
+    pub fn plan_prune(&self, adapter_id: &str, policy: RetentionPolicy) -> Result<PrunePlan> {
         let mut snapshots = self.store.list_snapshots(adapter_id)?;
-        snapshots.sort_by(|a, b| a.created_at_unix_secs.cmp(&b.created_at_unix_secs));
+        snapshots.sort_by_key(|snapshot| snapshot.created_at_unix_secs);
 
         let total = snapshots.len();
         if total == 0 || policy.is_empty() {
@@ -307,11 +304,7 @@ impl BackupManager {
         })
     }
 
-    pub fn reencrypt_snapshots(
-        &self,
-        adapter_id: &str,
-        new_key: &AppKey,
-    ) -> Result<usize> {
+    pub fn reencrypt_snapshots(&self, adapter_id: &str, new_key: &AppKey) -> Result<usize> {
         let snapshots = self.store.list_snapshots(adapter_id)?;
         let mut updated = 0usize;
         for metadata in snapshots {
@@ -362,7 +355,10 @@ pub struct SnapshotDiffSummary {
     pub by_group: BTreeMap<String, DiffCounts>,
 }
 
-pub fn summarize_snapshot_diff(state: &State, snapshot_entries: &[Entry]) -> Result<SnapshotDiffSummary> {
+pub fn summarize_snapshot_diff(
+    state: &State,
+    snapshot_entries: &[Entry],
+) -> Result<SnapshotDiffSummary> {
     let mut snapshot_map: HashMap<&str, &Entry> = HashMap::new();
     for entry in snapshot_entries {
         snapshot_map.insert(entry.key.as_str(), entry);
@@ -470,7 +466,12 @@ mod tests {
 
         let mut restore_state = State::new("device");
         manager
-            .restore_snapshot(&adapter, &mut restore_state, &metadata.id, RestoreOptions::confirmed())
+            .restore_snapshot(
+                &adapter,
+                &mut restore_state,
+                &metadata.id,
+                RestoreOptions::confirmed(),
+            )
             .expect("restore");
         assert_eq!(restore_state.get("file"), Some(b"{}".as_slice()));
     }
@@ -537,7 +538,12 @@ mod tests {
         state.set("file", b"{\"after\":true}".to_vec());
 
         manager
-            .restore_snapshot(&adapter, &mut state, &metadata.id, RestoreOptions::confirmed())
+            .restore_snapshot(
+                &adapter,
+                &mut state,
+                &metadata.id,
+                RestoreOptions::confirmed(),
+            )
             .expect("restore");
 
         assert_eq!(state.get("file"), Some(b"{\"before\":true}".as_slice()));
@@ -670,7 +676,12 @@ mod tests {
         let manager_new = BackupManager::new(new_key, std::sync::Arc::new(store));
         let mut restore_state = State::new("device");
         manager_new
-            .restore_snapshot(&adapter, &mut restore_state, &metadata.id, RestoreOptions::confirmed())
+            .restore_snapshot(
+                &adapter,
+                &mut restore_state,
+                &metadata.id,
+                RestoreOptions::confirmed(),
+            )
             .expect("restore");
         assert_eq!(restore_state.get("file"), Some(b"{\"alpha\":1}".as_slice()));
     }

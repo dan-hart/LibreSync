@@ -14,7 +14,9 @@ pub trait DeviceHandler: Send + Sync {
         Err(Error::Protocol("device keys not configured".to_string()))
     }
     fn set_device_keys(&self, _device_keys: &DeviceKeys) -> Result<()> {
-        Err(Error::Protocol("device key updates not supported".to_string()))
+        Err(Error::Protocol(
+            "device key updates not supported".to_string(),
+        ))
     }
     fn is_linked_with_fingerprint(&self, identity: &Identity, fingerprint: &str) -> bool {
         let _ = fingerprint;

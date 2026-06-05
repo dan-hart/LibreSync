@@ -1,6 +1,7 @@
 import Foundation
 import Network
 
+@available(macOS 10.15, iOS 14.0, *)
 public final class LibreSyncLocalNetworkPermission {
     private var browser: NWBrowser?
 
