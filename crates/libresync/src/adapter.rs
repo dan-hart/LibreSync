@@ -439,10 +439,43 @@ fn decode_sqlite_delta(bytes: &[u8]) -> Result<SqliteDelta> {
     let page_size = read_delta_u32(bytes, &mut offset)?;
     let file_size = read_delta_u64(bytes, &mut offset)?;
     let page_count = read_delta_u32(bytes, &mut offset)? as usize;
+    if page_size == 0 {
+        return Err(Error::Protocol(
+            "sqlite delta page size must be nonzero".to_string(),
+        ));
+    }
+    if usize::try_from(file_size).is_err() {
+        return Err(Error::Protocol(
+            "sqlite delta file size is too large".to_string(),
+        ));
+    }
+    let remaining = bytes.len().saturating_sub(offset);
+    if page_count > remaining / 8 {
+        return Err(Error::Protocol(
+            "sqlite delta page count exceeds encoded pages".to_string(),
+        ));
+    }
+
     let mut pages = Vec::with_capacity(page_count);
     for _ in 0..page_count {
         let index = read_delta_u32(bytes, &mut offset)?;
-        let page_len = read_delta_u32(bytes, &mut offset)? as usize;
+        let page_len = read_delta_u32(bytes, &mut offset)?;
+        if page_len > page_size {
+            return Err(Error::Protocol(
+                "sqlite delta page exceeds page size".to_string(),
+            ));
+        }
+        let start = u64::from(index) * u64::from(page_size);
+        let end = start
+            .checked_add(u64::from(page_len))
+            .ok_or_else(|| Error::Protocol("sqlite delta page offset overflow".to_string()))?;
+        if end > file_size {
+            return Err(Error::Protocol(
+                "sqlite delta page exceeds file size".to_string(),
+            ));
+        }
+
+        let page_len = page_len as usize;
         let page_bytes = read_delta_bytes(bytes, &mut offset, page_len)?.to_vec();
         pages.push(PageDelta {
             index,
@@ -962,6 +995,34 @@ mod tests {
         let decoded = super::decode_sqlite_delta(&encoded).expect("decode");
 
         assert_eq!(decoded, delta);
+    }
+
+    #[test]
+    fn sqlite_delta_codec_rejects_impossible_page_count() {
+        let mut encoded = Vec::new();
+        encoded.extend_from_slice(super::SQLITE_DELTA_MAGIC);
+        encoded.extend_from_slice(&512u32.to_le_bytes());
+        encoded.extend_from_slice(&2048u64.to_le_bytes());
+        encoded.extend_from_slice(&2u32.to_le_bytes());
+
+        let error = super::decode_sqlite_delta(&encoded).expect_err("decode should fail");
+        assert!(error.to_string().contains("page count"));
+    }
+
+    #[test]
+    fn sqlite_delta_codec_rejects_page_past_file_size() {
+        let delta = super::SqliteDelta {
+            page_size: 512,
+            file_size: 16,
+            pages: vec![super::PageDelta {
+                index: 1,
+                bytes: vec![1],
+            }],
+        };
+        let encoded = super::encode_sqlite_delta(&delta).expect("encode");
+
+        let error = super::decode_sqlite_delta(&encoded).expect_err("decode should fail");
+        assert!(error.to_string().contains("file size"));
     }
 
     #[test]
