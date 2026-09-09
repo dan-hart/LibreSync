@@ -111,6 +111,15 @@ narrative context live in `RELEASES.md`.
   (`network.client` / `network.server`), Local Network keys, `mdns-sd` and
   Bonjour coexistence, Keychain paths.
 
+### Documentation and CI
+- `docs/PROTOCOL.md`: message types, framing, link and sync handshakes (v1 and
+  v2), TLS and fingerprint rules, `entry_aad` layout, mDNS service type and
+  TXT keys, delta cursors.
+- CI runs on `ubuntu-latest` and `macos-latest`: workspace tests, all-feature
+  core tests, the two-device tests, the FFI build on both, plus the universal
+  static library and `swift test` on macOS. The 75% region coverage gate keeps
+  running on Ubuntu.
+
 ### Changed
 - `SyncRecord` gained `field_clocks` and now implements `Default`; construct
   records with `..SyncRecord::default()`. `LamportClock` implements `Default`.

@@ -5,8 +5,45 @@ on:
     branches: [main]
   pull_request:
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build (all targets, all features)
+        run: cargo build --workspace --all-targets --all-features
+      - name: Cargo test (workspace)
+        run: cargo test --workspace
+      - name: Cargo test (core, all features)
+        run: cargo test -p libresync --all-features
+      - name: Two-device concurrent-edit and delta tests
+        run: cargo test -p libresync --test two_device -- --nocapture
+      - name: FFI build (static + dynamic library)
+        run: cargo build -p libresync-ffi --release
+      - name: FFI tests
+        run: cargo test -p libresync-ffi
+      - name: Universal FFI library + Swift package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          scripts/build-macos-universal.sh
+          cd bindings/swift
+          swift build
+          swift test
+
+  coverage:
+    name: coverage gate (ubuntu)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,7 +53,6 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov
-      - name: Cargo test
-        run: cargo test
-      - name: Coverage gate
+      - uses: Swatinem/rust-cache@v2
+      - name: Coverage gate (75% regions)
         run: cargo llvm-cov --workspace --summary-only --fail-under-regions 75
