@@ -8,6 +8,7 @@ mod entry;
 mod error;
 mod identity;
 mod keys;
+mod keystore;
 mod logical;
 mod protocol;
 mod record;
@@ -47,6 +48,10 @@ pub use entry::{Entry, LamportClock};
 pub use error::{Error, Result};
 pub use identity::Identity;
 pub use keys::DeviceKeys;
+pub use keystore::{
+    platform_key_store, FileKeyStore, KeyStore, KeyStoreExt, MemoryKeyStore, SecretToolKeyStore,
+    SecurityCliKeyStore, APP_KEY_ITEM, DEVICE_CERT_ITEM, DEVICE_KEY_ITEM,
+};
 pub use logical::{FileLogicalAdapter, InMemoryLogicalAdapter};
 pub use protocol::{read_message, write_message, Message, PROTOCOL_VERSION};
 pub use record::{

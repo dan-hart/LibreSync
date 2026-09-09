@@ -3,16 +3,22 @@
 This package wraps the `libresync-ffi` C ABI with a small Swift API.
 
 ## Build the FFI library
-From the repo root:
+From the repo root, build the universal (arm64 + x86_64) static library and
+the XCFramework the package links against:
 ```
-cargo build -p libresync-ffi
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+scripts/build-macos-universal.sh
+cd bindings/swift && swift build && swift test
 ```
-
-The compiled library will be in `target/debug/` (or `target/release/`).
 
 ## Usage
-- Add `bindings/swift` as a Swift Package dependency.
-- Link the `libresync-ffi` library at build time.
+- Add `bindings/swift` as a Swift Package dependency (the XCFramework must be
+  built or downloaded first; see `docs/PACKAGING-MACOS.md`).
+- Entitlements: `com.apple.security.network.client` and `.server`, plus the
+  Local Network `Info.plist` keys.
+- Events: `engine.makeEventPump { event in ... }` delivers events on the main
+  queue through a `DispatchSource` on the engine's event descriptor; use
+  `syncAsync` for non-blocking syncs and `cancel(ticket:)` to abort.
 
 ## Example
 - `Samples/QuickstartApp/main.swift`: minimal logical-file setup.

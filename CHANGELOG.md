@@ -94,6 +94,23 @@ narrative context live in `RELEASES.md`.
   `contrib/flatpak/` manifest fragment.
 - New dependency: `log` (facade only).
 
+### Packaging (macOS)
+- `KeyStore` trait with `MemoryKeyStore`, `FileKeyStore`,
+  `SecretToolKeyStore` (Linux Secret Service via `secret-tool`) and
+  `SecurityCliKeyStore` (macOS login Keychain via `/usr/bin/security`), plus
+  `KeyStoreExt::load_or_create_app_key` / `load_or_create_device_keys` and
+  `platform_key_store`. Mirrors the Swift `LibreSyncKeychain` helper.
+- `scripts/build-macos-universal.sh` builds the arm64 + x86_64 static
+  `libresync-ffi` and wraps it in `LibreSyncFFI.xcframework`;
+  `bindings/swift/Package.swift` consumes it as a binary target and gained an
+  XCTest target that exercises the engine, listener, event descriptor and
+  async sync.
+- `contrib/launchd/com.codedbydan.libresync.alwayson.plist` user agent
+  (restart on failure only).
+- `docs/PACKAGING-MACOS.md`: App Sandbox entitlements
+  (`network.client` / `network.server`), Local Network keys, `mdns-sd` and
+  Bonjour coexistence, Keychain paths.
+
 ### Changed
 - `SyncRecord` gained `field_clocks` and now implements `Default`; construct
   records with `..SyncRecord::default()`. `LamportClock` implements `Default`.
