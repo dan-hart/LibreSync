@@ -5,9 +5,9 @@ LibreSync is a device-to-device (D2D) sync engine. Every instance is a device, a
 ## Core principles
 - Devices are symmetric; any device can initiate a connection.
 - Trust is scoped per app ID, not per device globally.
-- Sync is deterministic: last-writer-wins with Lamport clocks.
+- Sync is deterministic: last-writer-wins with Lamport clocks per entry, and per field for logical records.
 - The protocol is intentionally minimal and binary-agnostic (JSON lines in the MVP).
-- Transport is encrypted (TLS with self-signed device keys in the MVP).
+- Transport is encrypted (mutual TLS with self-signed device keys, trust on first use, fingerprints pinned after linking).
 
 ## SDK core (engine + adapters)
 The core library now exposes an SDK-first surface:
@@ -53,11 +53,16 @@ Auto-approve linking (when enabled) will automatically discover and link devices
 Trust is stored per app ID. This prevents a trusted device in one app from automatically being trusted by another app.
 
 ## Connection flow
-A device runs a listener to accept inbound connections. The actual sync uses two connections:
-- Push connection: device A sends its snapshot to device B.
-- Pull connection: device A requests device B's snapshot.
+A device runs a listener to accept inbound connections. A sync is one connection (protocol version 2):
+1. Mutual-TLS handshake with self-signed device certificates; the client pins the peer's fingerprint when it knows it.
+2. `Hello` in both directions (identity + protocol version); each side checks app id, linking and the pinned fingerprint.
+3. The client sends `SnapshotSince { clock, epoch }`, its cursor into the listener's history.
+4. The listener answers `Delta` with the entries applied after that cursor (or a full snapshot on first contact or after a reset), its new cursor, and how far it has received the client's entries.
+5. The client merges, then sends its own `Delta` sized by that acknowledgement; the listener merges and answers `Ack`.
 
-Both devices merge incoming entries using the Lamport clock rules to ensure convergence.
+Version 1 peers (pre-0.4) still work: the client falls back to the two-connection push/pull exchange, and the listener still answers `SnapshotRequest`/`Snapshot`. See `docs/PROTOCOL.md` for the wire format.
+
+Inbound entries are routed to the adapter that owns their key, so logical adapters merge field by field; entries nobody owns use last-writer-wins.
 
 ## Data model
 - The core state is a key/value store of bytes.

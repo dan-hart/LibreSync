@@ -292,7 +292,7 @@ pub(crate) fn apply_snapshot_with_policy(
             ),
             None => record,
         };
-        if records.apply(merged)? {
+        if records.upsert(merged)? {
             applied += 1;
         }
     }
@@ -316,25 +316,39 @@ fn merge_records(
     }
 
     let mut fields = existing.fields.clone();
-    for (field, incoming_value) in incoming.fields.into_iter() {
-        let policy = policy_for_field(&field);
-        let existing_value = fields.get(&field).cloned();
+    let mut field_clocks = existing.field_clocks.clone();
+    for field in existing.fields.keys() {
+        field_clocks
+            .entry(field.clone())
+            .or_insert_with(|| existing.clock.clone());
+    }
+    for (field, incoming_value) in incoming.fields.iter() {
+        let policy = policy_for_field(field);
+        let existing_clock = existing.field_clock(field).clone();
+        let incoming_clock = incoming.field_clock(field).clone();
+        let field_newer = match existing.fields.get(field) {
+            Some(_) => incoming_clock >= existing_clock,
+            None => true,
+        };
+        let existing_value = fields.get(field).cloned();
         let merged = merge_field(
             policy,
-            &field,
+            field,
             existing_value,
-            incoming_value,
-            incoming_newer,
+            incoming_value.clone(),
+            field_newer,
             &merge_custom,
         );
-        fields.insert(field, merged);
+        let merged_clock = if existing.fields.contains_key(field) {
+            std::cmp::max(existing_clock, incoming_clock)
+        } else {
+            incoming_clock
+        };
+        fields.insert(field.clone(), merged);
+        field_clocks.insert(field.clone(), merged_clock);
     }
 
-    let clock = if incoming_newer {
-        incoming.clock.clone()
-    } else {
-        existing.clock.clone()
-    };
+    let clock = std::cmp::max(existing.clock.clone(), incoming.clock.clone());
     let updated_at = match (existing.updated_at, incoming.updated_at) {
         (Some(left), Some(right)) => Some(left.max(right)),
         (Some(left), None) => Some(left),
@@ -350,6 +364,7 @@ fn merge_records(
         tombstone: false,
         clock,
         updated_at,
+        field_clocks,
     }
 }
 
@@ -447,6 +462,24 @@ fn merge_field(
             }
             (None, incoming) => incoming,
         },
+        MergePolicy::AppendOnly => {
+            let mut left = match existing {
+                Some(FieldValue::List(items)) => items,
+                Some(FieldValue::Null) | None => Vec::new(),
+                Some(other) => vec![other],
+            };
+            let right = match incoming {
+                FieldValue::List(items) => items,
+                FieldValue::Null => Vec::new(),
+                other => vec![other],
+            };
+            for item in right {
+                if !left.contains(&item) {
+                    left.push(item);
+                }
+            }
+            FieldValue::List(left)
+        }
         MergePolicy::Custom(policy_name) => {
             if let Some(merged) = merge_custom(
                 &policy_name,
@@ -487,6 +520,7 @@ mod tests {
                 device_id: "device".to_string(),
             },
             updated_at: None,
+            field_clocks: Default::default(),
         }
     }
 
@@ -668,6 +702,101 @@ mod tests {
     }
 
     #[test]
+    fn merge_policy_append_only_never_drops_items() {
+        let adapter = InMemoryLogicalAdapter::new("logical", "app")
+            .with_merge_policy("ops", MergePolicy::AppendOnly);
+
+        let mut state = State::new("device");
+        let mut records = RecordState::new(&mut state, "app");
+        records
+            .apply(record(
+                5,
+                BTreeMap::from([(
+                    "ops".to_string(),
+                    FieldValue::List(vec![
+                        FieldValue::String("a".to_string()),
+                        FieldValue::String("b".to_string()),
+                    ]),
+                )]),
+            ))
+            .expect("apply");
+
+        // Older, shorter incoming list with one unseen op: nothing is lost.
+        adapter
+            .apply_snapshot(
+                &mut records,
+                vec![record(
+                    2,
+                    BTreeMap::from([(
+                        "ops".to_string(),
+                        FieldValue::List(vec![FieldValue::String("c".to_string())]),
+                    )]),
+                )],
+            )
+            .expect("merge");
+        // A non-list incoming value becomes a single item.
+        adapter
+            .apply_snapshot(
+                &mut records,
+                vec![record(
+                    9,
+                    BTreeMap::from([("ops".to_string(), FieldValue::String("d".to_string()))]),
+                )],
+            )
+            .expect("merge");
+
+        let merged = records
+            .get("schema", "Todo", "1")
+            .expect("get")
+            .expect("record");
+        assert_eq!(
+            merged.fields.get("ops"),
+            Some(&FieldValue::List(vec![
+                FieldValue::String("a".to_string()),
+                FieldValue::String("b".to_string()),
+                FieldValue::String("c".to_string()),
+                FieldValue::String("d".to_string()),
+            ]))
+        );
+    }
+
+    #[test]
+    fn older_incoming_record_still_contributes_disjoint_fields() {
+        let adapter = InMemoryLogicalAdapter::new("logical", "app");
+
+        let mut state = State::new("device");
+        let mut records = RecordState::new(&mut state, "app");
+        records
+            .apply(record(
+                5,
+                BTreeMap::from([("title".to_string(), FieldValue::String("newer".to_string()))]),
+            ))
+            .expect("apply");
+
+        let applied = adapter
+            .apply_snapshot(
+                &mut records,
+                vec![record(
+                    2,
+                    BTreeMap::from([("done".to_string(), FieldValue::Bool(true))]),
+                )],
+            )
+            .expect("merge");
+        assert_eq!(applied, 1);
+
+        let merged = records
+            .get("schema", "Todo", "1")
+            .expect("get")
+            .expect("record");
+        assert_eq!(
+            merged.fields.get("title"),
+            Some(&FieldValue::String("newer".to_string()))
+        );
+        assert_eq!(merged.fields.get("done"), Some(&FieldValue::Bool(true)));
+        assert_eq!(merged.clock.counter, 5);
+    }
+
+    #[test]
     fn merge_policy_lww_keeps_newer_value() {
         let adapter = InMemoryLogicalAdapter::new("logical", "app");
 
@@ -803,6 +932,7 @@ mod tests {
                     device_id: "device".to_string(),
                 },
                 updated_at: None,
+                field_clocks: Default::default(),
             })
             .expect("set");
 

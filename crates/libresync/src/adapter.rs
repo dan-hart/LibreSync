@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
@@ -78,6 +79,128 @@ pub trait DataAdapter: Send + Sync {
 
     fn apply_entries(&self, state: &mut State, entries: Vec<Entry>) -> Result<usize> {
         Ok(state.merge_snapshot(entries))
+    }
+
+    /// Whether inbound entries with this key belong to the adapter. The sync
+    /// path routes every inbound entry to the first registered adapter that
+    /// owns its key and applies it through that adapter's `apply_entries`, so
+    /// adapter merge policies run during sync. Entries nobody owns are merged
+    /// with last-writer-wins. Custom adapters that override `apply_entries`
+    /// must also override this to receive entries during sync.
+    fn owns_key(&self, key: &str) -> bool {
+        let _ = key;
+        false
+    }
+}
+
+/// Applies entries received from a peer to the local state.
+pub trait InboundApplier: Send + Sync {
+    fn apply_inbound(&self, state: &mut State, entries: Vec<Entry>) -> Result<usize>;
+
+    /// Called before entries are exported to a peer, so app data can be
+    /// loaded into the state first. Default: no-op.
+    fn before_export(&self, state: &mut State) -> Result<()> {
+        let _ = state;
+        Ok(())
+    }
+
+    /// Called after inbound entries were merged, so merged data can be
+    /// written back to app storage. Default: no-op.
+    fn after_apply(&self, state: &State) -> Result<()> {
+        let _ = state;
+        Ok(())
+    }
+}
+
+/// Whole-entry last-writer-wins on the Lamport clock (the pre-0.4 behaviour).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LwwApplier;
+
+impl InboundApplier for LwwApplier {
+    fn apply_inbound(&self, state: &mut State, entries: Vec<Entry>) -> Result<usize> {
+        Ok(state.merge_snapshot(entries))
+    }
+}
+
+/// Routes inbound entries to the registered adapter that owns each key so
+/// logical adapters get per-field merges during sync.
+#[derive(Clone, Default)]
+pub struct AdapterRouter {
+    adapters: Arc<Mutex<HashMap<String, Arc<dyn DataAdapter>>>>,
+}
+
+impl AdapterRouter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn from_shared(adapters: Arc<Mutex<HashMap<String, Arc<dyn DataAdapter>>>>) -> Self {
+        Self { adapters }
+    }
+
+    pub fn register(&self, adapter: Arc<dyn DataAdapter>) -> Result<()> {
+        let adapter_id = adapter.id().to_string();
+        let mut adapters = self
+            .adapters
+            .lock()
+            .map_err(|_| Error::Protocol("adapter registry poisoned".to_string()))?;
+        if adapters.contains_key(&adapter_id) {
+            return Err(Error::Protocol(format!(
+                "adapter already registered: {adapter_id}"
+            )));
+        }
+        adapters.insert(adapter_id, adapter);
+        Ok(())
+    }
+
+    pub fn adapter(&self, adapter_id: &str) -> Option<Arc<dyn DataAdapter>> {
+        self.adapters.lock().ok()?.get(adapter_id).cloned()
+    }
+
+    pub fn adapters(&self) -> Vec<Arc<dyn DataAdapter>> {
+        let mut adapters: Vec<(String, Arc<dyn DataAdapter>)> = self
+            .adapters
+            .lock()
+            .map(|map| map.iter().map(|(id, a)| (id.clone(), a.clone())).collect())
+            .unwrap_or_default();
+        adapters.sort_by(|left, right| left.0.cmp(&right.0));
+        adapters.into_iter().map(|(_, adapter)| adapter).collect()
+    }
+}
+
+impl InboundApplier for AdapterRouter {
+    fn apply_inbound(&self, state: &mut State, entries: Vec<Entry>) -> Result<usize> {
+        let adapters = self.adapters();
+        let mut buckets: Vec<Vec<Entry>> = vec![Vec::new(); adapters.len()];
+        let mut unowned = Vec::new();
+        for entry in entries {
+            match adapters.iter().position(|adapter| adapter.owns_key(&entry.key)) {
+                Some(index) => buckets[index].push(entry),
+                None => unowned.push(entry),
+            }
+        }
+        let mut applied = 0;
+        for (adapter, bucket) in adapters.iter().zip(buckets) {
+            if !bucket.is_empty() {
+                applied += adapter.apply_entries(state, bucket)?;
+            }
+        }
+        applied += state.merge_snapshot(unowned);
+        Ok(applied)
+    }
+
+    fn before_export(&self, state: &mut State) -> Result<()> {
+        for adapter in self.adapters() {
+            adapter.load_into_state(state)?;
+        }
+        Ok(())
+    }
+
+    fn after_apply(&self, state: &State) -> Result<()> {
+        for adapter in self.adapters() {
+            adapter.apply_from_state(state)?;
+        }
+        Ok(())
     }
 }
 
@@ -169,6 +292,13 @@ impl DataAdapter for LogicalAdapterWrapper {
         }
         let mut record_state = RecordState::new(state, self.inner.namespace());
         self.inner.apply_snapshot(&mut record_state, records)
+    }
+
+    fn owns_key(&self, key: &str) -> bool {
+        matches!(
+            crate::parse_record_key(key),
+            Ok(Some(parts)) if parts.namespace == self.inner.namespace()
+        )
     }
 }
 
@@ -274,6 +404,10 @@ impl DataAdapter for JsonFileAdapter {
         }
 
         Ok(())
+    }
+
+    fn owns_key(&self, key: &str) -> bool {
+        key == self.key
     }
 }
 
@@ -476,6 +610,10 @@ impl DataAdapter for SqliteFileAdapter {
             delta: true,
             watch: false,
         }
+    }
+
+    fn owns_key(&self, key: &str) -> bool {
+        key == self.key || key == self.wal_key() || key == self.shm_key() || key == self.delta_key()
     }
 
     fn load_into_state(&self, state: &mut State) -> Result<()> {
@@ -708,6 +846,10 @@ impl DataAdapter for WatchedFileAdapter {
         }
     }
 
+    fn owns_key(&self, key: &str) -> bool {
+        key == self.key
+    }
+
     fn load_into_state(&self, state: &mut State) -> Result<()> {
         self.ensure_file()?;
         let bytes = fs::read(&self.path)?;
@@ -772,9 +914,136 @@ fn ensure_file_with_default(path: &Path, default_bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AdapterCache, DataAdapter, JsonFileAdapter, SqliteFileAdapter, WatchedFileAdapter,
+        AdapterCache, AdapterRouter, DataAdapter, InboundApplier, JsonFileAdapter,
+        LogicalAdapterWrapper, LwwApplier, SqliteFileAdapter, WatchedFileAdapter,
     };
-    use crate::State;
+    use crate::{
+        FieldValue, InMemoryLogicalAdapter, LamportClock, MergePolicy, RecordState, State,
+        SyncRecord,
+    };
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    fn record(counter: u64, device: &str, fields: BTreeMap<String, FieldValue>) -> SyncRecord {
+        SyncRecord {
+            schema: "schema".to_string(),
+            entity: "Todo".to_string(),
+            id: "1".to_string(),
+            fields,
+            tombstone: false,
+            clock: LamportClock {
+                counter,
+                device_id: device.to_string(),
+            },
+            updated_at: None,
+            field_clocks: Default::default(),
+        }
+    }
+
+    #[test]
+    fn adapters_report_owned_keys() {
+        let json = JsonFileAdapter::new("file", "data.json").with_key("doc");
+        assert!(json.owns_key("doc"));
+        assert!(!json.owns_key("file"));
+
+        let sqlite = SqliteFileAdapter::new("db", "db.sqlite");
+        for key in ["db", "db:wal", "db:shm", "db:delta"] {
+            assert!(sqlite.owns_key(key), "{key}");
+        }
+        assert!(!sqlite.owns_key("other"));
+
+        let logical = LogicalAdapterWrapper::new(Arc::new(InMemoryLogicalAdapter::new(
+            "logical", "app",
+        )));
+        assert!(logical.owns_key(&crate::record_entry_key("app", "s", "e", "1")));
+        assert!(!logical.owns_key(&crate::record_entry_key("other", "s", "e", "1")));
+        assert!(!logical.owns_key("plain"));
+    }
+
+    #[test]
+    fn router_applies_field_merges_and_falls_back_to_lww() {
+        let logical = Arc::new(
+            InMemoryLogicalAdapter::new("logical", "app")
+                .with_merge_policy("tags", MergePolicy::SetUnion),
+        );
+        let router = AdapterRouter::new();
+        router
+            .register(Arc::new(LogicalAdapterWrapper::new(logical)))
+            .expect("register");
+        router
+            .register(Arc::new(JsonFileAdapter::new("file", "data.json")))
+            .expect("register json");
+        assert!(router.register(Arc::new(JsonFileAdapter::new("file", "x.json"))).is_err());
+        assert!(router.adapter("file").is_some());
+        assert_eq!(router.adapters().len(), 2);
+
+        let mut state = State::new("device-a");
+        RecordState::new(&mut state, "app")
+            .apply(record(
+                5,
+                "device-a",
+                BTreeMap::from([(
+                    "tags".to_string(),
+                    FieldValue::List(vec![FieldValue::String("a".to_string())]),
+                )]),
+            ))
+            .expect("apply");
+        state.set("plain", b"local".to_vec());
+
+        let incoming_record = crate::record_to_entry(
+            "app",
+            &record(
+                2,
+                "device-b",
+                BTreeMap::from([(
+                    "tags".to_string(),
+                    FieldValue::List(vec![FieldValue::String("b".to_string())]),
+                )]),
+            ),
+        )
+        .expect("entry");
+        let incoming_plain = crate::Entry {
+            key: "plain".to_string(),
+            value: b"remote".to_vec(),
+            clock: LamportClock {
+                counter: 99,
+                device_id: "device-b".to_string(),
+            },
+        };
+        let applied = router
+            .apply_inbound(&mut state, vec![incoming_record, incoming_plain])
+            .expect("apply inbound");
+        assert_eq!(applied, 2);
+
+        let merged = RecordState::new(&mut state, "app")
+            .get("schema", "Todo", "1")
+            .expect("get")
+            .expect("record");
+        assert_eq!(
+            merged.fields.get("tags"),
+            Some(&FieldValue::List(vec![
+                FieldValue::String("a".to_string()),
+                FieldValue::String("b".to_string()),
+            ]))
+        );
+        assert_eq!(state.get("plain"), Some("remote".as_bytes()));
+
+        let mut lww_state = State::new("device-a");
+        let count = LwwApplier
+            .apply_inbound(
+                &mut lww_state,
+                vec![crate::Entry {
+                    key: "k".to_string(),
+                    value: b"v".to_vec(),
+                    clock: LamportClock {
+                        counter: 1,
+                        device_id: "device-b".to_string(),
+                    },
+                }],
+            )
+            .expect("lww");
+        assert_eq!(count, 1);
+    }
 
     #[test]
     fn sqlite_adapter_loads_wal_and_shm() {

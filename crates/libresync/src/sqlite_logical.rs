@@ -354,6 +354,7 @@ impl SqliteLogicalAdapter {
                 tombstone,
                 clock,
                 updated_at,
+                field_clocks: Default::default(),
             };
             records.apply(record)?;
         }
@@ -370,6 +371,7 @@ impl SqliteLogicalAdapter {
                 tombstone,
                 clock,
                 updated_at,
+                field_clocks: Default::default(),
             };
             records.apply(record)?;
         }
@@ -546,6 +548,7 @@ impl LogicalAdapter for SqliteLogicalAdapter {
                         device_id: clock_device,
                     },
                     updated_at: updated_at.map(|value| value.max(0) as u64),
+                    field_clocks: Default::default(),
                 })
             })
             .map_err(|error| Error::Protocol(error.to_string()))?;
@@ -813,6 +816,7 @@ mod tests {
                     device_id: "device".to_string(),
                 },
                 updated_at: None,
+                field_clocks: Default::default(),
             })
             .expect("set");
 
@@ -877,6 +881,7 @@ mod tests {
                     device_id: "device".to_string(),
                 },
                 updated_at: None,
+                field_clocks: Default::default(),
             })
             .expect("set");
 
@@ -894,6 +899,7 @@ mod tests {
                         device_id: "device".to_string(),
                     },
                     updated_at: None,
+                    field_clocks: Default::default(),
                 }],
             )
             .expect("merge");
@@ -958,6 +964,7 @@ mod tests {
                     device_id: "device".to_string(),
                 },
                 updated_at: None,
+                field_clocks: Default::default(),
             })
             .expect("set");
 
@@ -1035,6 +1042,7 @@ mod tests {
                     device_id: "device".to_string(),
                 },
                 updated_at: None,
+                field_clocks: Default::default(),
             })
             .expect("set todo");
         records
@@ -1055,6 +1063,7 @@ mod tests {
                     device_id: "device".to_string(),
                 },
                 updated_at: None,
+                field_clocks: Default::default(),
             })
             .expect("set note");
 

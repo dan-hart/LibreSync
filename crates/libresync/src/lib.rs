@@ -17,8 +17,9 @@ mod state;
 mod sync;
 
 pub use adapter::{
-    AdapterCache, AdapterCapabilities, AdapterKind, DataAdapter, JsonFileAdapter, LogicalAdapter,
-    LogicalAdapterWrapper, SqliteFileAdapter, WatchedFileAdapter,
+    AdapterCache, AdapterCapabilities, AdapterKind, AdapterRouter, DataAdapter, InboundApplier,
+    JsonFileAdapter, LogicalAdapter, LogicalAdapterWrapper, LwwApplier, SqliteFileAdapter,
+    WatchedFileAdapter,
 };
 pub use backup::{
     summarize_snapshot_diff, BackupAdapter, BackupManager, DataAdapterBackup, DiffCounts,
@@ -35,15 +36,16 @@ pub use discovery::{
     DiscoverySource, MdnsAdvertiser, DEFAULT_SYNC_PORT,
 };
 pub use engine::{
-    event_channel, AdapterWatch, AutoRefresh, AutoRefreshConfig, DeviceInfo, Engine, EngineConfig,
-    Event, EventSink, EventStream, LinkingDecision, LinkingRequest, SyncResult,
+    event_channel, AdapterWatch, AutoRefresh, AutoRefreshConfig, BackgroundEngine, DeviceInfo,
+    Engine, EngineConfig, Event, EventSink, EventStream, LinkingDecision, LinkingRequest,
+    SyncRequest, SyncResult, Ticket,
 };
 pub use entry::{Entry, LamportClock};
 pub use error::{Error, Result};
 pub use identity::Identity;
 pub use keys::DeviceKeys;
 pub use logical::{FileLogicalAdapter, InMemoryLogicalAdapter};
-pub use protocol::{read_message, write_message, Message};
+pub use protocol::{read_message, write_message, Message, PROTOCOL_VERSION};
 pub use record::{
     entry_to_record, parse_record_key, record_entry_key, record_to_entry, FieldValue, MergePolicy,
     RecordCompactionPolicy, RecordCompactionSummary, RecordKeyParts, RecordState, RecordView,
@@ -53,5 +55,9 @@ pub use record::{
 pub use sqlite_logical::{
     SqliteLogicalAdapter, SqliteLogicalEncoding, SqliteLogicalField, SqliteLogicalMapping,
 };
-pub use state::State;
-pub use sync::{link_with_device, sync_with_device, SyncListener};
+pub use state::{PeerCursor, State};
+pub use sync::{
+    link_with_device, link_with_device_using, sync_with_device, sync_with_device_shared,
+    sync_with_device_using, CancelToken, ListenerOptions, SyncListener, SyncOptions, SyncOutcome,
+    SyncStats,
+};

@@ -6,6 +6,15 @@ pub enum Error {
     Serde(serde_json::Error),
     Protocol(String),
     Crypto(String),
+    /// A linked device presented a certificate whose fingerprint does not
+    /// match the pinned one. The app should ask the user before re-linking.
+    FingerprintMismatch {
+        device_id: String,
+        expected: String,
+        actual: String,
+    },
+    /// The operation was cancelled through a [`crate::CancelToken`].
+    Cancelled,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -17,6 +26,15 @@ impl fmt::Display for Error {
             Error::Serde(error) => write!(formatter, "serialization error: {error}"),
             Error::Protocol(message) => write!(formatter, "protocol error: {message}"),
             Error::Crypto(message) => write!(formatter, "crypto error: {message}"),
+            Error::FingerprintMismatch {
+                device_id,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "fingerprint mismatch for {device_id}: pinned {expected}, presented {actual}"
+            ),
+            Error::Cancelled => write!(formatter, "operation cancelled"),
         }
     }
 }
@@ -28,6 +46,8 @@ impl StdError for Error {
             Error::Serde(error) => Some(error),
             Error::Protocol(_) => None,
             Error::Crypto(_) => None,
+            Error::FingerprintMismatch { .. } => None,
+            Error::Cancelled => None,
         }
     }
 }
@@ -82,6 +102,19 @@ mod tests {
         let io_error = io::Error::other("boom");
         let error = Error::from(io_error);
         assert!(StdError::source(&error).is_some());
+    }
+
+    #[test]
+    fn fingerprint_mismatch_display_names_both_fingerprints() {
+        let error = Error::FingerprintMismatch {
+            device_id: "d".to_string(),
+            expected: "aa".to_string(),
+            actual: "bb".to_string(),
+        };
+        let text = error.to_string();
+        assert!(text.contains("aa") && text.contains("bb") && text.contains('d'));
+        assert!(StdError::source(&error).is_none());
+        assert!(Error::Cancelled.to_string().contains("cancelled"));
     }
 
     #[test]

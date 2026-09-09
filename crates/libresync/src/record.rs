@@ -27,7 +27,7 @@ pub enum FieldValue {
     Map(BTreeMap<String, FieldValue>),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct SyncRecord {
     pub schema: String,
     pub entity: String,
@@ -36,6 +36,41 @@ pub struct SyncRecord {
     pub tombstone: bool,
     pub clock: LamportClock,
     pub updated_at: Option<u64>,
+    /// Clock of the last change to each field. Fields without an entry are
+    /// considered changed at `clock`. Apps normally leave this empty: the
+    /// engine derives it on write by comparing with the stored version, so
+    /// field-level last-writer-wins can tell which fields an edit touched.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub field_clocks: BTreeMap<String, LamportClock>,
+}
+
+impl SyncRecord {
+    /// Clock of the last change to `field` (the record clock when unknown).
+    pub fn field_clock(&self, field: &str) -> &LamportClock {
+        self.field_clocks.get(field).unwrap_or(&self.clock)
+    }
+
+    /// Fills in `field_clocks` for fields that have none, keeping the
+    /// previous clock for fields whose value is unchanged from `existing`.
+    pub fn stamp_field_clocks(&mut self, existing: Option<&SyncRecord>) {
+        let fields: Vec<String> = self.fields.keys().cloned().collect();
+        for field in fields {
+            if self.field_clocks.contains_key(&field) {
+                continue;
+            }
+            let inherited = existing.and_then(|existing| {
+                if existing.tombstone {
+                    return None;
+                }
+                let same = existing.fields.get(&field) == self.fields.get(&field);
+                same.then(|| existing.field_clock(&field).clone())
+            });
+            let clock = inherited.unwrap_or_else(|| self.clock.clone());
+            self.field_clocks.insert(field, clock);
+        }
+        self.field_clocks
+            .retain(|field, _| self.fields.contains_key(field));
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -45,6 +80,12 @@ pub enum MergePolicy {
     SetUnion,
     Counter,
     ListAppend,
+    /// Grow-only list of opaque operations (an op-log). Items are unioned and
+    /// never dropped, even by an older or shorter incoming version; a
+    /// non-list incoming value is treated as a single item. Order is the
+    /// existing list followed by unseen incoming items, so apps must order by
+    /// causality metadata carried inside each item.
+    AppendOnly,
     Custom(String),
 }
 
@@ -56,6 +97,8 @@ struct RecordPayload {
     tombstone: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     updated_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    field_clocks: BTreeMap<String, LamportClock>,
 }
 
 pub struct RecordState<'a> {
@@ -101,20 +144,51 @@ impl<'a> RecordState<'a> {
         }
     }
 
-    pub fn set(&mut self, record: SyncRecord) -> Result<Entry> {
+    /// Writes a record with a fresh local clock. Field clocks are derived
+    /// against the stored version, then the new local clock is used for the
+    /// record and for every field that changed.
+    pub fn set(&mut self, mut record: SyncRecord) -> Result<Entry> {
         let key = record_entry_key(&self.namespace, &record.schema, &record.entity, &record.id);
+        let existing = self.get(&record.schema, &record.entity, &record.id)?;
+        // The state assigns the clock; pre-compute it so field clocks match.
+        let next_clock = LamportClock {
+            counter: self.state.counter.saturating_add(1),
+            device_id: self.state.device_id.clone(),
+        };
+        record.clock = next_clock;
+        record.stamp_field_clocks(existing.as_ref());
         let payload = RecordPayload {
             fields: record.fields,
             tombstone: record.tombstone,
             updated_at: record.updated_at,
+            field_clocks: record.field_clocks,
         };
         let value = serde_json::to_vec(&payload)?;
         Ok(self.state.set(key, value))
     }
 
-    pub fn apply(&mut self, record: SyncRecord) -> Result<bool> {
+    /// Applies a record if its clock is newer than the stored version
+    /// (last-writer-wins on the whole record). Field clocks are derived
+    /// against the stored version when the record carries none.
+    pub fn apply(&mut self, mut record: SyncRecord) -> Result<bool> {
+        let existing = self.get(&record.schema, &record.entity, &record.id)?;
+        if let Some(existing) = &existing {
+            if existing.clock >= record.clock {
+                return Ok(false);
+            }
+        }
+        record.stamp_field_clocks(existing.as_ref());
         let entry = record_to_entry(&self.namespace, &record)?;
         Ok(self.state.apply_entry(entry))
+    }
+
+    /// Writes a merged record even when its clock does not exceed the stored
+    /// clock (field-level merges keep the winning clock but may add content).
+    pub fn upsert(&mut self, mut record: SyncRecord) -> Result<bool> {
+        let existing = self.get(&record.schema, &record.entity, &record.id)?;
+        record.stamp_field_clocks(existing.as_ref());
+        let entry = record_to_entry(&self.namespace, &record)?;
+        Ok(self.state.upsert_entry(entry))
     }
 
     pub fn snapshot(&self) -> Result<Vec<SyncRecord>> {
@@ -277,6 +351,7 @@ pub fn record_to_entry(namespace: &str, record: &SyncRecord) -> Result<Entry> {
         fields: record.fields.clone(),
         tombstone: record.tombstone,
         updated_at: record.updated_at,
+        field_clocks: record.field_clocks.clone(),
     };
     let value = serde_json::to_vec(&payload)?;
     Ok(Entry {
@@ -302,6 +377,7 @@ pub fn entry_to_record(entry: &Entry, namespace: &str) -> Result<Option<SyncReco
         tombstone: payload.tombstone,
         updated_at: payload.updated_at,
         clock: entry.clock.clone(),
+        field_clocks: payload.field_clocks,
     }))
 }
 
@@ -364,6 +440,7 @@ mod tests {
                 device_id: "device".to_string(),
             },
             updated_at,
+            field_clocks: Default::default(),
         }
     }
 
@@ -393,6 +470,7 @@ mod tests {
                 device_id: "device".to_string(),
             },
             updated_at: Some(123),
+            field_clocks: Default::default(),
         };
 
         let entry = record_to_entry("app", &record).expect("entry");
@@ -419,6 +497,7 @@ mod tests {
                 device_id: "device".to_string(),
             },
             updated_at: None,
+            field_clocks: Default::default(),
         };
         let entry = record_to_entry("app", &record).expect("entry");
         let decoded = entry_to_record(&entry, "other").expect("decode");
@@ -449,6 +528,59 @@ mod tests {
         };
         let result = entry_to_record(&entry, "app");
         assert!(result.is_err());
+    }
+
+    fn clock(counter: u64, device: &str) -> LamportClock {
+        LamportClock {
+            counter,
+            device_id: device.to_string(),
+        }
+    }
+
+    #[test]
+    fn apply_derives_field_clocks_for_changed_fields_only() {
+        let mut state = State::new("device-a");
+        let mut records = RecordState::new(&mut state, "app");
+        let base = SyncRecord {
+            schema: "s".to_string(),
+            entity: "E".to_string(),
+            id: "1".to_string(),
+            fields: BTreeMap::from([
+                ("title".to_string(), FieldValue::String("a".to_string())),
+                ("done".to_string(), FieldValue::Bool(false)),
+            ]),
+            clock: clock(1, "device-a"),
+            ..SyncRecord::default()
+        };
+        assert!(records.apply(base.clone()).expect("apply"));
+        let stored = records.get("s", "E", "1").expect("get").expect("record");
+        assert_eq!(stored.field_clock("title"), &clock(1, "device-a"));
+
+        let mut edit = base.clone();
+        edit.clock = clock(2, "device-b");
+        edit.fields
+            .insert("done".to_string(), FieldValue::Bool(true));
+        assert!(records.apply(edit).expect("apply"));
+        let stored = records.get("s", "E", "1").expect("get").expect("record");
+        assert_eq!(stored.field_clock("title"), &clock(1, "device-a"));
+        assert_eq!(stored.field_clock("done"), &clock(2, "device-b"));
+        assert_eq!(stored.clock, clock(2, "device-b"));
+
+        // Older records are ignored; explicit field clocks are preserved.
+        let mut stale = base.clone();
+        stale.clock = clock(0, "device-c");
+        assert!(!records.apply(stale).expect("apply"));
+
+        let mut set_record = stored.clone();
+        set_record.fields.remove("title");
+        set_record.field_clocks.clear();
+        let entry = records.set(set_record).expect("set");
+        let stored = crate::entry_to_record(&entry, "app")
+            .expect("decode")
+            .expect("record");
+        assert!(!stored.field_clocks.contains_key("title"));
+        assert_eq!(stored.field_clock("done"), &clock(2, "device-b"));
+        assert_eq!(stored.clock.device_id, "device-a");
     }
 
     #[test]

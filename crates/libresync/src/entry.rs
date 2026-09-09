@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Eq, PartialEq)]
 pub struct LamportClock {
     pub counter: u64,
     pub device_id: String,

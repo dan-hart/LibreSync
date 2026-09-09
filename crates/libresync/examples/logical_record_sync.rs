@@ -25,6 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             device_id: "device-a".to_string(),
         },
         updated_at: None,
+        field_clocks: Default::default(),
     })?;
 
     adapter.apply_records(&RecordView::new(&state, namespace))?;
