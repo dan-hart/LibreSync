@@ -1491,6 +1491,13 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
 fn report_error(error: &dyn StdError, verbose: bool) {
     eprintln!("Error: {error}");
+    if error.to_string().contains("fingerprint mismatch") {
+        eprintln!(
+            "Hint: the device's certificate changed since it was linked (its keys were rotated \
+             or another device is using its name). Verify with its owner, then run \
+             `libresync unlink --device-id <id>` and `libresync link` to pin the new fingerprint."
+        );
+    }
     if verbose {
         eprintln!("Debug: {error:?}");
         let mut index = 1;
@@ -4697,6 +4704,12 @@ mod tests {
         let error = io::Error::new(io::ErrorKind::Other, "boom");
         report_error(&error, false);
         report_error(&error, true);
+        let mismatch = libresync::Error::FingerprintMismatch {
+            device_id: "d".to_string(),
+            expected: "a".to_string(),
+            actual: "b".to_string(),
+        };
+        report_error(&mismatch, false);
     }
 
     #[test]

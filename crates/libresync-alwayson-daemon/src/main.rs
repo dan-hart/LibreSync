@@ -441,6 +441,18 @@ fn spawn_config_listener(
                     changed = true;
                 }
             }
+            Event::FingerprintChanged {
+                device,
+                fingerprint,
+            } => {
+                // Never re-pin automatically: the stored fingerprint stays
+                // and the connection was rejected. A person must re-link.
+                eprintln!(
+                    "WARNING: device {} presented a different certificate (fingerprint {}); \
+                     connection rejected. Re-link the device if this change is expected.",
+                    device.identity.device_id, fingerprint
+                );
+            }
             _ => {}
         }
 

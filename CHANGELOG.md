@@ -42,6 +42,21 @@ narrative context live in `RELEASES.md`.
   `tests/two_device.rs::append_only_event_log_loses_nothing_under_concurrent_appends`.
 - `Event::InboundSync` reports merges performed by the local listener.
 
+### Security
+- **Fingerprint pinning after first use.** Linking stays trust-on-first-use.
+  Afterwards a linked device whose leaf certificate does not match the pinned
+  fingerprint is rejected on both sides (`Error::FingerprintMismatch`) and
+  `Event::FingerprintChanged` is emitted so the app can ask the user before
+  re-linking. `SyncRequest::for_device` / `SyncOptions::with_expected_fingerprint`
+  pin the fingerprint at the TLS layer so the handshake fails before any
+  application data is sent. The TLS server name is the expected device id when
+  known instead of a hard-coded value.
+- Upgraded rustls 0.21 to 0.23 (ring provider); the `dangerous_configuration`
+  feature is gone. Certificate verification now also checks handshake
+  signatures with the provider's algorithms.
+- The daemon logs fingerprint changes and never re-pins automatically; the CLI
+  prints a re-link hint on mismatch.
+
 ### Changed
 - `SyncRecord` gained `field_clocks` and now implements `Default`; construct
   records with `..SyncRecord::default()`. `LamportClock` implements `Default`.

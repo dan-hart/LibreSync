@@ -17,7 +17,8 @@ LibreSync is designed for **local-only, device-to-device synchronization** with 
 - Device discovery metadata leakage on shared networks.
 
 ## Mitigations (current + planned)
-- TLS with device keys for transport security.
+- Mutual TLS (rustls 0.23) with self-signed device keys for transport security.
+- Trust on first use at link time; after linking, the peer's certificate fingerprint is pinned and connections presenting another leaf certificate are rejected (`Error::FingerprintMismatch`, `Event::FingerprintChanged`).
 - E2EE for payloads and encrypted local state/backups.
 - Explicit linking and per-app allowlists.
 - Minimal discovery payloads and opt-out discovery flags.
@@ -39,6 +40,7 @@ LibreSync is designed for **local-only, device-to-device synchronization** with 
 
 ## Key model (current)
 - **Device keys**: per-device TLS keys used for transport security and identity fingerprints.
+- **Fingerprint pinning**: the SHA-256 of the peer's leaf certificate is recorded by the `DeviceHandler` when a link is approved. On every later connection both sides bind the peer's claimed identity to the presented certificate (`is_linked_with_fingerprint`); a client that already knows the expected fingerprint (`SyncRequest::for_device`, `SyncOptions::expected_fingerprint`) additionally fails the TLS handshake itself before any application data is written. A mismatch is never re-pinned automatically: the engine emits `Event::FingerprintChanged` so the app can ask the user, and the CLI/daemon print a re-link hint.
 - **App key**: shared app-level key used for payload encryption and encrypted state/backup storage.
 - The app key is never optional; the engine always encrypts payloads and local state.
 
