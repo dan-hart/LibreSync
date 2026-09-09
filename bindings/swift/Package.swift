@@ -43,7 +43,7 @@ let package = Package(
         ),
         .testTarget(
             name: "LibreSyncTests",
-            dependencies: ["LibreSync"],
+            dependencies: ["LibreSync", "CLibreSync"],
             path: "Tests/LibreSyncTests"
         ),
     ]
