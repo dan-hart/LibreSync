@@ -1,0 +1,30 @@
+# systemd user unit for the LibreSync always-on daemon.
+# Install: see contrib/README.md
+[Unit]
+Description=LibreSync always-on sync daemon
+Documentation=https://github.com/dan-hart/LibreSync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust the path if you installed the binary elsewhere (e.g. ~/.cargo/bin).
+ExecStart=%h/.local/bin/libresync-alwayson-daemon
+# Optional flags: --auto-accept, --auto-approve, --pairing-secret <secret>
+Restart=on-failure
+RestartSec=5
+# Keep restarting on flapping networks instead of giving up.
+StartLimitIntervalSec=0
+Environment=RUST_LOG=info
+# Hardening (all optional; loosen if your adapters live outside $HOME).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.config/libresync %h/.local/share/libresync
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=default.target

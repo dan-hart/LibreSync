@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- launchd user agent for the LibreSync always-on daemon. Install: see contrib/README.md -->
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.codedbydan.libresync.alwayson</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/usr/local/bin/libresync-alwayson-daemon</string>
+      <!-- Optional flags, one string each: --auto-accept, --pairing-secret, SECRET -->
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <!-- Restart on failure only (exit status != 0); a clean exit stays stopped. -->
+    <key>KeepAlive</key>
+    <dict>
+      <key>SuccessfulExit</key>
+      <false/>
+      <key>NetworkState</key>
+      <true/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>RUST_LOG</key>
+      <string>info</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/libresync-alwayson.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/libresync-alwayson.err.log</string>
+  </dict>
+</plist>

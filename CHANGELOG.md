@@ -76,6 +76,24 @@ narrative context live in `RELEASES.md`.
 - `docs/API.md` documents the glib (thread + channel / fd) and Swift
   (DispatchQueue) integration patterns and the 0.4 migration.
 
+### Packaging (Linux)
+- `docs/PACKAGING-LINUX.md`: Flatpak `finish-args` (`--share=network`
+  required; optional `--filesystem=/var/run/tailscale`), firewalld and ufw
+  commands for mDNS (UDP 5353) and the listener port (TCP 52345), and an
+  ignored mDNS round-trip test to verify a host.
+- Tailscale discovery degrades explicitly: the CLI is probed once per process,
+  a single `log::info!` line reports why it is disabled, and no further
+  `tailscale status` attempts are made (`tailscale_cli_state()`,
+  `reset_tailscale_probe()`).
+- Feature `tailscale-local-api`: read peers from the Tailscale local API Unix
+  socket (`/var/run/tailscale/tailscaled.sock`, override with
+  `LIBRESYNC_TAILSCALE_SOCKET`) when the CLI is unavailable, e.g. in a Flatpak
+  sandbox.
+- `contrib/systemd/libresync-alwayson-daemon.service` (user unit,
+  `Restart=on-failure`, hardened) and `contrib/README.md` with enable steps;
+  `contrib/flatpak/` manifest fragment.
+- New dependency: `log` (facade only).
+
 ### Changed
 - `SyncRecord` gained `field_clocks` and now implements `Default`; construct
   records with `..SyncRecord::default()`. `LamportClock` implements `Default`.

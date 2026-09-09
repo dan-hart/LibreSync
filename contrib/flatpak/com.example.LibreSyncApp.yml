@@ -1,0 +1,38 @@
+# Minimal Flatpak manifest fragment for a GTK 4 app that embeds LibreSync.
+# Copy the finish-args into your own manifest; the rest is illustrative.
+id: com.example.LibreSyncApp
+runtime: org.gnome.Platform
+runtime-version: '47'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: libresync-app
+finish-args:
+  # Required: LAN sync (TCP 52345) and mDNS (UDP 5353 multicast).
+  - --share=network
+  # Required for the GUI.
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # Optional: read Tailscale peers through the local API socket when the
+  # `tailscale` CLI is not available in the sandbox (feature tailscale-local-api).
+  # Not needed for LAN-only use.
+  - --filesystem=/var/run/tailscale:ro
+  # Optional: store the app key with the Secret portal instead of a file.
+  - --talk-name=org.freedesktop.secrets
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/libresync-app/cargo
+modules:
+  - name: libresync-app
+    buildsystem: simple
+    build-commands:
+      - cargo --offline build --release --features tailscale-local-api
+      - install -Dm755 target/release/libresync-app /app/bin/libresync-app
+    sources:
+      - type: dir
+        path: .
+      # Generate with flatpak-cargo-generator.py for offline builds:
+      # - cargo-sources.json

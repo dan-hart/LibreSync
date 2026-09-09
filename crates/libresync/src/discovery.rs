@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 use std::{env, process::Command};
 
@@ -8,9 +9,48 @@ use serde::Deserialize;
 
 use crate::{Error, Identity, Result};
 
-const SERVICE_TYPE: &str = "_libresync._tcp.local.";
+/// mDNS service type advertised and browsed for peers.
+pub const SERVICE_TYPE: &str = "_libresync._tcp.local.";
 pub const DEFAULT_SYNC_PORT: u16 = 52345;
 const OVERLAY_PEERS_ENV: &str = "LIBRESYNC_OVERLAY_PEERS";
+/// Overrides the Tailscale local API socket path (feature `tailscale-local-api`).
+pub const TAILSCALE_SOCKET_ENV: &str = "LIBRESYNC_TAILSCALE_SOCKET";
+/// Default Tailscale local API socket on Linux.
+pub const DEFAULT_TAILSCALE_SOCKET: &str = "/var/run/tailscale/tailscaled.sock";
+
+const TAILSCALE_CLI_UNKNOWN: u8 = 0;
+const TAILSCALE_CLI_AVAILABLE: u8 = 1;
+const TAILSCALE_CLI_UNAVAILABLE: u8 = 2;
+
+/// Remembers whether the `tailscale` CLI is usable in this process. Inside a
+/// Flatpak sandbox (or on machines without Tailscale) the first probe fails and
+/// no further attempts are made, so discovery does not spawn a failing process
+/// every few seconds.
+static TAILSCALE_CLI_STATE: AtomicU8 = AtomicU8::new(TAILSCALE_CLI_UNKNOWN);
+
+/// Availability of the `tailscale` CLI as observed by discovery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TailscaleCliState {
+    /// Not probed yet.
+    Unknown,
+    Available,
+    /// The CLI is missing or failed; discovery no longer tries it. Call
+    /// [`reset_tailscale_probe`] to try again (e.g. after the user installed it).
+    Unavailable,
+}
+
+pub fn tailscale_cli_state() -> TailscaleCliState {
+    match TAILSCALE_CLI_STATE.load(Ordering::SeqCst) {
+        TAILSCALE_CLI_AVAILABLE => TailscaleCliState::Available,
+        TAILSCALE_CLI_UNAVAILABLE => TailscaleCliState::Unavailable,
+        _ => TailscaleCliState::Unknown,
+    }
+}
+
+/// Forgets a failed `tailscale` CLI probe so the next discovery tries again.
+pub fn reset_tailscale_probe() {
+    TAILSCALE_CLI_STATE.store(TAILSCALE_CLI_UNKNOWN, Ordering::SeqCst);
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiscoverySource {
@@ -132,11 +172,30 @@ pub fn discover_devices(
 
 pub fn browse_private_overlays(app_id: &str, overlay_port: u16) -> Vec<DiscoveredDevice> {
     let mut devices: BTreeMap<SocketAddr, DiscoveredDevice> = BTreeMap::new();
-    if let Ok(found) = browse_tailscale_overlay(app_id, overlay_port) {
-        for device in found {
-            devices.insert(device.address, device);
+    let mut tailscale_found = false;
+    if tailscale_cli_state() != TailscaleCliState::Unavailable {
+        if let Ok(found) = browse_tailscale_overlay(app_id, overlay_port) {
+            tailscale_found = true;
+            for device in found {
+                devices.insert(device.address, device);
+            }
         }
     }
+    #[cfg(all(unix, feature = "tailscale-local-api"))]
+    if !tailscale_found {
+        let socket = env::var(TAILSCALE_SOCKET_ENV)
+            .unwrap_or_else(|_| DEFAULT_TAILSCALE_SOCKET.to_string());
+        match browse_tailscale_local_api(app_id, overlay_port, std::path::Path::new(&socket)) {
+            Ok(found) => {
+                for device in found {
+                    devices.entry(device.address).or_insert(device);
+                }
+            }
+            Err(error) => log::debug!("tailscale local api unavailable at {socket}: {error}"),
+        }
+    }
+    #[cfg(not(all(unix, feature = "tailscale-local-api")))]
+    let _ = tailscale_found;
 
     if let Ok(raw) = env::var(OVERLAY_PEERS_ENV) {
         for device in parse_static_overlay_peers(app_id, overlay_port, &raw) {
@@ -173,17 +232,91 @@ fn browse_tailscale_overlay(app_id: &str, overlay_port: u16) -> Result<Vec<Disco
         .output()
     {
         Ok(output) => output,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(Error::Protocol(format!("tailscale status failed: {error}"))),
+        Err(error) => {
+            mark_tailscale_cli_unavailable(&format!("cannot run `tailscale`: {error}"));
+            return Err(Error::Protocol(format!("tailscale status failed: {error}")));
+        }
     };
 
     if !output.status.success() {
-        return Ok(Vec::new());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        mark_tailscale_cli_unavailable(&format!(
+            "`tailscale status` exited with {}: {}",
+            output.status,
+            stderr.trim()
+        ));
+        return Err(Error::Protocol("tailscale status failed".to_string()));
     }
+    TAILSCALE_CLI_STATE.store(TAILSCALE_CLI_AVAILABLE, Ordering::SeqCst);
 
     let json = String::from_utf8(output.stdout)
         .map_err(|error| Error::Protocol(format!("invalid tailscale status output: {error}")))?;
     parse_tailscale_status(app_id, overlay_port, &json)
+}
+
+fn mark_tailscale_cli_unavailable(reason: &str) {
+    let previous = TAILSCALE_CLI_STATE.swap(TAILSCALE_CLI_UNAVAILABLE, Ordering::SeqCst);
+    if previous != TAILSCALE_CLI_UNAVAILABLE {
+        log::info!(
+            "tailscale overlay discovery disabled for this process ({reason}); \
+             LAN mDNS and LIBRESYNC_OVERLAY_PEERS still work"
+        );
+    }
+}
+
+/// Reads peers from the Tailscale local API over its Unix socket. Used when
+/// the `tailscale` CLI is not available, e.g. inside a Flatpak sandbox that
+/// was granted `--filesystem=/var/run/tailscale`.
+#[cfg(all(unix, feature = "tailscale-local-api"))]
+pub fn browse_tailscale_local_api(
+    app_id: &str,
+    overlay_port: u16,
+    socket_path: &std::path::Path,
+) -> Result<Vec<DiscoveredDevice>> {
+    let json = tailscale_local_api_get(socket_path, "/localapi/v0/status")?;
+    parse_tailscale_status(app_id, overlay_port, &json)
+}
+
+#[cfg(all(unix, feature = "tailscale-local-api"))]
+fn tailscale_local_api_get(socket_path: &std::path::Path, path: &str) -> Result<String> {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+
+    let mut stream = UnixStream::connect(socket_path)?;
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    // HTTP/1.0 so the daemon closes the connection after the response and no
+    // chunked decoding is needed. The Sec-Tailscale header is what the CLI
+    // sends; it is required by newer daemons for non-browser clients.
+    let request = format!(
+        "GET {path} HTTP/1.0\r\nHost: local-tailscaled.sock\r\nSec-Tailscale: localapi\r\n\
+         Connection: close\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes())?;
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response)?;
+    parse_http_response(&response)
+}
+
+#[cfg(all(unix, feature = "tailscale-local-api"))]
+fn parse_http_response(response: &[u8]) -> Result<String> {
+    let text = String::from_utf8_lossy(response);
+    let (head, body) = text
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| Error::Protocol("malformed local api response".to_string()))?;
+    let status_line = head.lines().next().unwrap_or_default();
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| Error::Protocol(format!("bad status line: {status_line}")))?;
+    if status != 200 {
+        return Err(Error::Protocol(format!(
+            "local api returned {status}: {}",
+            body.trim()
+        )));
+    }
+    Ok(body.to_string())
 }
 
 fn parse_tailscale_status(
@@ -402,6 +535,7 @@ mod tests {
         browse_mdns, local_ips, parse_service_info, parse_static_overlay_peers,
         parse_tailscale_status, pick_address, DiscoverySource,
     };
+    use crate::Identity;
     use mdns_sd::ServiceInfo;
     use std::collections::HashMap;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -498,6 +632,99 @@ mod tests {
         assert_eq!(device.address, "100.64.0.2:52345".parse().expect("addr"));
         assert_eq!(device.source, DiscoverySource::Tailscale);
         assert_eq!(device.identity.app_id, "com.example.app");
+    }
+
+    #[test]
+    fn tailscale_cli_probe_is_remembered() {
+        super::reset_tailscale_probe();
+        assert_eq!(super::tailscale_cli_state(), super::TailscaleCliState::Unknown);
+        super::mark_tailscale_cli_unavailable("test");
+        assert_eq!(
+            super::tailscale_cli_state(),
+            super::TailscaleCliState::Unavailable
+        );
+        // Marked unavailable: discovery skips the CLI entirely and the state
+        // stays unavailable (only the local API socket may still add peers).
+        let _ = super::browse_private_overlays("com.example.app", 52345);
+        assert_eq!(
+            super::tailscale_cli_state(),
+            super::TailscaleCliState::Unavailable
+        );
+        super::reset_tailscale_probe();
+        assert_eq!(super::tailscale_cli_state(), super::TailscaleCliState::Unknown);
+    }
+
+    #[cfg(all(unix, feature = "tailscale-local-api"))]
+    #[test]
+    fn tailscale_local_api_reads_status_over_unix_socket() {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("tailscaled.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind");
+        let server = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut request = [0u8; 1024];
+                let n = stream.read(&mut request).expect("read");
+                let request = String::from_utf8_lossy(&request[..n]).to_string();
+                let body = if request.starts_with("GET /localapi/v0/status ") {
+                    r#"{"Self":{"HostName":"me","TailscaleIPs":["100.64.0.1"]},"Peer":{"p":{"HostName":"laptop","TailscaleIPs":["100.64.0.9"],"Online":true}}}"#
+                } else {
+                    "nope"
+                };
+                let status = if body == "nope" { "404 Not Found" } else { "200 OK" };
+                let response = format!(
+                    "HTTP/1.0 {status}\r\nContent-Type: application/json\r\n\r\n{body}"
+                );
+                stream.write_all(response.as_bytes()).expect("write");
+                seen.push(request);
+            }
+            seen
+        });
+
+        let devices = super::browse_tailscale_local_api("com.example.app", 52345, &socket_path)
+            .expect("local api");
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].address, "100.64.0.9:52345".parse().expect("addr"));
+        assert_eq!(devices[0].source, DiscoverySource::Tailscale);
+
+        let error = super::tailscale_local_api_get(&socket_path, "/other").expect_err("404");
+        assert!(error.to_string().contains("404"));
+        let requests = server.join().expect("join");
+        assert!(requests[0].contains("Sec-Tailscale: localapi"));
+
+        assert!(super::browse_tailscale_local_api(
+            "com.example.app",
+            52345,
+            &dir.path().join("missing.sock")
+        )
+        .is_err());
+        assert!(super::parse_http_response(b"garbage").is_err());
+        assert!(super::parse_http_response(b"HTTP/1.0 abc\r\n\r\n").is_err());
+    }
+
+    #[test]
+    #[ignore = "needs a LAN interface and multicast; run with --ignored to verify firewall settings"]
+    fn mdns_advertise_and_browse_round_trip() {
+        let identity = Identity::new("mdns-probe-device", "com.example.mdnsprobe", "probe");
+        let advertiser = super::register_mdns(&identity, "0.0.0.0:52345".parse().expect("addr"))
+            .expect("register");
+        let mut found = Vec::new();
+        for _ in 0..5 {
+            found = browse_mdns("com.example.mdnsprobe", Duration::from_secs(2)).expect("browse");
+            if !found.is_empty() {
+                break;
+            }
+        }
+        advertiser.shutdown().expect("shutdown");
+        assert!(
+            found.iter().any(|device| device.identity.device_id == "mdns-probe-device"),
+            "own advertisement not visible: check that UDP 5353 is allowed (firewalld `mdns` \
+             service / ufw 5353/udp) and that the interface allows multicast"
+        );
     }
 
     #[test]

@@ -32,9 +32,12 @@ pub use crypto::{
 };
 pub use device::DeviceHandler;
 pub use discovery::{
-    browse_mdns, browse_private_overlays, discover_devices, register_mdns, DiscoveredDevice,
-    DiscoverySource, MdnsAdvertiser, DEFAULT_SYNC_PORT,
+    browse_mdns, browse_private_overlays, discover_devices, register_mdns, reset_tailscale_probe,
+    tailscale_cli_state, DiscoveredDevice, DiscoverySource, MdnsAdvertiser, TailscaleCliState,
+    DEFAULT_SYNC_PORT, DEFAULT_TAILSCALE_SOCKET, SERVICE_TYPE, TAILSCALE_SOCKET_ENV,
 };
+#[cfg(all(unix, feature = "tailscale-local-api"))]
+pub use discovery::browse_tailscale_local_api;
 pub use engine::{
     event_channel, AdapterWatch, AutoRefresh, AutoRefreshConfig, BackgroundEngine, DeviceInfo,
     Engine, EngineConfig, Event, EventSink, EventStream, LinkingDecision, LinkingRequest,
