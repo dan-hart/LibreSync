@@ -57,6 +57,25 @@ narrative context live in `RELEASES.md`.
 - The daemon logs fingerprint changes and never re-pins automatically; the CLI
   prints a re-link hint on mismatch.
 
+### GUI embedding
+- `Engine::spawn()` returns a `BackgroundEngine` that owns a thread and runs
+  commands (`try_sync_now`, `try_sync`, `try_request_link`, `try_discover`,
+  `try_start_listening`, `try_stop_listening`, `try_save_state`, `run`) without
+  blocking the caller; each command gets a `Ticket` and reports
+  `Event::TaskFinished`. `cancel(ticket)` aborts a running or queued command.
+- `CancelToken` for blocking calls (`SyncRequest::with_cancel`,
+  `SyncOptions::with_cancel`, `Engine::request_link_cancellable`); cancelling
+  shuts the socket down so a stalled peer does not block until the timeout.
+- `EventStream::raw_fd()` (readable while events are queued, for
+  `g_unix_fd_add` / `DispatchSource`) and `EventStream::set_waker()`;
+  `recv_timeout`, `len`, `is_empty`.
+- FFI (ABI 2): `libresync_engine_event_next` / `event_wait` / `event_fd`,
+  `libresync_engine_sync_async` + `libresync_engine_cancel`; device JSON
+  carries `fingerprint`. Swift package: `LibreSyncEvent`, `LibreSyncEventPump`
+  (DispatchSource on the event descriptor), `syncAsync`, `cancel`.
+- `docs/API.md` documents the glib (thread + channel / fd) and Swift
+  (DispatchQueue) integration patterns and the 0.4 migration.
+
 ### Changed
 - `SyncRecord` gained `field_clocks` and now implements `Default`; construct
   records with `..SyncRecord::default()`. `LamportClock` implements `Default`.

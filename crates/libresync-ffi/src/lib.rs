@@ -1,22 +1,27 @@
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::net::SocketAddr;
-use std::os::raw::{c_char, c_uchar};
+use std::os::raw::{c_char, c_int, c_uchar};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use libresync::{
-    AppKey, BackupManager, DataAdapterBackup, DeviceHandler, DeviceKeys, Engine, EngineConfig,
-    FileLogicalAdapter, FileSnapshotStore, Identity, JsonFileAdapter, MergePolicy, RetentionPolicy,
-    SqliteFileAdapter, SqliteLogicalAdapter, SqliteLogicalEncoding, SqliteLogicalField,
-    SqliteLogicalMapping, State,
+    event_channel, AppKey, BackupManager, CancelToken, DataAdapterBackup, DeviceHandler,
+    DeviceInfo, DeviceKeys, Engine, EngineConfig, Event, EventSink, EventStream,
+    FileLogicalAdapter, FileSnapshotStore, Identity, JsonFileAdapter, MergePolicy,
+    RetentionPolicy, SqliteFileAdapter, SqliteLogicalAdapter, SqliteLogicalEncoding,
+    SqliteLogicalField, SqliteLogicalMapping, State, SyncRequest, SyncResult,
 };
 use serde::{Deserialize, Serialize};
 
-const ABI_VERSION: u32 = 1;
+/// ABI version. 2 adds the event queue (`libresync_engine_event_*`),
+/// asynchronous sync with tickets and cancellation, and the `fingerprint`
+/// field on device JSON.
+const ABI_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Deserialize)]
 struct FfiAllowlistEntry {
@@ -183,11 +188,29 @@ impl DeviceHandler for FfiHandler {
     }
 }
 
-#[repr(C)]
+/// Opaque engine handle. Cheap to share: background tasks hold their own
+/// reference, so `libresync_engine_free` while a task runs is safe (the task
+/// finishes and its events are dropped).
 pub struct EngineHandle {
+    inner: Arc<EngineInner>,
+}
+
+pub struct EngineInner {
     engine: Mutex<Engine>,
     handler: Arc<FfiHandler>,
     state_path: PathBuf,
+    events: EventStream,
+    sink: Arc<dyn EventSink>,
+    tasks: Mutex<HashMap<u64, CancelToken>>,
+    next_ticket: AtomicU64,
+}
+
+impl std::ops::Deref for EngineHandle {
+    type Target = EngineInner;
+
+    fn deref(&self) -> &EngineInner {
+        &self.inner
+    }
 }
 
 #[derive(Serialize)]
@@ -197,6 +220,131 @@ struct FfiDeviceInfo {
     app_id: String,
     address: Option<String>,
     linked: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fingerprint: Option<String>,
+}
+
+impl From<&DeviceInfo> for FfiDeviceInfo {
+    fn from(device: &DeviceInfo) -> Self {
+        Self {
+            device_id: device.identity.device_id.clone(),
+            user_id: device.identity.user_id.clone(),
+            app_id: device.identity.app_id.clone(),
+            address: device.address.map(|addr| addr.to_string()),
+            linked: device.linked,
+            fingerprint: device.fingerprint.clone(),
+        }
+    }
+}
+
+fn sync_result_json(result: &SyncResult) -> serde_json::Value {
+    match result {
+        SyncResult::Success => serde_json::json!({ "ok": true }),
+        SyncResult::Failed(message) => serde_json::json!({ "ok": false, "error": message }),
+    }
+}
+
+/// JSON encoding of an engine event: an object with a snake_case `type` and
+/// the variant's fields. Unknown future variants encode as
+/// `{"type":"unknown","debug":"..."}`.
+fn event_to_json(event: &Event) -> serde_json::Value {
+    match event {
+        Event::LinkingRequested { request } => serde_json::json!({
+            "type": "linking_requested",
+            "device": FfiDeviceInfo::from(&request.device),
+            "code": request.code,
+        }),
+        Event::LinkingDecisionRequired { request } => serde_json::json!({
+            "type": "linking_decision_required",
+            "device": FfiDeviceInfo::from(&request.device),
+            "code": request.code,
+        }),
+        Event::SyncStarted { device, adapter_id } => serde_json::json!({
+            "type": "sync_started",
+            "device": FfiDeviceInfo::from(device),
+            "adapter_id": adapter_id,
+        }),
+        Event::SyncFinished {
+            device,
+            adapter_id,
+            result,
+        } => serde_json::json!({
+            "type": "sync_finished",
+            "device": FfiDeviceInfo::from(device),
+            "adapter_id": adapter_id,
+            "result": sync_result_json(result),
+        }),
+        Event::DeviceSeen { device } => serde_json::json!({
+            "type": "device_seen",
+            "device": FfiDeviceInfo::from(device),
+        }),
+        Event::DeviceOffline { device } => serde_json::json!({
+            "type": "device_offline",
+            "device": FfiDeviceInfo::from(device),
+        }),
+        Event::Error { message } => serde_json::json!({
+            "type": "error",
+            "message": message,
+        }),
+        Event::FingerprintChanged {
+            device,
+            fingerprint,
+        } => serde_json::json!({
+            "type": "fingerprint_changed",
+            "device": FfiDeviceInfo::from(device),
+            "fingerprint": fingerprint,
+        }),
+        Event::InboundSync { device, applied } => serde_json::json!({
+            "type": "inbound_sync",
+            "device": FfiDeviceInfo::from(device),
+            "applied": applied,
+        }),
+        Event::SyncStats {
+            device,
+            adapter_id,
+            stats,
+        } => serde_json::json!({
+            "type": "sync_stats",
+            "device": FfiDeviceInfo::from(device),
+            "adapter_id": adapter_id,
+            "entries_sent": stats.entries_sent,
+            "entries_received": stats.entries_received,
+            "entries_applied": stats.entries_applied,
+            "bytes_sent": stats.bytes_sent,
+            "bytes_received": stats.bytes_received,
+            "full_snapshot": stats.full_snapshot,
+            "protocol_version": stats.protocol_version,
+        }),
+        Event::LinkFinished {
+            address,
+            device,
+            error,
+        } => serde_json::json!({
+            "type": "link_finished",
+            "address": address.to_string(),
+            "device": device.as_ref().map(FfiDeviceInfo::from),
+            "error": error,
+        }),
+        Event::DiscoveryFinished { devices } => serde_json::json!({
+            "type": "discovery_finished",
+            "devices": devices.iter().map(FfiDeviceInfo::from).collect::<Vec<_>>(),
+        }),
+        Event::ListenerStarted { address } => serde_json::json!({
+            "type": "listener_started",
+            "address": address.to_string(),
+        }),
+        Event::ListenerStopped => serde_json::json!({ "type": "listener_stopped" }),
+        Event::TaskFinished { ticket, result } => serde_json::json!({
+            "type": "task_finished",
+            "ticket": ticket,
+            "result": sync_result_json(result),
+        }),
+        #[allow(unreachable_patterns)]
+        other => serde_json::json!({
+            "type": "unknown",
+            "debug": format!("{other:?}"),
+        }),
+    }
 }
 
 #[derive(Serialize)]
@@ -302,29 +450,72 @@ fn build_engine(config: FfiConfig, state_path: PathBuf) -> Result<EngineHandle, 
         State::new(config.device_id.clone())
     };
 
-    let engine = Engine::new(engine_config, state, handler.clone());
+    let mut engine = Engine::new(engine_config, state, handler.clone());
+    let (sink, events) = event_channel();
+    engine.set_event_sink(Arc::clone(&sink));
     Ok(EngineHandle {
-        engine: Mutex::new(engine),
-        handler,
-        state_path,
+        inner: Arc::new(EngineInner {
+            engine: Mutex::new(engine),
+            handler,
+            state_path,
+            events,
+            sink,
+            tasks: Mutex::new(HashMap::new()),
+            next_ticket: AtomicU64::new(1),
+        }),
     })
 }
 
 fn with_engine<F>(handle: *mut EngineHandle, f: F) -> bool
 where
-    F: FnOnce(&mut EngineHandle) -> Result<(), String>,
+    F: FnOnce(&EngineHandle) -> Result<(), String>,
 {
     clear_last_error();
     if handle.is_null() {
         set_last_error("engine handle is null");
         return false;
     }
-    let handle = unsafe { &mut *handle };
+    let handle = unsafe { &*handle };
     if let Err(error) = f(handle) {
         set_last_error(error);
         return false;
     }
     true
+}
+
+fn handle_ref<'a>(handle: *mut EngineHandle) -> Option<&'a EngineHandle> {
+    clear_last_error();
+    if handle.is_null() {
+        set_last_error("engine handle is null");
+        return None;
+    }
+    Some(unsafe { &*handle })
+}
+
+/// Runs one sync on the engine, then records the peer fingerprint and saves
+/// the state. Shared by the blocking and asynchronous entry points.
+fn run_sync(inner: &EngineInner, request: &SyncRequest) -> Result<(), String> {
+    let engine = inner.engine.lock().map_err(|_| "engine lock".to_string())?;
+    let (device, _) = engine.sync(request).map_err(|error| error.to_string())?;
+    if let Some(fingerprint) = device.fingerprint.clone() {
+        let mut map = inner
+            .handler
+            .allowlist
+            .lock()
+            .map_err(|_| "allowlist lock".to_string())?;
+        map.insert(device.identity.device_id, fingerprint);
+    }
+    let app_key = inner
+        .handler
+        .app_key()
+        .map_err(|error| error.to_string())?;
+    let state = engine.state();
+    state
+        .lock()
+        .map_err(|_| "state lock".to_string())?
+        .save_encrypted(&app_key, &inner.state_path)
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 #[no_mangle]
@@ -640,14 +831,8 @@ pub extern "C" fn libresync_engine_discover(
             }
         };
     let info = devices
-        .into_iter()
-        .map(|device| FfiDeviceInfo {
-            device_id: device.identity.device_id,
-            user_id: device.identity.user_id,
-            app_id: device.identity.app_id,
-            address: device.address.map(|addr| addr.to_string()),
-            linked: device.linked,
-        })
+        .iter()
+        .map(FfiDeviceInfo::from)
         .collect::<Vec<_>>();
     let json = match serde_json::to_string(&info) {
         Ok(json) => json,
@@ -737,13 +922,7 @@ pub extern "C" fn libresync_engine_link(
             map.insert(device.identity.device_id.clone(), fingerprint);
         }
     }
-    let info = FfiDeviceInfo {
-        device_id: device.identity.device_id,
-        user_id: device.identity.user_id,
-        app_id: device.identity.app_id,
-        address: device.address.map(|addr| addr.to_string()),
-        linked: device.linked,
-    };
+    let info = FfiDeviceInfo::from(&device);
     let json = match serde_json::to_string(&info) {
         Ok(json) => json,
         Err(error) => {
@@ -768,33 +947,146 @@ pub extern "C" fn libresync_engine_sync_now(
         let addr = address
             .parse::<SocketAddr>()
             .map_err(|error| error.to_string())?;
-        let engine = handle
-            .engine
-            .lock()
-            .map_err(|_| "engine lock".to_string())?;
-        let device = engine
-            .sync_now(addr, &adapter_id)
-            .map_err(|error| error.to_string())?;
-        if let Some(fingerprint) = device.fingerprint.clone() {
-            let mut map = handle
-                .handler
-                .allowlist
-                .lock()
-                .map_err(|_| "allowlist lock".to_string())?;
-            map.insert(device.identity.device_id, fingerprint);
-        }
-        let app_key = handle
-            .handler
-            .app_key()
-            .map_err(|error| error.to_string())?;
-        let state = engine.state();
-        state
-            .lock()
-            .map_err(|_| "state lock".to_string())?
-            .save_encrypted(&app_key, &handle.state_path)
-            .map_err(|error| error.to_string())?;
-        Ok(())
+        run_sync(handle, &SyncRequest::new(addr, adapter_id))
     })
+}
+
+/// Starts a sync on a background thread and returns a ticket (0 on error).
+/// Progress arrives on the event queue: `sync_started`, `sync_finished`,
+/// `sync_stats`, then `task_finished` with the ticket. Other engine calls
+/// block while the sync holds the engine; the event queue never blocks.
+#[no_mangle]
+pub extern "C" fn libresync_engine_sync_async(
+    handle: *mut EngineHandle,
+    address: *const c_char,
+    adapter_id: *const c_char,
+) -> u64 {
+    let handle = match handle_ref(handle) {
+        Some(handle) => handle,
+        None => return 0,
+    };
+    let parsed = (|| -> Result<(SocketAddr, String), String> {
+        let address = cstr_to_string(address)?;
+        let adapter_id = cstr_to_string(adapter_id)?;
+        let addr = address
+            .parse::<SocketAddr>()
+            .map_err(|error| error.to_string())?;
+        Ok((addr, adapter_id))
+    })();
+    let (addr, adapter_id) = match parsed {
+        Ok(values) => values,
+        Err(error) => {
+            set_last_error(error);
+            return 0;
+        }
+    };
+
+    let ticket = handle.next_ticket.fetch_add(1, Ordering::SeqCst);
+    let cancel = CancelToken::new();
+    if let Ok(mut tasks) = handle.tasks.lock() {
+        tasks.insert(ticket, cancel.clone());
+    }
+    let inner = Arc::clone(&handle.inner);
+    std::thread::spawn(move || {
+        let request = SyncRequest::new(addr, adapter_id).with_cancel(cancel);
+        let result = run_sync(&inner, &request);
+        if let Ok(mut tasks) = inner.tasks.lock() {
+            tasks.remove(&ticket);
+        }
+        inner.sink.emit(Event::TaskFinished {
+            ticket,
+            result: match result {
+                Ok(()) => SyncResult::Success,
+                Err(error) => SyncResult::Failed(error),
+            },
+        });
+    });
+    ticket
+}
+
+/// Cancels a running asynchronous sync. Returns false when the ticket is
+/// unknown or already finished.
+#[no_mangle]
+pub extern "C" fn libresync_engine_cancel(handle: *mut EngineHandle, ticket: u64) -> bool {
+    let handle = match handle_ref(handle) {
+        Some(handle) => handle,
+        None => return false,
+    };
+    let cancel = handle
+        .tasks
+        .lock()
+        .ok()
+        .and_then(|tasks| tasks.get(&ticket).cloned());
+    match cancel {
+        Some(cancel) => {
+            cancel.cancel();
+            true
+        }
+        None => {
+            set_last_error("unknown or finished ticket");
+            false
+        }
+    }
+}
+
+/// Returns the next queued event as JSON, or NULL when the queue is empty
+/// (`libresync_last_error` is then NULL too). Never blocks. Drain until NULL
+/// after the event descriptor becomes readable.
+#[no_mangle]
+pub extern "C" fn libresync_engine_event_next(handle: *mut EngineHandle) -> *mut c_char {
+    let handle = match handle_ref(handle) {
+        Some(handle) => handle,
+        None => return std::ptr::null_mut(),
+    };
+    match handle.events.try_recv() {
+        Ok(Some(event)) => json_to_cstring(&event_to_json(&event)),
+        Ok(None) => std::ptr::null_mut(),
+        Err(error) => {
+            set_last_error(error.to_string());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Blocks up to `timeout_ms` for the next event; NULL on timeout. Meant for a
+/// dedicated background thread (e.g. a DispatchQueue), never the UI thread.
+#[no_mangle]
+pub extern "C" fn libresync_engine_event_wait(
+    handle: *mut EngineHandle,
+    timeout_ms: u64,
+) -> *mut c_char {
+    let handle = match handle_ref(handle) {
+        Some(handle) => handle,
+        None => return std::ptr::null_mut(),
+    };
+    match handle
+        .events
+        .recv_timeout(Duration::from_millis(timeout_ms))
+    {
+        Ok(event) => json_to_cstring(&event_to_json(&event)),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// File descriptor that becomes readable while events are queued, for
+/// `g_unix_fd_add` / `DispatchSource.makeReadSource`. Do not read from it;
+/// call `libresync_engine_event_next` until NULL. Returns -1 when unavailable.
+#[no_mangle]
+pub extern "C" fn libresync_engine_event_fd(handle: *mut EngineHandle) -> c_int {
+    match handle_ref(handle) {
+        Some(handle) => handle.events.raw_fd().map(|fd| fd as c_int).unwrap_or(-1),
+        None => -1,
+    }
+}
+
+fn json_to_cstring(value: &serde_json::Value) -> *mut c_char {
+    match CString::new(value.to_string()) {
+        Ok(cstring) => cstring.into_raw(),
+        Err(error) => {
+            set_last_error(error.to_string());
+            std::ptr::null_mut()
+        }
+    }
 }
 
 #[no_mangle]
@@ -1395,7 +1687,7 @@ mod tests {
     #[test]
     fn ffi_pairing_secret_is_optional_and_trimmed() {
         let (_tempdir, handle_ptr) = create_engine_with_secret(Some("shared-secret"));
-        let handle = unsafe { &mut *handle_ptr };
+        let handle = unsafe { &*handle_ptr };
         assert_eq!(
             handle.handler.pairing_secret.as_deref(),
             Some("shared-secret")
@@ -1403,7 +1695,7 @@ mod tests {
         libresync_engine_free(handle_ptr);
 
         let (_tempdir, handle_ptr) = create_engine_with_secret(Some("   "));
-        let handle = unsafe { &mut *handle_ptr };
+        let handle = unsafe { &*handle_ptr };
         assert!(handle.handler.pairing_secret.is_none());
         libresync_engine_free(handle_ptr);
     }
@@ -1537,5 +1829,109 @@ mod tests {
         ));
 
         libresync_engine_free(handle);
+    }
+
+    #[test]
+    fn ffi_event_queue_reports_listener_and_async_sync() {
+        let (_tempdir, handle) = create_engine(Some("127.0.0.1:0"));
+        assert_eq!(libresync_abi_version(), 2);
+        assert!(libresync_engine_event_next(handle).is_null());
+        assert!(last_error().is_none());
+        let fd = libresync_engine_event_fd(handle);
+        assert!(fd >= 0 || !cfg!(unix));
+
+        assert!(libresync_engine_start_listening(handle));
+        let started = take_string(libresync_engine_event_next(handle)).expect("event");
+        let value: serde_json::Value = serde_json::from_str(&started).expect("json");
+        assert_eq!(value["type"], "listener_started");
+        assert!(value["address"].as_str().unwrap_or("").starts_with("127.0.0.1:"));
+
+        // Async sync against a closed port fails quickly and reports a ticket.
+        let address = CString::new("127.0.0.1:1").expect("addr");
+        let adapter_id = CString::new("missing").expect("adapter");
+        let ticket = libresync_engine_sync_async(handle, address.as_ptr(), adapter_id.as_ptr());
+        assert!(ticket > 0);
+        let mut finished = None;
+        for _ in 0..50 {
+            let ptr = libresync_engine_event_wait(handle, 200);
+            if let Some(json) = take_string(ptr) {
+                let value: serde_json::Value = serde_json::from_str(&json).expect("json");
+                if value["type"] == "task_finished" {
+                    finished = Some(value);
+                    break;
+                }
+            }
+        }
+        let finished = finished.expect("task_finished event");
+        assert_eq!(finished["ticket"], ticket);
+        assert_eq!(finished["result"]["ok"], false);
+        assert!(!libresync_engine_cancel(handle, ticket));
+
+        let bad = CString::new("nope").expect("addr");
+        assert_eq!(
+            libresync_engine_sync_async(handle, bad.as_ptr(), adapter_id.as_ptr()),
+            0
+        );
+        assert!(last_error().is_some());
+
+        assert!(libresync_engine_stop_listening(handle));
+        libresync_engine_free(handle);
+        assert_eq!(libresync_engine_event_fd(std::ptr::null_mut()), -1);
+        assert!(libresync_engine_event_next(std::ptr::null_mut()).is_null());
+        assert!(libresync_engine_event_wait(std::ptr::null_mut(), 1).is_null());
+        assert_eq!(libresync_engine_sync_async(std::ptr::null_mut(), bad.as_ptr(), adapter_id.as_ptr()), 0);
+        assert!(!libresync_engine_cancel(std::ptr::null_mut(), 1));
+    }
+
+    #[test]
+    fn ffi_event_json_covers_every_variant() {
+        let device = DeviceInfo {
+            identity: Identity::new("d", "a", "u"),
+            address: Some("127.0.0.1:5".parse().expect("addr")),
+            last_seen: None,
+            linked: true,
+            fingerprint: Some("ff".to_string()),
+        };
+        let request = libresync::LinkingRequest {
+            device: device.clone(),
+            code: Some("1234".to_string()),
+        };
+        let events = vec![
+            Event::LinkingRequested { request: request.clone() },
+            Event::LinkingDecisionRequired { request },
+            Event::SyncStarted { device: device.clone(), adapter_id: "x".to_string() },
+            Event::SyncFinished {
+                device: device.clone(),
+                adapter_id: "x".to_string(),
+                result: SyncResult::Failed("boom".to_string()),
+            },
+            Event::DeviceSeen { device: device.clone() },
+            Event::DeviceOffline { device: device.clone() },
+            Event::Error { message: "m".to_string() },
+            Event::FingerprintChanged { device: device.clone(), fingerprint: "ff".to_string() },
+            Event::InboundSync { device: device.clone(), applied: 3 },
+            Event::SyncStats {
+                device: device.clone(),
+                adapter_id: "x".to_string(),
+                stats: libresync::SyncStats::default(),
+            },
+            Event::LinkFinished {
+                address: "127.0.0.1:5".parse().expect("addr"),
+                device: Some(device.clone()),
+                error: None,
+            },
+            Event::DiscoveryFinished { devices: vec![device] },
+            Event::ListenerStarted { address: "127.0.0.1:5".parse().expect("addr") },
+            Event::ListenerStopped,
+            Event::TaskFinished { ticket: 9, result: SyncResult::Success },
+        ];
+        let mut types = std::collections::HashSet::new();
+        for event in &events {
+            let json = event_to_json(event);
+            let kind = json["type"].as_str().expect("type").to_string();
+            assert_ne!(kind, "unknown");
+            types.insert(kind);
+        }
+        assert_eq!(types.len(), events.len());
     }
 }
