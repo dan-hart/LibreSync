@@ -1,5 +1,12 @@
 # Releases
 
+## Unreleased
+- See `CHANGELOG.md` for the itemised list: merge policies on the sync path,
+  per-field clocks, delta sync (protocol v2), `AppendOnly` op-logs, fingerprint
+  pinning with rustls 0.23, the GUI-friendly `BackgroundEngine` and wakeable
+  `EventStream`, `KeyStore` backends, Linux/macOS packaging docs and service
+  units, `docs/PROTOCOL.md`, and a Linux + macOS CI matrix.
+
 ## v0.2.0 (2026-02-09)
 - Production MVP (desktop-only) with hardened stability gates.
 - Linux systemd user service support for the always-on daemon.

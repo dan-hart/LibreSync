@@ -121,6 +121,8 @@ narrative context live in `RELEASES.md`.
   running on Ubuntu.
 
 ### Changed
+- FFI: `libresync_last_error` is now per calling thread (errno-style); errors
+  from asynchronous tasks arrive as `task_finished` events.
 - `SyncRecord` gained `field_clocks` and now implements `Default`; construct
   records with `..SyncRecord::default()`. `LamportClock` implements `Default`.
 - `Message::Hello` carries `protocol_version` (defaults to 1 when absent).

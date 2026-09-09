@@ -372,18 +372,20 @@ fn diff_counts_to_ffi(counts: libresync::DiffCounts) -> FfiDiffCounts {
     }
 }
 
-static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
+thread_local! {
+    /// Last error of the calling thread (errno-style), so concurrent callers
+    /// on different threads never see each other's messages. Errors from
+    /// asynchronous tasks are reported through events, not here.
+    static LAST_ERROR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
 
 fn set_last_error(message: impl Into<String>) {
-    if let Ok(mut guard) = LAST_ERROR.lock() {
-        *guard = Some(message.into());
-    }
+    let message = message.into();
+    LAST_ERROR.with(|slot| *slot.borrow_mut() = Some(message));
 }
 
 fn clear_last_error() {
-    if let Ok(mut guard) = LAST_ERROR.lock() {
-        *guard = None;
-    }
+    LAST_ERROR.with(|slot| *slot.borrow_mut() = None);
 }
 
 fn cstr_to_string(ptr: *const c_char) -> Result<String, String> {
@@ -594,11 +596,10 @@ pub extern "C" fn libresync_generate_device_keys(
 
 #[no_mangle]
 pub extern "C" fn libresync_last_error() -> *mut c_char {
-    if let Ok(mut guard) = LAST_ERROR.lock() {
-        if let Some(message) = guard.take() {
-            if let Ok(cstr) = CString::new(message) {
-                return cstr.into_raw();
-            }
+    let message = LAST_ERROR.with(|slot| slot.borrow_mut().take());
+    if let Some(message) = message {
+        if let Ok(cstr) = CString::new(message) {
+            return cstr.into_raw();
         }
     }
     std::ptr::null_mut()

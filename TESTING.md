@@ -20,6 +20,17 @@ cargo test
 cargo llvm-cov --workspace --summary-only --fail-under-regions 75
 ```
 
+Two-device scenarios (concurrent field edits, delta traffic, append-only
+event logs) run in-process against the public `Engine` API:
+```
+cargo test -p libresync --test two_device -- --nocapture
+```
+
+To verify mDNS through your firewall on one host:
+```
+cargo test -p libresync --lib -- --ignored mdns_advertise_and_browse_round_trip
+```
+
 ## 1) Initialize the config on each device
 On **Device A**:
 ```

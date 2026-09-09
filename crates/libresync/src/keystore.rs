@@ -552,12 +552,30 @@ mod tests {
     /// Writes a shell script that emulates `secret-tool` or `security` with a
     /// directory-backed store, so the CLI backends are tested on any Unix CI.
     #[cfg(unix)]
-    fn fake_command(dir: &Path, name: &str, body: &str) -> PathBuf {
+    fn fake_command(dir: &Path, name: &str, probe: &str, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let path = dir.join(name);
         fs::write(&path, format!("#!/bin/sh\nSTORE=\"{}\"\n{body}", dir.display()))
             .expect("write script");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod");
+        // Other tests fork concurrently; a child that inherited the write
+        // handle before its exec makes the first spawn fail with ETXTBSY.
+        // Wait until the script is executable.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match Command::new(&path)
+                .arg(probe)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+            {
+                Ok(status) if status.success() => break,
+                _ if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                other => panic!("fake command never became executable: {other:?}"),
+            }
+        }
         path
     }
 
@@ -568,6 +586,7 @@ mod tests {
         let script = fake_command(
             dir.path(),
             "secret-tool",
+            "--version",
             r#"
 cmd="$1"; shift
 case "$cmd" in
@@ -608,6 +627,7 @@ exit 2
         let script = fake_command(
             dir.path(),
             "security",
+            "help",
             r#"
 cmd="$1"; shift
 case "$cmd" in

@@ -57,6 +57,7 @@ char *libresync_backup_preview(void *handle, const char *adapter_id, const char 
 bool libresync_backup_restore(void *handle, const char *adapter_id, const char *snapshot_id);
 bool libresync_backup_prune(void *handle, const char *adapter_id, size_t max_snapshots, uint64_t max_age_days);
 
+/* Last error of the calling thread (cleared by the next call on that thread). */
 char *libresync_last_error(void);
 void libresync_string_free(char *ptr);
 
