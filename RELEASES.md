@@ -7,6 +7,22 @@
   `EventStream`, `KeyStore` backends, Linux/macOS packaging docs and service
   units, `docs/PROTOCOL.md`, and a Linux + macOS CI matrix.
 
+## v0.5.0 (2026-06-05)
+- Removed vulnerable dependency paths and moved the SQLite page delta format to a local bounded codec.
+- Updated TLS, certificate, and random-number dependencies while preserving LibreSync's fingerprint-based device trust model.
+- Added CI coverage for security audit, dependency audit, strict clippy, and Swift bindings.
+- Fixed Swift package build metadata and AlwaysOn smoke-build warning cleanup.
+
+## v0.4.0 (2026-03-31)
+- Added a release-readiness checker, release guide, and CI smoke-build coverage so version drift gets caught before tagging.
+- Fixed the AlwaysOn standalone Tauri build path and tray asset packaging for reproducible release validation.
+- Published the first Homebrew tap formula for the `libresync` CLI alongside the `0.4.0` minor release.
+
+## v0.3.0 (2026-02-09)
+- Added private overlay discovery for device sync, including Tailscale/Headscale peers and static `LIBRESYNC_OVERLAY_PEERS`.
+- Shipped custom logical merge hooks and SDK updates for the logical-record integration path.
+- Bumped workspace crates and LibreSyncAlwaysOn app manifests to `0.3.0`.
+
 ## v0.2.0 (2026-02-09)
 - Production MVP (desktop-only) with hardened stability gates.
 - Linux systemd user service support for the always-on daemon.

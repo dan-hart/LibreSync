@@ -74,7 +74,7 @@ narrative context live in `RELEASES.md`.
   carries `fingerprint`. Swift package: `LibreSyncEvent`, `LibreSyncEventPump`
   (DispatchSource on the event descriptor), `syncAsync`, `cancel`.
 - `docs/API.md` documents the glib (thread + channel / fd) and Swift
-  (DispatchQueue) integration patterns and the 0.4 migration.
+  (DispatchQueue) integration patterns and the 0.6 migration.
 
 ### Packaging (Linux)
 - `docs/PACKAGING-LINUX.md`: Flatpak `finish-args` (`--share=network`

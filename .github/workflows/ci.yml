@@ -15,15 +15,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-22.04, macos-14]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          components: clippy
+          targets: ${{ matrix.os == 'macos-14' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
       - uses: Swatinem/rust-cache@v2
-      - name: Build (all targets, all features)
-        run: cargo build --workspace --all-targets --all-features
+      - name: Cargo clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Cargo test (workspace)
         run: cargo test --workspace
       - name: Cargo test (core, all features)
@@ -42,9 +43,9 @@ jobs:
           swift build
           swift test
 
-  coverage:
-    name: coverage gate (ubuntu)
-    runs-on: ubuntu-latest
+  release-checks:
+    name: release readiness, audits, coverage (ubuntu)
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -53,6 +54,21 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
       - uses: Swatinem/rust-cache@v2
-      - name: Coverage gate (75% regions)
+      - name: Release readiness
+        run: ./scripts/utilities/check-release-readiness.sh
+      - name: Security audit
+        run: ./scripts/utilities/security-audit.sh
+      - name: Cargo audit
+        run: cargo audit
+      - name: Coverage gate
         run: cargo llvm-cov --workspace --summary-only --fail-under-regions 75
+      - name: Install AlwaysOn build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.0-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+      - name: AlwaysOn smoke build
+        run: cargo check --manifest-path alwaysOn/libresync-always-on/src-tauri/Cargo.toml

@@ -183,8 +183,8 @@ pub fn browse_private_overlays(app_id: &str, overlay_port: u16) -> Vec<Discovere
     }
     #[cfg(all(unix, feature = "tailscale-local-api"))]
     if !tailscale_found {
-        let socket = env::var(TAILSCALE_SOCKET_ENV)
-            .unwrap_or_else(|_| DEFAULT_TAILSCALE_SOCKET.to_string());
+        let socket =
+            env::var(TAILSCALE_SOCKET_ENV).unwrap_or_else(|_| DEFAULT_TAILSCALE_SOCKET.to_string());
         match browse_tailscale_local_api(app_id, overlay_port, std::path::Path::new(&socket)) {
             Ok(found) => {
                 for device in found {
@@ -637,7 +637,10 @@ mod tests {
     #[test]
     fn tailscale_cli_probe_is_remembered() {
         super::reset_tailscale_probe();
-        assert_eq!(super::tailscale_cli_state(), super::TailscaleCliState::Unknown);
+        assert_eq!(
+            super::tailscale_cli_state(),
+            super::TailscaleCliState::Unknown
+        );
         super::mark_tailscale_cli_unavailable("test");
         assert_eq!(
             super::tailscale_cli_state(),
@@ -651,7 +654,10 @@ mod tests {
             super::TailscaleCliState::Unavailable
         );
         super::reset_tailscale_probe();
-        assert_eq!(super::tailscale_cli_state(), super::TailscaleCliState::Unknown);
+        assert_eq!(
+            super::tailscale_cli_state(),
+            super::TailscaleCliState::Unknown
+        );
     }
 
     #[cfg(all(unix, feature = "tailscale-local-api"))]
@@ -675,10 +681,13 @@ mod tests {
                 } else {
                     "nope"
                 };
-                let status = if body == "nope" { "404 Not Found" } else { "200 OK" };
-                let response = format!(
-                    "HTTP/1.0 {status}\r\nContent-Type: application/json\r\n\r\n{body}"
-                );
+                let status = if body == "nope" {
+                    "404 Not Found"
+                } else {
+                    "200 OK"
+                };
+                let response =
+                    format!("HTTP/1.0 {status}\r\nContent-Type: application/json\r\n\r\n{body}");
                 stream.write_all(response.as_bytes()).expect("write");
                 seen.push(request);
             }
@@ -688,7 +697,10 @@ mod tests {
         let devices = super::browse_tailscale_local_api("com.example.app", 52345, &socket_path)
             .expect("local api");
         assert_eq!(devices.len(), 1);
-        assert_eq!(devices[0].address, "100.64.0.9:52345".parse().expect("addr"));
+        assert_eq!(
+            devices[0].address,
+            "100.64.0.9:52345".parse().expect("addr")
+        );
         assert_eq!(devices[0].source, DiscoverySource::Tailscale);
 
         let error = super::tailscale_local_api_get(&socket_path, "/other").expect_err("404");
@@ -721,7 +733,9 @@ mod tests {
         }
         advertiser.shutdown().expect("shutdown");
         assert!(
-            found.iter().any(|device| device.identity.device_id == "mdns-probe-device"),
+            found
+                .iter()
+                .any(|device| device.identity.device_id == "mdns-probe-device"),
             "own advertisement not visible: check that UDP 5353 is allowed (firewalld `mdns` \
              service / ufw 5353/udp) and that the interface allows multicast"
         );

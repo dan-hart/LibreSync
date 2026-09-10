@@ -3,8 +3,8 @@ use std::env;
 use std::fs;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -12,8 +12,8 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use directories::ProjectDirs;
 use libresync::{
-    AppKey, AutoRefreshConfig, DeviceKeys, Engine, EngineConfig, Event, EventStream, Identity,
-    JsonFileAdapter, State, register_mdns,
+    register_mdns, AppKey, AutoRefreshConfig, DeviceKeys, Engine, EngineConfig, Event, EventStream,
+    Identity, JsonFileAdapter, State,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -76,8 +76,7 @@ fn run() -> Result<(), String> {
     let listener_addr = engine
         .start_listening()
         .map_err(|error| error.to_string())?;
-    let mdns = register_mdns(&identity, listener_addr)
-        .map_err(|error| error.to_string())?;
+    let mdns = register_mdns(&identity, listener_addr).map_err(|error| error.to_string())?;
 
     let auto_refresh = if config_arc
         .lock()
@@ -285,10 +284,8 @@ fn apply_overrides(
     if args.auto_approve {
         config.auto_approve_linking = true;
         config.auto_accept_linking = true;
-        config.auto_approve_until = Some(
-            now_unix_secs()
-                .saturating_add(args.auto_approve_minutes.saturating_mul(60)),
-        );
+        config.auto_approve_until =
+            Some(now_unix_secs().saturating_add(args.auto_approve_minutes.saturating_mul(60)));
     }
     if let Some(secret) = args.pairing_secret.clone() {
         if !secret.trim().is_empty() {
@@ -317,10 +314,7 @@ fn load_or_init_config(
         return Ok((config, keys));
     }
 
-    let user_id = args
-        .user_id
-        .clone()
-        .unwrap_or_else(whoami::username);
+    let user_id = args.user_id.clone().unwrap_or_else(whoami::username);
     let device_id = args
         .device_id
         .clone()
@@ -394,10 +388,7 @@ fn save_config(path: &Path, config: &AlwaysOnConfig) -> Result<(), String> {
 }
 
 fn ensure_backup_policy(config: &mut AlwaysOnConfig, default_dir: &Path) -> Result<(), String> {
-    let entry = config
-        .backup
-        .entry(config.app_id.clone())
-        .or_insert_with(BackupPolicy::default);
+    let entry = config.backup.entry(config.app_id.clone()).or_default();
     if entry.backup_dir.is_none() {
         entry.backup_dir = Some(default_dir.to_path_buf());
     }
@@ -415,50 +406,46 @@ fn spawn_config_listener(
     config: Arc<Mutex<AlwaysOnConfig>>,
     config_path: PathBuf,
 ) {
-    thread::spawn(move || loop {
-        let event = match stream.recv() {
-            Ok(event) => event,
-            Err(_) => break,
-        };
-
-        let mut changed = false;
-        match event {
-            Event::DeviceSeen { device }
-            | Event::SyncFinished { device, .. } => {
-                if let Ok(mut config) = config.lock() {
-                    config.upsert_device(&device.identity, device.address, device.fingerprint);
-                    changed = true;
+    thread::spawn(move || {
+        while let Ok(event) = stream.recv() {
+            let mut changed = false;
+            match event {
+                Event::DeviceSeen { device } | Event::SyncFinished { device, .. } => {
+                    if let Ok(mut config) = config.lock() {
+                        config.upsert_device(&device.identity, device.address, device.fingerprint);
+                        changed = true;
+                    }
                 }
-            }
-            Event::LinkingRequested { request }
-            | Event::LinkingDecisionRequired { request } => {
-                if let Ok(mut config) = config.lock() {
-                    config.upsert_device(
-                        &request.device.identity,
-                        request.device.address,
-                        request.device.fingerprint,
+                Event::LinkingRequested { request }
+                | Event::LinkingDecisionRequired { request } => {
+                    if let Ok(mut config) = config.lock() {
+                        config.upsert_device(
+                            &request.device.identity,
+                            request.device.address,
+                            request.device.fingerprint,
+                        );
+                        changed = true;
+                    }
+                }
+                Event::FingerprintChanged {
+                    device,
+                    fingerprint,
+                } => {
+                    // Never re-pin automatically: the stored fingerprint stays
+                    // and the connection was rejected. A person must re-link.
+                    eprintln!(
+                        "WARNING: device {} presented a different certificate (fingerprint {}); \
+                         connection rejected. Re-link the device if this change is expected.",
+                        device.identity.device_id, fingerprint
                     );
-                    changed = true;
                 }
+                _ => {}
             }
-            Event::FingerprintChanged {
-                device,
-                fingerprint,
-            } => {
-                // Never re-pin automatically: the stored fingerprint stays
-                // and the connection was rejected. A person must re-link.
-                eprintln!(
-                    "WARNING: device {} presented a different certificate (fingerprint {}); \
-                     connection rejected. Re-link the device if this change is expected.",
-                    device.identity.device_id, fingerprint
-                );
-            }
-            _ => {}
-        }
 
-        if changed {
-            if let Ok(config) = config.lock() {
-                let _ = save_config(&config_path, &config);
+            if changed {
+                if let Ok(config) = config.lock() {
+                    let _ = save_config(&config_path, &config);
+                }
             }
         }
     });
@@ -611,16 +598,13 @@ impl libresync::DeviceHandler for AlwaysOnHandler {
 
     fn app_key(&self) -> libresync::Result<AppKey> {
         let config = self.config.lock().expect("config lock");
-        config
-            .app_key()
-            .map_err(|error| libresync::Error::Protocol(error))
+        config.app_key().map_err(libresync::Error::Protocol)
     }
 
     fn set_app_key(&self, app_key: &AppKey) -> libresync::Result<()> {
         let mut config = self.config.lock().expect("config lock");
         config.set_app_key(app_key);
-        save_config(&self.config_path, &config)
-            .map_err(|error| libresync::Error::Protocol(error))
+        save_config(&self.config_path, &config).map_err(libresync::Error::Protocol)
     }
 
     fn is_linked_with_fingerprint(
@@ -933,8 +917,7 @@ mod tests {
             ..Args::default()
         };
 
-        apply_overrides(&mut config, &args, &data_path, &state_path)
-            .expect("apply overrides");
+        apply_overrides(&mut config, &args, &data_path, &state_path).expect("apply overrides");
         assert_eq!(config.listen_addr, "127.0.0.1:9999");
         assert!(config.auto_accept_linking);
         assert!(config.auto_approve_linking);
@@ -954,8 +937,7 @@ mod tests {
             pairing_secret: Some("   ".to_string()),
             ..Args::default()
         };
-        apply_overrides(&mut config, &args, &data_path, &state_path)
-            .expect("apply overrides");
+        apply_overrides(&mut config, &args, &data_path, &state_path).expect("apply overrides");
         assert!(config.pairing_secret.is_none());
     }
 
@@ -980,8 +962,7 @@ mod tests {
         assert_eq!(keys.fingerprint(), config.device_keys.fingerprint);
 
         let (loaded, _) =
-            load_or_init_config(&config_path, &data_path, &Args::default())
-                .expect("load config");
+            load_or_init_config(&config_path, &data_path, &Args::default()).expect("load config");
         assert_eq!(loaded.device_id, "device-x");
     }
 
@@ -1151,10 +1132,7 @@ mod tests {
             device: device.clone(),
         });
         sink.emit(Event::LinkingRequested {
-            request: libresync::LinkingRequest {
-                device,
-                code: None,
-            },
+            request: libresync::LinkingRequest { device, code: None },
         });
 
         drop(sink);

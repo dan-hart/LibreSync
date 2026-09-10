@@ -22,7 +22,7 @@ use libresync::{
     RestoreOptions, RetentionPolicy, SnapshotStore, SqliteFileAdapter, State,
 };
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use rand::seq::SliceRandom;
+use rand::seq::IndexedRandom;
 use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, System};
 
@@ -1528,10 +1528,9 @@ fn init_config(
     let user_id = user_id.unwrap_or_else(generate_user_id);
     let state_path = default_state_path(path);
     let identity = Identity::new(&device_id, app_id, &user_id);
-    let device_keys = DeviceKeys::generate(&identity)
-        .map_err(|error| io::Error::new(io::ErrorKind::Other, error.to_string()))?;
-    let app_key = AppKey::generate()
-        .map_err(|error| io::Error::new(io::ErrorKind::Other, error.to_string()))?;
+    let device_keys =
+        DeviceKeys::generate(&identity).map_err(|error| io::Error::other(error.to_string()))?;
+    let app_key = AppKey::generate().map_err(|error| io::Error::other(error.to_string()))?;
 
     let config = Config {
         device_id,
@@ -2959,15 +2958,14 @@ fn load_config(path: &Path) -> Result<Config, Box<dyn std::error::Error>> {
 
     if config.device_keys.is_none() {
         let identity = config.identity();
-        let keys = DeviceKeys::generate(&identity)
-            .map_err(|error| io::Error::new(io::ErrorKind::Other, error.to_string()))?;
+        let keys =
+            DeviceKeys::generate(&identity).map_err(|error| io::Error::other(error.to_string()))?;
         config.device_keys = Some(DeviceKeysRecord::from_keys(&keys));
         changed = true;
     }
 
     if config.app_key.is_none() {
-        let app_key = AppKey::generate()
-            .map_err(|error| io::Error::new(io::ErrorKind::Other, error.to_string()))?;
+        let app_key = AppKey::generate().map_err(|error| io::Error::other(error.to_string()))?;
         config.set_app_key(&app_key);
         changed = true;
     }
@@ -3453,6 +3451,7 @@ fn format_relative_inner(secs: u64, future: bool) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn watch_file(
     path: &Path,
     adapter_id: Option<&str>,
@@ -3802,7 +3801,7 @@ fn refresh_with_address(
 }
 
 fn generate_device_id() -> String {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let words = DEVICE_WORDS
         .choose_multiple(&mut rng, 3)
         .cloned()
@@ -3811,7 +3810,7 @@ fn generate_device_id() -> String {
 }
 
 fn generate_user_id() -> String {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let adjective = ADJECTIVES.choose(&mut rng).unwrap_or(&"calm");
     let noun = NOUNS.choose(&mut rng).unwrap_or(&"forest");
     format!("{}-{}", adjective, noun)
@@ -4701,7 +4700,7 @@ mod tests {
 
     #[test]
     fn report_error_prints_hint_and_verbose() {
-        let error = io::Error::new(io::ErrorKind::Other, "boom");
+        let error = io::Error::other("boom");
         report_error(&error, false);
         report_error(&error, true);
         let mismatch = libresync::Error::FingerprintMismatch {

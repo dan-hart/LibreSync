@@ -151,7 +151,9 @@ impl FileKeyStore {
                 .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.')
             || name.starts_with('.')
         {
-            return Err(Error::Protocol(format!("invalid key store item name: {name}")));
+            return Err(Error::Protocol(format!(
+                "invalid key store item name: {name}"
+            )));
         }
         Ok(self.dir.join(format!("{name}.key")))
     }
@@ -352,7 +354,11 @@ impl KeyStore for SecurityCliKeyStore {
             .stdin(Stdio::null())
             .output()
             .map_err(|error| command_error("security", error))?;
-        check_status("security add-generic-password", &output.status, &output.stderr)
+        check_status(
+            "security add-generic-password",
+            &output.status,
+            &output.stderr,
+        )
     }
 
     fn delete(&self, name: &str) -> Result<()> {
@@ -365,7 +371,11 @@ impl KeyStore for SecurityCliKeyStore {
         if output.status.success() || output.status.code() == Some(44) {
             Ok(())
         } else {
-            check_status("security delete-generic-password", &output.status, &output.stderr)
+            check_status(
+                "security delete-generic-password",
+                &output.status,
+                &output.stderr,
+            )
         }
     }
 }
@@ -444,7 +454,7 @@ fn encode(bytes: &[u8]) -> String {
 fn decode(text: &str) -> Result<Vec<u8>> {
     let invalid = || Error::Protocol("invalid base64 in key store".to_string());
     let bytes: Vec<u8> = text.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err(invalid());
     }
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
@@ -506,7 +516,10 @@ mod tests {
             .expect("device keys again");
         assert_eq!(keys.fingerprint(), again.fingerprint());
         assert_eq!(
-            store.device_keys().expect("get").map(|k| k.fingerprint().to_string()),
+            store
+                .device_keys()
+                .expect("get")
+                .map(|k| k.fingerprint().to_string()),
             Some(keys.fingerprint().to_string())
         );
     }
@@ -544,7 +557,10 @@ mod tests {
                 .permissions()
                 .mode();
             assert_eq!(mode & 0o777, 0o600);
-            let dir_mode = fs::metadata(store.dir()).expect("meta").permissions().mode();
+            let dir_mode = fs::metadata(store.dir())
+                .expect("meta")
+                .permissions()
+                .mode();
             assert_eq!(dir_mode & 0o777, 0o700);
         }
     }
@@ -555,8 +571,11 @@ mod tests {
     fn fake_command(dir: &Path, name: &str, probe: &str, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let path = dir.join(name);
-        fs::write(&path, format!("#!/bin/sh\nSTORE=\"{}\"\n{body}", dir.display()))
-            .expect("write script");
+        fs::write(
+            &path,
+            format!("#!/bin/sh\nSTORE=\"{}\"\n{body}", dir.display()),
+        )
+        .expect("write script");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod");
         // Other tests fork concurrently; a child that inherited the write
         // handle before its exec makes the first spawn fail with ETXTBSY.
@@ -663,8 +682,8 @@ exit 2
     fn platform_store_falls_back_to_files() {
         let dir = tempdir().expect("tempdir");
         // Whatever the platform provides, the helper must return a working store.
-        let store = platform_key_store("com.example.app.test", &dir.path().join("keys"))
-            .expect("store");
+        let store =
+            platform_key_store("com.example.app.test", &dir.path().join("keys")).expect("store");
         let _ = store.get("probe");
         let file_store = FileKeyStore::new(dir.path().join("keys2")).expect("store");
         let boxed: Box<dyn KeyStore> = Box::new(file_store);

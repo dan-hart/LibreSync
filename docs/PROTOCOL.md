@@ -3,7 +3,7 @@
 This document specifies the device-to-device protocol implemented in
 `crates/libresync/src/protocol.rs`, `sync.rs`, `crypto.rs` and
 `discovery.rs`, in enough detail for a second implementation. Protocol
-version **2** is current; version 1 is the pre-0.4 exchange that version 2
+version **2** is current; version 1 is the 0.5-and-earlier exchange that version 2
 peers still accept.
 
 ## 1. Transport

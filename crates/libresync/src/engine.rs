@@ -167,7 +167,9 @@ impl EventStream {
             .receiver
             .recv_timeout(timeout)
             .map_err(|error| match error {
-                flume::RecvTimeoutError::Timeout => Error::Protocol("event stream timeout".to_string()),
+                flume::RecvTimeoutError::Timeout => {
+                    Error::Protocol("event stream timeout".to_string())
+                }
                 flume::RecvTimeoutError::Disconnected => {
                     Error::Protocol("event stream closed".to_string())
                 }
@@ -1020,8 +1022,7 @@ impl Engine {
                         }
                     };
                     let mut device_info = device_info_base.clone();
-                    let mut options =
-                        SyncOptions::default().with_applier(Arc::new(router.clone()));
+                    let mut options = SyncOptions::default().with_applier(Arc::new(router.clone()));
                     if let Some(known) = &known_identity {
                         options = options.with_expected_device_id(known.device_id.clone());
                     }
@@ -1207,33 +1208,16 @@ fn not_implemented<T>() -> Result<T> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Ticket(pub u64);
 
+type EngineJob = Box<dyn FnOnce(&mut Engine) -> Result<()> + Send>;
+
 enum Command {
-    Sync {
-        ticket: u64,
-        request: SyncRequest,
-    },
-    Link {
-        ticket: u64,
-        address: SocketAddr,
-    },
-    Discover {
-        ticket: u64,
-        timeout: Duration,
-    },
-    StartListening {
-        ticket: u64,
-    },
-    StopListening {
-        ticket: u64,
-    },
-    SaveState {
-        ticket: u64,
-        path: PathBuf,
-    },
-    Run {
-        ticket: u64,
-        job: Box<dyn FnOnce(&mut Engine) -> Result<()> + Send>,
-    },
+    Sync { ticket: u64, request: SyncRequest },
+    Link { ticket: u64, address: SocketAddr },
+    Discover { ticket: u64, timeout: Duration },
+    StartListening { ticket: u64 },
+    StopListening { ticket: u64 },
+    SaveState { ticket: u64, path: PathBuf },
+    Run { ticket: u64, job: EngineJob },
     Shutdown,
 }
 
@@ -1450,11 +1434,7 @@ impl BackgroundEngine {
                 let _ = sender.send(Command::Shutdown);
             }
         }
-        let thread = self
-            .thread
-            .lock()
-            .ok()
-            .and_then(|mut guard| guard.take());
+        let thread = self.thread.lock().ok().and_then(|mut guard| guard.take());
         match thread {
             Some(thread) => thread
                 .join()
@@ -1884,7 +1864,10 @@ mod tests {
         }
 
         fn is_linked(&self, identity: &Identity) -> bool {
-            self.pins.lock().expect("pins").contains_key(&identity.device_id)
+            self.pins
+                .lock()
+                .expect("pins")
+                .contains_key(&identity.device_id)
         }
 
         fn approve_link(&self, _identity: &Identity) -> crate::Result<bool> {
@@ -1918,7 +1901,12 @@ mod tests {
         }
     }
 
-    fn todo(id: &str, counter: u64, device: &str, fields: BTreeMap<String, FieldValue>) -> SyncRecord {
+    fn todo(
+        id: &str,
+        counter: u64,
+        device: &str,
+        fields: BTreeMap<String, FieldValue>,
+    ) -> SyncRecord {
         SyncRecord {
             schema: "todos".to_string(),
             entity: "Todo".to_string(),
@@ -1968,7 +1956,10 @@ mod tests {
 
         // Shared starting point on both devices.
         let base = BTreeMap::from([
-            ("title".to_string(), FieldValue::String("Buy milk".to_string())),
+            (
+                "title".to_string(),
+                FieldValue::String("Buy milk".to_string()),
+            ),
             ("done".to_string(), FieldValue::Bool(false)),
             (
                 "tags".to_string(),
@@ -1981,7 +1972,10 @@ mod tests {
             .expect("initial sync");
         assert_eq!(stats.entries_received, 1);
         assert_eq!(
-            adapter_b.record("todos", "Todo", "1").expect("record").fields,
+            adapter_b
+                .record("todos", "Todo", "1")
+                .expect("record")
+                .fields,
             base
         );
         while events.try_recv().expect("events").is_some() {}
@@ -2072,10 +2066,17 @@ mod tests {
         let stale = DeviceKeys::generate(engine_a.identity()).expect("stale keys");
         handler_b.pin("device-a", stale.fingerprint());
         let error = engine_b.sync_now(addr, "todos").expect_err("mismatch");
-        assert!(matches!(error, crate::Error::FingerprintMismatch { .. }), "{error}");
+        assert!(
+            matches!(error, crate::Error::FingerprintMismatch { .. }),
+            "{error}"
+        );
         let mut changed = None;
         while let Ok(event) = events_b.recv_timeout(Duration::from_secs(1)) {
-            if let Event::FingerprintChanged { device, fingerprint } = event {
+            if let Event::FingerprintChanged {
+                device,
+                fingerprint,
+            } = event
+            {
                 changed = Some((device, fingerprint));
                 break;
             }
@@ -2088,17 +2089,27 @@ mod tests {
         handler_b.pin("device-a", handler_a.keys.fingerprint());
         let request = SyncRequest::for_device(&device, "todos").expect("request");
         let (synced, _) = engine_b.sync(&request).expect("pinned sync");
-        assert_eq!(synced.fingerprint.as_deref(), Some(handler_a.keys.fingerprint()));
+        assert_eq!(
+            synced.fingerprint.as_deref(),
+            Some(handler_a.keys.fingerprint())
+        );
 
         // A stale explicit pin fails the TLS handshake before any data flows.
         let request = SyncRequest::new(addr, "todos")
             .with_expected_fingerprint(stale.fingerprint())
             .with_expected_device_id("device-a");
         let error = engine_b.sync(&request).expect_err("handshake mismatch");
-        assert!(matches!(error, crate::Error::FingerprintMismatch { .. }), "{error}");
+        assert!(
+            matches!(error, crate::Error::FingerprintMismatch { .. }),
+            "{error}"
+        );
         let mut failed = false;
         while let Ok(event) = events_b.recv_timeout(Duration::from_secs(1)) {
-            if let Event::SyncFinished { result: SyncResult::Failed(_), .. } = event {
+            if let Event::SyncFinished {
+                result: SyncResult::Failed(_),
+                ..
+            } = event
+            {
                 failed = true;
                 break;
             }
@@ -2176,7 +2187,9 @@ mod tests {
                 Ok(())
             })
             .expect("queue sleep");
-        let skipped = background.try_discover(Duration::from_millis(10)).expect("queue");
+        let skipped = background
+            .try_discover(Duration::from_millis(10))
+            .expect("queue");
         background.cancel(skipped);
         let mut outcomes = HashMap::new();
         while outcomes.len() < 2 {
@@ -2188,8 +2201,14 @@ mod tests {
                 break;
             }
         }
-        assert!(matches!(outcomes.get(&blocked.0), Some(SyncResult::Success)));
-        assert!(matches!(outcomes.get(&skipped.0), Some(SyncResult::Failed(_))));
+        assert!(matches!(
+            outcomes.get(&blocked.0),
+            Some(SyncResult::Success)
+        ));
+        assert!(matches!(
+            outcomes.get(&skipped.0),
+            Some(SyncResult::Failed(_))
+        ));
 
         background.shutdown().expect("shutdown");
         assert!(background.try_sync_now(addr, "todos").is_err());
@@ -2216,7 +2235,11 @@ mod tests {
         background.cancel(ticket);
         let mut result = None;
         while let Ok(event) = events.recv_timeout(Duration::from_secs(5)) {
-            if let Event::TaskFinished { ticket: done, result: outcome } = event {
+            if let Event::TaskFinished {
+                ticket: done,
+                result: outcome,
+            } = event
+            {
                 if done == ticket.0 {
                     result = Some(outcome);
                     break;
@@ -2245,12 +2268,18 @@ mod tests {
         {
             let fd = stream.raw_fd().expect("fd");
             assert!(fd >= 0);
-            assert!(fd_readable(fd), "fd should be readable while events are queued");
+            assert!(
+                fd_readable(fd),
+                "fd should be readable while events are queued"
+            );
         }
 
         assert!(stream.try_recv().expect("recv").is_some());
         #[cfg(unix)]
-        assert!(fd_readable(stream.raw_fd().expect("fd")), "re-armed with one event left");
+        assert!(
+            fd_readable(stream.raw_fd().expect("fd")),
+            "re-armed with one event left"
+        );
         assert!(stream.try_recv().expect("recv").is_some());
         assert!(stream.try_recv().expect("recv").is_none());
         #[cfg(unix)]

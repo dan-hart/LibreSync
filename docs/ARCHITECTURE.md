@@ -60,7 +60,7 @@ A device runs a listener to accept inbound connections. A sync is one connection
 4. The listener answers `Delta` with the entries applied after that cursor (or a full snapshot on first contact or after a reset), its new cursor, and how far it has received the client's entries.
 5. The client merges, then sends its own `Delta` sized by that acknowledgement; the listener merges and answers `Ack`.
 
-Version 1 peers (pre-0.4) still work: the client falls back to the two-connection push/pull exchange, and the listener still answers `SnapshotRequest`/`Snapshot`. See `docs/PROTOCOL.md` for the wire format.
+Version 1 peers (0.5 and earlier) still work: the client falls back to the two-connection push/pull exchange, and the listener still answers `SnapshotRequest`/`Snapshot`. See `docs/PROTOCOL.md` for the wire format.
 
 Inbound entries are routed to the adapter that owns their key, so logical adapters merge field by field; entries nobody owns use last-writer-wins.
 

@@ -695,7 +695,9 @@ pub fn link_with_device_using(
     let remote_app_key = AppKey::from_slice(&key_bytes)?;
 
     if remote_identity.app_id != identity.app_id {
-        return Err(Error::Protocol("app id mismatch during linking".to_string()));
+        return Err(Error::Protocol(
+            "app id mismatch during linking".to_string(),
+        ));
     }
 
     Ok((remote_identity, fingerprint, remote_app_key))
@@ -905,7 +907,11 @@ fn handle_connection(stream: TcpStream, shared: &ListenerShared) -> Result<()> {
                 });
             }
         }
-        _ => return Err(Error::Protocol("expected hello or link request".to_string())),
+        _ => {
+            return Err(Error::Protocol(
+                "expected hello or link request".to_string(),
+            ))
+        }
     }
 
     Ok(())
@@ -1077,7 +1083,10 @@ fn tls_client_stream_pinned(
 }
 
 #[cfg(test)]
-pub(crate) fn tls_client_stream(stream: TcpStream, device_keys: &DeviceKeys) -> Result<ClientStream> {
+pub(crate) fn tls_client_stream(
+    stream: TcpStream,
+    device_keys: &DeviceKeys,
+) -> Result<ClientStream> {
     let stream = CountingStream {
         inner: stream,
         sent: Arc::default(),
@@ -1100,9 +1109,7 @@ fn tls_server_stream(stream: TcpStream, device_keys: &DeviceKeys) -> Result<Serv
 fn server_name_for(device_id: Option<&str>) -> ServerName<'static> {
     device_id
         .and_then(|id| ServerName::try_from(id.to_string()).ok())
-        .unwrap_or_else(|| {
-            ServerName::try_from(DEFAULT_SNI).expect("default server name is valid")
-        })
+        .unwrap_or_else(|| ServerName::try_from(DEFAULT_SNI).expect("default server name is valid"))
 }
 
 fn client_config(
@@ -1663,8 +1670,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
         let listener_identity = Identity::new("listener", "com.example.app", "user");
-        let listener_keys =
-            crate::DeviceKeys::generate(&listener_identity).expect("listener keys");
+        let listener_keys = crate::DeviceKeys::generate(&listener_identity).expect("listener keys");
         let listener_app_key = AppKey::generate().expect("app key");
 
         let handle = thread::spawn(move || {
@@ -1699,8 +1705,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
         let listener_identity = Identity::new("listener", "com.example.app", "user");
-        let listener_keys =
-            crate::DeviceKeys::generate(&listener_identity).expect("listener keys");
+        let listener_keys = crate::DeviceKeys::generate(&listener_identity).expect("listener keys");
         let app_key = AppKey::generate().expect("app key");
         let server_key = app_key.clone();
 
@@ -1733,8 +1738,7 @@ mod tests {
             );
             let mut state = State::new("listener");
             state.set("from-legacy", b"old".to_vec());
-            let entries =
-                crate::encrypt_entries(&server_key, state.snapshot()).expect("encrypt");
+            let entries = crate::encrypt_entries(&server_key, state.snapshot()).expect("encrypt");
             write_message(reader.get_mut(), &Message::Snapshot { entries }).expect("snapshot");
             pushed.len()
         });

@@ -40,12 +40,17 @@ pub enum Message {
         app_key: Option<Vec<u8>>,
     },
     SnapshotRequest,
-    Snapshot { entries: Vec<Entry> },
+    Snapshot {
+        entries: Vec<Entry>,
+    },
     Ack,
     /// Asks the peer for every entry it applied after its local apply
     /// sequence `clock` within history `epoch`. A zero clock, an unknown
     /// epoch, or a clock ahead of the peer's sequence yields a full snapshot.
-    SnapshotSince { clock: u64, epoch: String },
+    SnapshotSince {
+        clock: u64,
+        epoch: String,
+    },
     /// Delta (or full snapshot when `full`) of encrypted entries.
     ///
     /// - `clock` / `epoch`: the sender's position after producing `entries`;

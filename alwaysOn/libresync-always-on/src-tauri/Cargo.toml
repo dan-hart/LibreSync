@@ -1,6 +1,6 @@
 [package]
 name = "libresync-always-on"
-version = "0.3.0"
+version = "0.5.0"
 edition = "2021"
 license = "AGPL-3.0-only"
 description = "Always-on desktop device for LibreSync."
@@ -19,3 +19,5 @@ tauri = { version = "1", features = ["system-tray"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+
+[workspace]

@@ -7,10 +7,13 @@
   },
   "package": {
     "productName": "LibreSyncAlwaysOn",
-    "version": "0.3.0"
+    "version": "0.5.0"
   },
   "tauri": {
     "allowlist": {},
+    "systemTray": {
+      "iconPath": "icons/icon.png"
+    },
     "windows": [
       {
         "title": "LibreSyncAlwaysOn",

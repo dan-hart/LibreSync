@@ -219,12 +219,7 @@ impl<'a> RecordState<'a> {
 
         let mut tombstones = Vec::new();
         for record in snapshot.iter().filter(|record| record.tombstone) {
-            let key = record_entry_key(
-                &self.namespace,
-                &record.schema,
-                &record.entity,
-                &record.id,
-            );
+            let key = record_entry_key(&self.namespace, &record.schema, &record.entity, &record.id);
             tombstones.push((key, record.updated_at));
         }
 
@@ -297,12 +292,7 @@ impl<'a> RecordView<'a> {
     }
 }
 
-pub fn record_entry_key(
-    namespace: &str,
-    schema: &str,
-    entity: &str,
-    id: &str,
-) -> String {
+pub fn record_entry_key(namespace: &str, schema: &str, entity: &str, id: &str) -> String {
     format!(
         "{}:{}:{}:{}:{}",
         RECORD_PREFIX,
@@ -385,13 +375,9 @@ fn escape_component(input: &str) -> String {
     let mut out = String::new();
     for byte in input.as_bytes() {
         match byte {
-            b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'-'
-            | b'_'
-            | b'.'
-            | b'~' => out.push(*byte as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char)
+            }
             _ => out.push_str(&format!("%{:02X}", byte)),
         }
     }
@@ -474,7 +460,9 @@ mod tests {
         };
 
         let entry = record_to_entry("app", &record).expect("entry");
-        let decoded = entry_to_record(&entry, "app").expect("decode").expect("record");
+        let decoded = entry_to_record(&entry, "app")
+            .expect("decode")
+            .expect("record");
         assert_eq!(decoded, record);
     }
 
@@ -606,14 +594,8 @@ mod tests {
 
         assert_eq!(summary.tombstones_total, 2);
         assert_eq!(summary.tombstones_removed, 1);
-        assert!(records
-            .get("schema", "Todo", "old")
-            .expect("get")
-            .is_none());
-        assert!(records
-            .get("schema", "Todo", "new")
-            .expect("get")
-            .is_some());
+        assert!(records.get("schema", "Todo", "old").expect("get").is_none());
+        assert!(records.get("schema", "Todo", "new").expect("get").is_some());
     }
 
     #[test]
@@ -644,12 +626,7 @@ mod tests {
         assert_eq!(summary.tombstones_removed, 1);
         let remaining = ["b", "c"]
             .iter()
-            .filter(|id| {
-                records
-                    .get("schema", "Todo", id)
-                    .expect("get")
-                    .is_some()
-            })
+            .filter(|id| records.get("schema", "Todo", id).expect("get").is_some())
             .count();
         assert_eq!(remaining, 2);
     }

@@ -1,7 +1,7 @@
 //! Two-device scenarios exercised through the public `Engine` API.
 //!
 //! These run on every CI platform (Linux and macOS) and cover the three
-//! correctness guarantees added in 0.4: field-level merges during sync,
+//! correctness guarantees added in 0.6: field-level merges during sync,
 //! delta exchanges, and loss-free append-only op-logs.
 
 use std::collections::{BTreeMap, HashMap};
@@ -99,17 +99,18 @@ fn device(id: &str, app_key: &AppKey, listen: bool, ops_policy: MergePolicy) -> 
 }
 
 fn link(a: &Device, b: &Device) {
-    a.handler.pin(
-        &b.engine.identity().device_id,
-        b.handler.keys.fingerprint(),
-    );
-    b.handler.pin(
-        &a.engine.identity().device_id,
-        a.handler.keys.fingerprint(),
-    );
+    a.handler
+        .pin(&b.engine.identity().device_id, b.handler.keys.fingerprint());
+    b.handler
+        .pin(&a.engine.identity().device_id, a.handler.keys.fingerprint());
 }
 
-fn record(id: &str, counter: u64, device: &str, fields: BTreeMap<String, FieldValue>) -> SyncRecord {
+fn record(
+    id: &str,
+    counter: u64,
+    device: &str,
+    fields: BTreeMap<String, FieldValue>,
+) -> SyncRecord {
     SyncRecord {
         schema: "s".to_string(),
         entity: "Item".to_string(),
@@ -139,7 +140,8 @@ fn concurrent_edits_to_different_fields_survive_on_both_devices() {
         ("title".to_string(), s("Buy milk")),
         ("done".to_string(), FieldValue::Bool(false)),
     ]);
-    a.adapter.upsert_record(record("1", 1, "device-a", base.clone()));
+    a.adapter
+        .upsert_record(record("1", 1, "device-a", base.clone()));
     b.engine.sync_now(addr, "records").expect("initial sync");
 
     let mut edit_a = base.clone();
@@ -178,40 +180,52 @@ fn append_only_event_log_loses_nothing_under_concurrent_appends() {
         "log",
         1,
         "device-a",
-        BTreeMap::from([("ops".to_string(), FieldValue::List(vec![op("op-1", "device-a")]))]),
+        BTreeMap::from([(
+            "ops".to_string(),
+            FieldValue::List(vec![op("op-1", "device-a")]),
+        )]),
     ));
     b.engine.sync_now(addr, "records").expect("initial sync");
 
     // Both devices append while offline; B also appends an op that A has
     // and B's copy is *older* than A's newest version.
-    let mut counter_a = 2;
-    let mut counter_b = 2;
-    for round in 0..3 {
-        let mut ops_a = match a.adapter.record("s", "Item", "log").expect("a").fields.remove("ops") {
+    for round in 0..3u64 {
+        let counter = 2 + round;
+        let mut ops_a = match a
+            .adapter
+            .record("s", "Item", "log")
+            .expect("a")
+            .fields
+            .remove("ops")
+        {
             Some(FieldValue::List(items)) => items,
             _ => Vec::new(),
         };
         ops_a.push(op(&format!("a-{round}"), "device-a"));
         a.adapter.upsert_record(record(
             "log",
-            counter_a,
+            counter,
             "device-a",
             BTreeMap::from([("ops".to_string(), FieldValue::List(ops_a))]),
         ));
-        counter_a += 1;
 
-        let mut ops_b = match b.adapter.record("s", "Item", "log").expect("b").fields.remove("ops") {
+        let mut ops_b = match b
+            .adapter
+            .record("s", "Item", "log")
+            .expect("b")
+            .fields
+            .remove("ops")
+        {
             Some(FieldValue::List(items)) => items,
             _ => Vec::new(),
         };
         ops_b.push(op(&format!("b-{round}"), "device-b"));
         b.adapter.upsert_record(record(
             "log",
-            counter_b,
+            counter,
             "device-b",
             BTreeMap::from([("ops".to_string(), FieldValue::List(ops_b))]),
         ));
-        counter_b += 1;
     }
 
     b.engine.sync_now(addr, "records").expect("sync");
@@ -246,7 +260,12 @@ fn append_only_event_log_loses_nothing_under_concurrent_appends() {
         sorted.sort();
         let mut expected_sorted = expected.clone();
         expected_sorted.sort();
-        assert_eq!(sorted, expected_sorted, "{}", side.engine.identity().device_id);
+        assert_eq!(
+            sorted,
+            expected_sorted,
+            "{}",
+            side.engine.identity().device_id
+        );
         assert_eq!(ids.len(), expected.len(), "no duplicates");
     }
     a.engine.stop_listening().expect("stop");
@@ -268,7 +287,10 @@ fn delta_sync_traffic_is_proportional_to_the_edit() {
             BTreeMap::from([("body".to_string(), s(&"x".repeat(400)))]),
         ));
     }
-    let (_, first) = b.engine.sync_now_with_stats(addr, "records").expect("first");
+    let (_, first) = b
+        .engine
+        .sync_now_with_stats(addr, "records")
+        .expect("first");
     assert!(first.full_snapshot);
     assert_eq!(first.entries_received, 300);
 
@@ -278,15 +300,30 @@ fn delta_sync_traffic_is_proportional_to_the_edit() {
         "device-b",
         BTreeMap::from([("body".to_string(), s("edited"))]),
     ));
-    let (_, second) = b.engine.sync_now_with_stats(addr, "records").expect("second");
+    let (_, second) = b
+        .engine
+        .sync_now_with_stats(addr, "records")
+        .expect("second");
     assert!(!second.full_snapshot);
     assert_eq!(second.entries_sent, 1);
     assert_eq!(second.entries_received, 0);
-    assert!(second.bytes_sent < 4_096, "sent {} bytes", second.bytes_sent);
-    assert!(second.bytes_received < 2_048, "received {} bytes", second.bytes_received);
+    assert!(
+        second.bytes_sent < 4_096,
+        "sent {} bytes",
+        second.bytes_sent
+    );
+    assert!(
+        second.bytes_received < 2_048,
+        "received {} bytes",
+        second.bytes_received
+    );
     assert!(second.bytes_sent * 25 < first.bytes_received);
     assert_eq!(
-        a.adapter.record("s", "Item", "item-7").expect("record").fields.get("body"),
+        a.adapter
+            .record("s", "Item", "item-7")
+            .expect("record")
+            .fields
+            .get("body"),
         Some(&s("edited"))
     );
     a.engine.stop_listening().expect("stop");

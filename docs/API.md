@@ -146,7 +146,7 @@ on a background queue, and `LibreSyncEngine` is safe to share across queues.
 the socket, so a stalled peer does not hold the caller until the socket
 timeout. Cancelled operations return `Error::Cancelled`.
 
-## Migration to 0.4
+## Migration to 0.6
 
 ### `Engine`
 - `sync_now` keeps its signature but now exchanges deltas over one connection
@@ -158,7 +158,7 @@ timeout. Cancelled operations return `Error::Cancelled`.
   `ListenerStopped`, `TaskFinished` were added.
 - `Error` gained `FingerprintMismatch { .. }` and `Cancelled`.
 - Persist the `State` as before; it now also stores apply sequences, origins
-  and peer cursors. Files written by 0.3 load unchanged (the first sync after
+  and peer cursors. Files written by 0.5 and earlier load unchanged (the first sync after
   upgrading is a full snapshot).
 - The listener merges inbound data through the adapters and writes it back
   (`apply_from_state`), so a `watch` is only needed for local file changes.
@@ -180,7 +180,7 @@ timeout. Cancelled operations return `Error::Cancelled`.
   wildcard arm.
 
 ### Wire protocol
-- Version 2 (`SnapshotSince` / `Delta`). 0.4 peers talk to 0.3 peers through
+- Version 2 (`SnapshotSince` / `Delta`). 0.6 peers talk to 0.5-and-earlier peers through
   the legacy push/pull path, and answer 0.3 clients. See `docs/PROTOCOL.md`.
 
 ## Stability notes

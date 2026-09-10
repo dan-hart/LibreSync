@@ -187,7 +187,10 @@ impl State {
     /// Cursor into `device_id`'s history, or an empty cursor (full snapshot)
     /// when the peer has never been synced.
     pub fn peer_cursor(&self, device_id: &str) -> PeerCursor {
-        self.peer_cursors.get(device_id).cloned().unwrap_or_default()
+        self.peer_cursors
+            .get(device_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub fn set_peer_cursor(&mut self, device_id: &str, cursor: PeerCursor) {
@@ -251,7 +254,8 @@ impl State {
             self.sequence = self.sequence.saturating_add(1);
             self.sequences.insert(key, self.sequence);
         }
-        self.sequences.retain(|key, _| self.entries.contains_key(key));
+        self.sequences
+            .retain(|key, _| self.entries.contains_key(key));
         self.origins.retain(|key, _| self.entries.contains_key(key));
         self
     }

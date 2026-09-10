@@ -1,3 +1,5 @@
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::net::SocketAddr;
@@ -12,9 +14,9 @@ use base64::Engine as _;
 use libresync::{
     event_channel, AppKey, BackupManager, CancelToken, DataAdapterBackup, DeviceHandler,
     DeviceInfo, DeviceKeys, Engine, EngineConfig, Event, EventSink, EventStream,
-    FileLogicalAdapter, FileSnapshotStore, Identity, JsonFileAdapter, MergePolicy,
-    RetentionPolicy, SqliteFileAdapter, SqliteLogicalAdapter, SqliteLogicalEncoding,
-    SqliteLogicalField, SqliteLogicalMapping, State, SyncRequest, SyncResult,
+    FileLogicalAdapter, FileSnapshotStore, Identity, JsonFileAdapter, MergePolicy, RetentionPolicy,
+    SqliteFileAdapter, SqliteLogicalAdapter, SqliteLogicalEncoding, SqliteLogicalField,
+    SqliteLogicalMapping, State, SyncRequest, SyncResult,
 };
 use serde::{Deserialize, Serialize};
 
@@ -77,7 +79,7 @@ struct FfiSqliteLogicalMapping {
 }
 
 impl FfiSqliteLogicalMapping {
-    fn to_mapping(self) -> SqliteLogicalMapping {
+    fn into_mapping(self) -> SqliteLogicalMapping {
         let mut mapping =
             SqliteLogicalMapping::new(self.data_table, self.id_column, self.schema, self.entity);
         if let Some(table) = self.meta_table {
@@ -110,10 +112,10 @@ enum FfiSqliteLogicalMappingInput {
 impl FfiSqliteLogicalMappingInput {
     fn into_mappings(self) -> Vec<SqliteLogicalMapping> {
         match self {
-            FfiSqliteLogicalMappingInput::One(mapping) => vec![mapping.to_mapping()],
+            FfiSqliteLogicalMappingInput::One(mapping) => vec![mapping.into_mapping()],
             FfiSqliteLogicalMappingInput::Many(mappings) => mappings
                 .into_iter()
-                .map(FfiSqliteLogicalMapping::to_mapping)
+                .map(FfiSqliteLogicalMapping::into_mapping)
                 .collect(),
         }
     }
@@ -507,10 +509,7 @@ fn run_sync(inner: &EngineInner, request: &SyncRequest) -> Result<(), String> {
             .map_err(|_| "allowlist lock".to_string())?;
         map.insert(device.identity.device_id, fingerprint);
     }
-    let app_key = inner
-        .handler
-        .app_key()
-        .map_err(|error| error.to_string())?;
+    let app_key = inner.handler.app_key().map_err(|error| error.to_string())?;
     let state = engine.state();
     state
         .lock()
@@ -831,10 +830,7 @@ pub extern "C" fn libresync_engine_discover(
                 return std::ptr::null_mut();
             }
         };
-    let info = devices
-        .iter()
-        .map(FfiDeviceInfo::from)
-        .collect::<Vec<_>>();
+    let info = devices.iter().map(FfiDeviceInfo::from).collect::<Vec<_>>();
     let json = match serde_json::to_string(&info) {
         Ok(json) => json,
         Err(error) => {
@@ -1845,7 +1841,10 @@ mod tests {
         let started = take_string(libresync_engine_event_next(handle)).expect("event");
         let value: serde_json::Value = serde_json::from_str(&started).expect("json");
         assert_eq!(value["type"], "listener_started");
-        assert!(value["address"].as_str().unwrap_or("").starts_with("127.0.0.1:"));
+        assert!(value["address"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("127.0.0.1:"));
 
         // Async sync against a closed port fails quickly and reports a ticket.
         let address = CString::new("127.0.0.1:1").expect("addr");
@@ -1880,7 +1879,10 @@ mod tests {
         assert_eq!(libresync_engine_event_fd(std::ptr::null_mut()), -1);
         assert!(libresync_engine_event_next(std::ptr::null_mut()).is_null());
         assert!(libresync_engine_event_wait(std::ptr::null_mut(), 1).is_null());
-        assert_eq!(libresync_engine_sync_async(std::ptr::null_mut(), bad.as_ptr(), adapter_id.as_ptr()), 0);
+        assert_eq!(
+            libresync_engine_sync_async(std::ptr::null_mut(), bad.as_ptr(), adapter_id.as_ptr()),
+            0
+        );
         assert!(!libresync_engine_cancel(std::ptr::null_mut(), 1));
     }
 
@@ -1898,19 +1900,36 @@ mod tests {
             code: Some("1234".to_string()),
         };
         let events = vec![
-            Event::LinkingRequested { request: request.clone() },
+            Event::LinkingRequested {
+                request: request.clone(),
+            },
             Event::LinkingDecisionRequired { request },
-            Event::SyncStarted { device: device.clone(), adapter_id: "x".to_string() },
+            Event::SyncStarted {
+                device: device.clone(),
+                adapter_id: "x".to_string(),
+            },
             Event::SyncFinished {
                 device: device.clone(),
                 adapter_id: "x".to_string(),
                 result: SyncResult::Failed("boom".to_string()),
             },
-            Event::DeviceSeen { device: device.clone() },
-            Event::DeviceOffline { device: device.clone() },
-            Event::Error { message: "m".to_string() },
-            Event::FingerprintChanged { device: device.clone(), fingerprint: "ff".to_string() },
-            Event::InboundSync { device: device.clone(), applied: 3 },
+            Event::DeviceSeen {
+                device: device.clone(),
+            },
+            Event::DeviceOffline {
+                device: device.clone(),
+            },
+            Event::Error {
+                message: "m".to_string(),
+            },
+            Event::FingerprintChanged {
+                device: device.clone(),
+                fingerprint: "ff".to_string(),
+            },
+            Event::InboundSync {
+                device: device.clone(),
+                applied: 3,
+            },
             Event::SyncStats {
                 device: device.clone(),
                 adapter_id: "x".to_string(),
@@ -1921,10 +1940,17 @@ mod tests {
                 device: Some(device.clone()),
                 error: None,
             },
-            Event::DiscoveryFinished { devices: vec![device] },
-            Event::ListenerStarted { address: "127.0.0.1:5".parse().expect("addr") },
+            Event::DiscoveryFinished {
+                devices: vec![device],
+            },
+            Event::ListenerStarted {
+                address: "127.0.0.1:5".parse().expect("addr"),
+            },
             Event::ListenerStopped,
-            Event::TaskFinished { ticket: 9, result: SyncResult::Success },
+            Event::TaskFinished {
+                ticket: 9,
+                result: SyncResult::Success,
+            },
         ];
         let mut types = std::collections::HashSet::new();
         for event in &events {
