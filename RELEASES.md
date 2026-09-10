@@ -1,11 +1,15 @@
 # Releases
 
-## Unreleased
-- See `CHANGELOG.md` for the itemised list: merge policies on the sync path,
-  per-field clocks, delta sync (protocol v2), `AppendOnly` op-logs, fingerprint
-  pinning with rustls 0.23, the GUI-friendly `BackgroundEngine` and wakeable
-  `EventStream`, `KeyStore` backends, Linux/macOS packaging docs and service
-  units, `docs/PROTOCOL.md`, and a Linux + macOS CI matrix.
+## v0.6.0 (2026-09-10)
+- Merge policies now run on the sync path: inbound entries are routed to the owning adapter, and logical records carry per-field clocks so concurrent edits to different fields both survive.
+- Delta sync (protocol v2): one connection per sync, only entries newer than the peer's cursor, full snapshot on first contact or after a state reset; 0.5 peers still interoperate.
+- `MergePolicy::AppendOnly` for op-log fields, with event-log guidance in `docs/LOGICAL.md`.
+- Fingerprint pinning after first use on both sides, `Event::FingerprintChanged`, TLS-layer pinning for known devices; rustls 0.23 without `dangerous_configuration`.
+- GUI-friendly engine: `Engine::spawn()` / `BackgroundEngine`, `CancelToken`, `EventStream::raw_fd()` and wakers; FFI ABI 2 with an event queue and async sync; Swift `LibreSyncEventPump`.
+- `KeyStore` trait with file, Secret Service and macOS Keychain backends.
+- Linux and macOS packaging: Flatpak guidance, Tailscale degrade-once plus local-API feature, systemd and launchd units, App Sandbox entitlements, universal FFI build and Swift package tests.
+- `docs/PROTOCOL.md` wire specification and a Linux + macOS CI matrix.
+- Full itemised list in `CHANGELOG.md`.
 
 ## v0.5.0 (2026-06-05)
 - Removed vulnerable dependency paths and moved the SQLite page delta format to a local bounded codec.

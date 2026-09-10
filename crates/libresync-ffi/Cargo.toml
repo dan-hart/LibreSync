@@ -1,6 +1,6 @@
 [package]
 name = "libresync-ffi"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 license = "AGPL-3.0-only"
 description = "C ABI wrapper for LibreSync core."
