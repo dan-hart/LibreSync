@@ -12,8 +12,8 @@ narrative context live in `RELEASES.md`.
   `Hello` check. `read_message_with_limit` exposes the bound for callers.
 - SQLite logical adapter quotes all developer-supplied table and column
   identifiers when building SQL.
-- Bumped `crossbeam-epoch` to 0.9.21 (RUSTSEC-2026-0204) and `spin` to 0.9.9
-  (previous version yanked).
+- Bumped `rustls` to 0.23.45 (RUSTSEC-2026-0285), `crossbeam-epoch` to 0.9.21
+  (RUSTSEC-2026-0204), and `spin` to 0.9.9 (previous version yanked).
 
 ### Changed
 - `SECURITY.md` points at GitHub private vulnerability reporting.
