@@ -77,8 +77,10 @@ let _auto = engine.auto_refresh("file", "./state.json")?;
 The CLI is a device-to-device testing tool that uses LAN/private-overlay discovery, device linking, and JSON/SQLite adapter refresh.
 
 ### Install
+- Homebrew (macOS/Linux): `brew install dan-hart/tap/libresync`
+- crates.io: `cargo install libresync-cli`
 - From a local checkout: `cargo install --path crates/libresync-cli --force`
-- From a release tag: `cargo install --git https://github.com/dan-hart/LibreSync --tag v0.6.0 libresync-cli`
+- From a release tag: `cargo install --git https://github.com/dan-hart/LibreSync --tag v0.6.1 libresync-cli`
 
 ### Quick start
 1. Initialize a config on each device:

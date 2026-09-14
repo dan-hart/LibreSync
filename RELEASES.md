@@ -1,5 +1,10 @@
 # Releases
 
+## v0.6.1 (2026-09-14)
+- Security: wire messages are capped at 256 MiB before the linking check; SQLite logical identifiers are quoted; rustls 0.23.45, crossbeam-epoch 0.9.21 and spin 0.9.9.
+- First public release: crates on crates.io (`libresync`, `libresync-cli`, `libresync-ffi`), Homebrew formula in `dan-hart/homebrew-tap`, private vulnerability reporting, code of conduct and issue templates.
+- Removed internal planning notes; test fixtures use documentation address ranges.
+
 ## v0.6.0 (2026-09-10)
 - Merge policies now run on the sync path: inbound entries are routed to the owning adapter, and logical records carry per-field clocks so concurrent edits to different fields both survive.
 - Delta sync (protocol v2): one connection per sync, only entries newer than the peer's cursor, full snapshot on first contact or after a state reset; 0.5 peers still interoperate.

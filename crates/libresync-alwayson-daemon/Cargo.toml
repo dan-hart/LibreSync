@@ -1,6 +1,6 @@
 [package]
 name = "libresync-alwayson-daemon"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 license = "AGPL-3.0-only"
 description = "Headless daemon for LibreSyncAlwaysOn."
@@ -18,7 +18,7 @@ uuid = { version = "1.6", features = ["v4"] }
 whoami = "1.5"
 directories = "5.0"
 ctrlc = "3.4"
-libresync = { path = "../libresync" }
+libresync = { path = "../libresync", version = "0.6.1" }
 
 [dev-dependencies]
 tempfile = "3.10"

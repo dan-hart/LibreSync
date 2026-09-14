@@ -3,9 +3,17 @@
 LibreSync lets apps sync data directly between devices on the same LAN with mandatory E2EE.
 
 ## 1) Install
+Homebrew:
+```
+brew install dan-hart/tap/libresync
+```
+crates.io:
+```
+cargo install libresync-cli
+```
 From a release tag:
 ```
-cargo install --git https://github.com/dan-hart/LibreSync --tag v0.6.0 libresync-cli
+cargo install --git https://github.com/dan-hart/LibreSync --tag v0.6.1 libresync-cli
 ```
 Or from a local checkout:
 ```

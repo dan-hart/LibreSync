@@ -46,9 +46,16 @@ git tag vX.Y.Z
 git push origin main vX.Y.Z
 ```
 
-After pushing the release tag, create a GitHub release from it
-(`gh release create vX.Y.Z --notes-from-tag` or paste the `RELEASES.md` section).
-Users install with `cargo install --git https://github.com/dan-hart/LibreSync --tag vX.Y.Z libresync-cli`.
+After pushing the release tag:
+
+1. Create a GitHub release from it (`gh release create vX.Y.Z --notes-file ...`
+   with the `RELEASES.md` section).
+2. Publish to crates.io in dependency order (needs `cargo login` once):
+   `cargo publish -p libresync && cargo publish -p libresync-cli && cargo publish -p libresync-ffi`
+   (or `cargo publish --workspace --exclude libresync-alwayson-daemon`).
+3. Update `Formula/libresync.rb` in `dan-hart/homebrew-tap`: point `url` at
+   `https://github.com/dan-hart/LibreSync/archive/refs/tags/vX.Y.Z.tar.gz` and
+   set `sha256` to `curl -sL <url> | sha256sum`.
 
 ## Notes
 

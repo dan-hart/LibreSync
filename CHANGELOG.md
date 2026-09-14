@@ -4,7 +4,7 @@ All notable changes to LibreSync are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); release notes with
 narrative context live in `RELEASES.md`.
 
-## [Unreleased]
+## [0.6.1] - 2026-09-14
 
 ### Security
 - `read_message` now caps a single wire message at `MAX_MESSAGE_BYTES`
@@ -19,8 +19,8 @@ narrative context live in `RELEASES.md`.
 - `SECURITY.md` points at GitHub private vulnerability reporting.
 - Added `CODE_OF_CONDUCT.md`, issue and pull request templates, and crate
   metadata (`repository`, `readme`, `keywords`, `categories`).
-- Removed Homebrew as a distribution channel; install the CLI with
-  `cargo install --git ... --tag vX.Y.Z libresync-cli` or from a checkout.
+- Distribution: `libresync`, `libresync-cli` and `libresync-ffi` are published
+  to crates.io, and the CLI is installable with `brew install dan-hart/tap/libresync`.
 - Removed internal planning notes (`PROGRESS.md`, `docs/plans/`, `research/`);
   status lives in `CHANGELOG.md` and `RELEASES.md`.
 - Test fixtures use TEST-NET-2 documentation addresses instead of CGNAT ranges.
