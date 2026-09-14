@@ -1515,7 +1515,7 @@ mod tests {
     };
     use std::collections::{BTreeMap, HashMap};
     use std::sync::{Arc, Mutex};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use tempfile::tempdir;
 
     struct TestHandler {
@@ -1802,10 +1802,15 @@ mod tests {
         let watch = engine
             .watch("file", &state_path, Duration::from_millis(10))
             .expect("watch");
-        std::thread::sleep(Duration::from_millis(30));
+        // The first tick runs on a background thread; give a slow CI runner
+        // time to schedule it instead of assuming a fixed sleep suffices.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !state_path.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         watch.stop().expect("stop");
 
-        assert!(state_path.exists());
+        assert!(state_path.exists(), "watch never wrote the state file");
     }
 
     #[test]
