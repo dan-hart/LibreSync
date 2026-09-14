@@ -19,6 +19,8 @@ narrative context live in `RELEASES.md`.
 - `SECURITY.md` points at GitHub private vulnerability reporting.
 - Added `CODE_OF_CONDUCT.md`, issue and pull request templates, and crate
   metadata (`repository`, `readme`, `keywords`, `categories`).
+- Removed Homebrew as a distribution channel; install the CLI with
+  `cargo install --git ... --tag vX.Y.Z libresync-cli` or from a checkout.
 - Removed internal planning notes (`PROGRESS.md`, `docs/plans/`, `research/`);
   status lives in `CHANGELOG.md` and `RELEASES.md`.
 - Test fixtures use TEST-NET-2 documentation addresses instead of CGNAT ranges.

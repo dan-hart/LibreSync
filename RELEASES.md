@@ -20,7 +20,7 @@
 ## v0.4.0 (2026-03-31)
 - Added a release-readiness checker, release guide, and CI smoke-build coverage so version drift gets caught before tagging.
 - Fixed the AlwaysOn standalone Tauri build path and tray asset packaging for reproducible release validation.
-- Published the first Homebrew tap formula for the `libresync` CLI alongside the `0.4.0` minor release.
+- Tagged the `0.4.0` minor release of the `libresync` CLI.
 
 ## v0.3.0 (2026-02-09)
 - Added private overlay discovery for device sync, including Tailscale/Headscale peers and static `LIBRESYNC_OVERLAY_PEERS`.

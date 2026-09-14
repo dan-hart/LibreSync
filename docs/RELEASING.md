@@ -46,17 +46,12 @@ git tag vX.Y.Z
 git push origin main vX.Y.Z
 ```
 
-After pushing the release tag:
-
-1. Create a GitHub release from the tag (`gh release create vX.Y.Z --notes-from-tag`
-   or paste the `RELEASES.md` section).
-2. Publish or update the Homebrew formula in `dan-hart/homebrew-tap` so that
-   `brew install dan-hart/tap/libresync` resolves to the new tarball. Until the
-   formula is published, do not advertise the Homebrew install path in `README.md`.
+After pushing the release tag, create a GitHub release from it
+(`gh release create vX.Y.Z --notes-from-tag` or paste the `RELEASES.md` section).
+Users install with `cargo install --git https://github.com/dan-hart/LibreSync --tag vX.Y.Z libresync-cli`.
 
 ## Notes
 
 - `./scripts/utilities/check-release-readiness.sh` is metadata-only. It checks version alignment and the topmost release heading, but it does not run tests or build commands.
 - The AlwaysOn smoke build depends on the nested Tauri crate being runnable with `cargo check --manifest-path`.
 - `git status --short` should print nothing before creating the tag.
-- The Homebrew formula lives in `dan-hart/homebrew-tap` and should point at the matching `vX.Y.Z` source tarball with an updated SHA256.
