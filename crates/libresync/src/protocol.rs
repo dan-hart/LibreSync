@@ -1,4 +1,4 @@
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 
 use serde::{Deserialize, Serialize};
 
@@ -85,11 +85,25 @@ pub fn write_message<W: Write>(writer: &mut W, message: &Message) -> Result<()> 
     Ok(())
 }
 
+/// Upper bound on a single wire message, in bytes (including the trailing
+/// newline). `read_message` rejects anything longer before allocating more
+/// than this, so an unauthenticated peer cannot force unbounded memory use
+/// before the `Hello` / linking checks run.
+pub const MAX_MESSAGE_BYTES: u64 = 256 * 1024 * 1024;
+
 pub fn read_message<R: BufRead>(reader: &mut R) -> Result<Message> {
+    read_message_with_limit(reader, MAX_MESSAGE_BYTES)
+}
+
+/// Like `read_message`, but with a caller-supplied size bound.
+pub fn read_message_with_limit<R: BufRead>(reader: &mut R, limit: u64) -> Result<Message> {
     let mut line = String::new();
-    let bytes_read = reader.read_line(&mut line)?;
+    let bytes_read = reader.by_ref().take(limit).read_line(&mut line)?;
     if bytes_read == 0 {
         return Err(Error::Protocol("unexpected EOF".to_string()));
+    }
+    if !line.ends_with('\n') && bytes_read as u64 >= limit {
+        return Err(Error::Protocol(format!("message exceeds {limit} bytes")));
     }
     let trimmed = line.trim_end_matches(['\n', '\r']);
     let message = serde_json::from_str(trimmed)?;
@@ -98,10 +112,10 @@ pub fn read_message<R: BufRead>(reader: &mut R) -> Result<Message> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::io::{Cursor, Read};
 
     use crate::entry::LamportClock;
-    use crate::protocol::{read_message, write_message, Message};
+    use crate::protocol::{read_message, read_message_with_limit, write_message, Message};
     use crate::{Entry, Identity};
 
     #[test]
@@ -178,6 +192,21 @@ mod tests {
         let mut cursor = Cursor::new(Vec::<u8>::new());
         let error = read_message(&mut cursor).expect_err("expected error");
         assert!(error.to_string().contains("unexpected EOF"));
+    }
+
+    #[test]
+    fn read_message_rejects_oversized_line() {
+        // A reader that yields an endless run of bytes with no newline.
+        struct Endless;
+        impl Read for Endless {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                buf.fill(b'a');
+                Ok(buf.len())
+            }
+        }
+        let mut reader = std::io::BufReader::new(Endless);
+        let error = read_message_with_limit(&mut reader, 4096).expect_err("expected error");
+        assert!(error.to_string().contains("exceeds"), "{error}");
     }
 
     #[test]

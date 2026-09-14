@@ -3,9 +3,9 @@
 LibreSync lets apps sync data directly between devices on the same LAN with mandatory E2EE.
 
 ## 1) Install
-Choose one:
+From a release tag:
 ```
-brew install dan-hart/tap/libresync
+cargo install --git https://github.com/dan-hart/LibreSync --tag v0.6.0 libresync-cli
 ```
 Or from a local checkout:
 ```

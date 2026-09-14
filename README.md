@@ -41,7 +41,7 @@ User experience:
 ## Where can I use this?
 - In Rust. This repo is _only_ for the shared sync engine logic.
 - Platform-specific libraries are available but still early.
-- As of February 2026, the project is a desktop-only production MVP; mobile SDKs remain early.
+- Desktop (Linux, macOS, Windows) is the supported target today; mobile SDKs remain early.
 
 ---
 
@@ -77,8 +77,8 @@ let _auto = engine.auto_refresh("file", "./state.json")?;
 The CLI is a device-to-device testing tool that uses LAN/private-overlay discovery, device linking, and JSON/SQLite adapter refresh.
 
 ### Install
-- From Homebrew: `brew install dan-hart/tap/libresync`
 - From a local checkout: `cargo install --path crates/libresync-cli --force`
+- From a release tag: `cargo install --git https://github.com/dan-hart/LibreSync --tag v0.6.0 libresync-cli`
 
 ### Quick start
 1. Initialize a config on each device:
@@ -122,7 +122,7 @@ The CLI is a device-to-device testing tool that uses LAN/private-overlay discove
 - System tray controls and trust panel (linking + fingerprints).
 - Intended targets: macOS, Windows, Linux.
 
-## Current limitations (alpha)
+## Current limitations
 - Logical record sync is the recommended integration path but still early for production apps.
 - The SQLite logical adapter supports mapped existing tables, but complex relational schemas still need careful field-policy tuning.
 - Discovery on iOS/macOS requires local network permissions and may be blocked by AP isolation.

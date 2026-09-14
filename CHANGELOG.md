@@ -4,6 +4,27 @@ All notable changes to LibreSync are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); release notes with
 narrative context live in `RELEASES.md`.
 
+## [Unreleased]
+
+### Security
+- `read_message` now caps a single wire message at `MAX_MESSAGE_BYTES`
+  (256 MiB) so an unlinked peer cannot force unbounded memory use before the
+  `Hello` check. `read_message_with_limit` exposes the bound for callers.
+- SQLite logical adapter quotes all developer-supplied table and column
+  identifiers when building SQL.
+- Bumped `crossbeam-epoch` to 0.9.21 (RUSTSEC-2026-0204) and `spin` to 0.9.9
+  (previous version yanked).
+
+### Changed
+- `SECURITY.md` points at GitHub private vulnerability reporting.
+- Added `CODE_OF_CONDUCT.md`, issue and pull request templates, and crate
+  metadata (`repository`, `readme`, `keywords`, `categories`).
+- Removed internal planning notes (`PROGRESS.md`, `docs/plans/`, `research/`);
+  status lives in `CHANGELOG.md` and `RELEASES.md`.
+- Test fixtures use TEST-NET-2 documentation addresses instead of CGNAT ranges.
+- CI uses `actions/checkout@v5`; the CLI binary no longer collides with the
+  library in `cargo doc` output.
+
 ## [0.6.0] - 2026-09-10
 
 ### Fixed

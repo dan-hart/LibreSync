@@ -4,6 +4,11 @@ version = "0.6.0"
 edition = "2021"
 license = "AGPL-3.0-only"
 description = "Local-only device-to-device sync core for LibreSync."
+repository = "https://github.com/dan-hart/LibreSync"
+homepage = "https://github.com/dan-hart/LibreSync"
+readme = "../../README.md"
+keywords = ["sync", "local-first", "p2p", "e2ee", "offline"]
+categories = ["network-programming", "cryptography", "database"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }

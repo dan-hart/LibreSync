@@ -4,10 +4,17 @@ version = "0.6.0"
 edition = "2021"
 license = "AGPL-3.0-only"
 description = "CLI for LibreSync."
+repository = "https://github.com/dan-hart/LibreSync"
+homepage = "https://github.com/dan-hart/LibreSync"
+readme = "../../README.md"
+keywords = ["sync", "local-first", "p2p", "cli"]
+categories = ["command-line-utilities", "network-programming"]
 
 [[bin]]
 name = "libresync"
 path = "src/main.rs"
+# The binary shares its name with the library crate; skip it in `cargo doc`.
+doc = false
 
 [dependencies]
 base64 = "0.22"

@@ -4,6 +4,11 @@ version = "0.6.0"
 edition = "2021"
 license = "AGPL-3.0-only"
 description = "C ABI wrapper for LibreSync core."
+repository = "https://github.com/dan-hart/LibreSync"
+homepage = "https://github.com/dan-hart/LibreSync"
+readme = "../../bindings/README.md"
+keywords = ["sync", "local-first", "ffi", "swift", "kotlin"]
+categories = ["development-tools::ffi-bindings", "network-programming"]
 
 [lib]
 crate-type = ["cdylib", "staticlib"]

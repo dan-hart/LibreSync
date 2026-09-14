@@ -1,35 +1,31 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
-- This repository contains a Rust workspace plus documentation. Key files live at the root:
-  - `README.md` — high-level overview and values.
-  - `RESEARCH.md` — design and architecture research notes.
-  - `PROGRESS.md` — ongoing implementation status; consult during early development.
-  - `SECURITY.md`, `PRIVACY.md`, `LICENSE` — security, privacy, and licensing details.
-- `docs/` contains architecture and CLI documentation.
-- `crates/` contains the Rust crates (`libresync` core and `libresync-cli`).
-- `scripts/` contains local security utilities (pre-commit and audit helpers).
+## Project Structure
+- `crates/libresync` — sync engine core (protocol, crypto, adapters, discovery).
+- `crates/libresync-cli` — `libresync` command-line tool; dogfoods the `Engine` API.
+- `crates/libresync-ffi` — C ABI wrapper consumed by `bindings/swift` and `bindings/kotlin`.
+- `crates/libresync-alwayson-daemon` — headless always-on device; `alwaysOn/` holds the Tauri tray app.
+- `docs/` — architecture, protocol, API stability, packaging, and release guides.
+- `contrib/` — systemd, launchd, and Flatpak templates. `scripts/` — build and audit helpers.
+- Root policy docs: `README.md`, `SECURITY.md`, `PRIVACY.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `RELEASES.md`, `LICENSE`.
 
-## Build, Test, and Development Commands
-- Build: `cargo build`
-- Tests: `cargo test`
+## Build, Test, and Verify
+- `cargo build --workspace`
+- `cargo test --workspace` and `cargo test -p libresync --all-features`
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` (CI gate)
+- `./scripts/utilities/check-release-readiness.sh` and `./scripts/utilities/security-audit.sh` before tagging.
+- See `TESTING.md` for the two-device and coverage flows and `docs/RELEASING.md` for the release checklist.
 
-## Coding Style & Naming Conventions
-- Use consistent Markdown formatting with short paragraphs and bullet lists.
-- Prefer sentence-case headings (as in `RESEARCH.md`).
-- File names are uppercase for policy docs (e.g., `SECURITY.md`), and title-case headings within documents.
+## Coding Style
+- Rust 2021, `rustfmt` defaults, no clippy warnings.
+- Errors flow through `libresync::Error`; avoid `unwrap`/`expect` outside tests.
+- Markdown: short paragraphs, bullet lists, sentence-case headings.
 
-## Testing Guidelines
-- Use `cargo test` for unit and integration tests.
+## Commits and Pull Requests
+- Short, imperative commit summaries (e.g. "Add delta sync cursor migration").
+- Every user-visible change gets a `CHANGELOG.md` entry under `[Unreleased]`.
+- PRs touching discovery, linking, encryption, key storage, or the wire format must include a security rationale and update `SECURITY.md` / `docs/PROTOCOL.md` as needed.
 
-## Commit & Pull Request Guidelines
-- Git history is not available in this repo, so no commit convention is established.
-- Suggested default: short, imperative commit summaries (e.g., “Add sync protocol outline”).
-- PRs should include:
-  - A concise description of changes.
-  - Links to relevant issues or research sections (e.g., `RESEARCH.md` headings).
-  - Screenshots only if visuals are introduced later.
-
-## Security & Configuration Tips
-- The project prioritizes local-only sync and privacy; avoid adding cloud dependencies without explicit discussion.
-- If adding security-related content, update `SECURITY.md` and call out threat-model impacts.
+## Security and Configuration
+- LibreSync is local-only by design; do not add cloud or relay dependencies without explicit discussion.
+- Never commit keys, config directories, or state files; `.gitignore` and `scripts/utilities/security-audit.sh` enforce this.

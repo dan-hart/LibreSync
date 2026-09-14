@@ -236,7 +236,7 @@ impl SqliteLogicalAdapter {
              clock_device TEXT NOT NULL,\
              PRIMARY KEY (schema, entity, id)\
              )",
-            self.table
+            quote_ident(&self.table)
         );
         conn.execute(&sql, [])
             .map_err(|error| Error::Protocol(error.to_string()))?;
@@ -259,7 +259,7 @@ impl SqliteLogicalAdapter {
              clock_device TEXT NOT NULL,\
              PRIMARY KEY (schema, entity, record_id)\
              )",
-            mapping.meta_table
+            quote_ident(&mapping.meta_table)
         );
         conn.execute(&sql, [])
             .map_err(|error| Error::Protocol(error.to_string()))?;
@@ -277,7 +277,7 @@ impl SqliteLogicalAdapter {
         let meta_sql = format!(
             "SELECT record_id, tombstone, updated_at, clock_counter, clock_device \
              FROM {} WHERE schema = ?1 AND entity = ?2",
-            mapping.meta_table
+            quote_ident(&mapping.meta_table)
         );
         let mut meta_stmt = conn
             .prepare(&meta_sql)
@@ -309,11 +309,15 @@ impl SqliteLogicalAdapter {
         }
 
         let mut columns = Vec::with_capacity(1 + mapping.fields.len());
-        columns.push(mapping.id_column.clone());
+        columns.push(quote_ident(&mapping.id_column));
         for field in &mapping.fields {
-            columns.push(field.column.clone());
+            columns.push(quote_ident(&field.column));
         }
-        let sql = format!("SELECT {} FROM {}", columns.join(", "), mapping.data_table);
+        let sql = format!(
+            "SELECT {} FROM {}",
+            columns.join(", "),
+            quote_ident(&mapping.data_table)
+        );
         let mut stmt = conn
             .prepare(&sql)
             .map_err(|error| Error::Protocol(error.to_string()))?;
@@ -398,7 +402,7 @@ impl SqliteLogicalAdapter {
              updated_at = excluded.updated_at, \
              clock_counter = excluded.clock_counter, \
              clock_device = excluded.clock_device",
-            mapping.meta_table
+            quote_ident(&mapping.meta_table)
         );
 
         for record in records.snapshot()? {
@@ -409,17 +413,18 @@ impl SqliteLogicalAdapter {
             if record.tombstone {
                 let delete_sql = format!(
                     "DELETE FROM {} WHERE {} = ?1",
-                    mapping.data_table, mapping.id_column
+                    quote_ident(&mapping.data_table),
+                    quote_ident(&mapping.id_column)
                 );
                 tx.execute(&delete_sql, params![record.id])
                     .map_err(|error| Error::Protocol(error.to_string()))?;
             } else {
                 let mut columns = Vec::with_capacity(1 + mapping.fields.len());
                 let mut values: Vec<SqlValue> = Vec::with_capacity(1 + mapping.fields.len());
-                columns.push(mapping.id_column.clone());
+                columns.push(quote_ident(&mapping.id_column));
                 values.push(SqlValue::Text(record.id.clone()));
                 for field in &mapping.fields {
-                    columns.push(field.column.clone());
+                    columns.push(quote_ident(&field.column));
                     let field_value = record.fields.get(&field.field).unwrap_or(&FieldValue::Null);
                     values.push(field_to_sql_value(field_value, &field.encoding));
                 }
@@ -430,23 +435,26 @@ impl SqliteLogicalAdapter {
                 let update_cols = mapping
                     .fields
                     .iter()
-                    .map(|field| format!("{} = excluded.{}", field.column, field.column))
+                    .map(|field| {
+                        let column = quote_ident(&field.column);
+                        format!("{column} = excluded.{column}")
+                    })
                     .collect::<Vec<_>>();
                 let insert_sql = if update_cols.is_empty() {
                     format!(
                         "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT({}) DO NOTHING",
-                        mapping.data_table,
+                        quote_ident(&mapping.data_table),
                         columns.join(", "),
                         placeholders.join(", "),
-                        mapping.id_column,
+                        quote_ident(&mapping.id_column),
                     )
                 } else {
                     format!(
                         "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT({}) DO UPDATE SET {}",
-                        mapping.data_table,
+                        quote_ident(&mapping.data_table),
                         columns.join(", "),
                         placeholders.join(", "),
-                        mapping.id_column,
+                        quote_ident(&mapping.id_column),
                         update_cols.join(", ")
                     )
                 };
@@ -522,7 +530,7 @@ impl LogicalAdapter for SqliteLogicalAdapter {
 
         let sql = format!(
             "SELECT schema, entity, id, fields, tombstone, updated_at, clock_counter, clock_device FROM {}",
-            self.table
+            quote_ident(&self.table)
         );
         let mut stmt = conn
             .prepare(&sql)
@@ -574,14 +582,14 @@ impl LogicalAdapter for SqliteLogicalAdapter {
             .map_err(|error| Error::Protocol(error.to_string()))?;
 
         {
-            let delete_sql = format!("DELETE FROM {}", self.table);
+            let delete_sql = format!("DELETE FROM {}", quote_ident(&self.table));
             tx.execute(&delete_sql, [])
                 .map_err(|error| Error::Protocol(error.to_string()))?;
 
             let insert_sql = format!(
                 "INSERT INTO {} (schema, entity, id, fields, tombstone, updated_at, clock_counter, clock_device)\
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                self.table
+                quote_ident(&self.table)
             );
             let mut stmt = tx
                 .prepare(&insert_sql)
@@ -622,6 +630,12 @@ impl LogicalAdapter for SqliteLogicalAdapter {
             },
         )
     }
+}
+
+/// Quote a SQLite identifier (table or column name) so developer-supplied
+/// names are never interpreted as SQL syntax.
+fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
 }
 
 fn sqlite_value_to_string(value: SqlValue) -> String {

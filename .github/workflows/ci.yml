@@ -17,7 +17,7 @@ jobs:
       matrix:
         os: [ubuntu-22.04, macos-14]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -47,7 +47,7 @@ jobs:
     name: release readiness, audits, coverage (ubuntu)
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview

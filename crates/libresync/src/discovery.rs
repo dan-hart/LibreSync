@@ -609,17 +609,17 @@ mod tests {
         let json = r#"{
           "Self": {
             "HostName": "device-a",
-            "TailscaleIPs": ["100.64.0.1"]
+            "TailscaleIPs": ["198.51.100.1"]
           },
           "Peer": {
             "peer1": {
               "HostName": "device-b",
-              "TailscaleIPs": ["100.64.0.2"],
+              "TailscaleIPs": ["198.51.100.2"],
               "Online": true
             },
             "peer2": {
               "HostName": "device-c",
-              "TailscaleIPs": ["100.64.0.3"],
+              "TailscaleIPs": ["198.51.100.3"],
               "Online": false
             }
           }
@@ -629,7 +629,7 @@ mod tests {
             parse_tailscale_status("com.example.app", 52345, json).expect("parse tailscale");
         assert_eq!(devices.len(), 1);
         let device = &devices[0];
-        assert_eq!(device.address, "100.64.0.2:52345".parse().expect("addr"));
+        assert_eq!(device.address, "198.51.100.2:52345".parse().expect("addr"));
         assert_eq!(device.source, DiscoverySource::Tailscale);
         assert_eq!(device.identity.app_id, "com.example.app");
     }
@@ -677,7 +677,7 @@ mod tests {
                 let n = stream.read(&mut request).expect("read");
                 let request = String::from_utf8_lossy(&request[..n]).to_string();
                 let body = if request.starts_with("GET /localapi/v0/status ") {
-                    r#"{"Self":{"HostName":"me","TailscaleIPs":["100.64.0.1"]},"Peer":{"p":{"HostName":"laptop","TailscaleIPs":["100.64.0.9"],"Online":true}}}"#
+                    r#"{"Self":{"HostName":"me","TailscaleIPs":["198.51.100.1"]},"Peer":{"p":{"HostName":"laptop","TailscaleIPs":["198.51.100.9"],"Online":true}}}"#
                 } else {
                     "nope"
                 };
@@ -699,7 +699,7 @@ mod tests {
         assert_eq!(devices.len(), 1);
         assert_eq!(
             devices[0].address,
-            "100.64.0.9:52345".parse().expect("addr")
+            "198.51.100.9:52345".parse().expect("addr")
         );
         assert_eq!(devices[0].source, DiscoverySource::Tailscale);
 
@@ -746,14 +746,14 @@ mod tests {
         let devices = parse_static_overlay_peers(
             "com.example.app",
             52345,
-            "100.64.0.5:7000,100.64.0.6,invalid",
+            "198.51.100.5:7000,198.51.100.6,invalid",
         );
 
         assert_eq!(devices.len(), 2);
-        assert_eq!(devices[0].address, "100.64.0.5:7000".parse().expect("addr"));
+        assert_eq!(devices[0].address, "198.51.100.5:7000".parse().expect("addr"));
         assert_eq!(
             devices[1].address,
-            "100.64.0.6:52345".parse().expect("addr")
+            "198.51.100.6:52345".parse().expect("addr")
         );
         assert_eq!(devices[0].source, DiscoverySource::StaticOverlay);
         assert_eq!(devices[1].source, DiscoverySource::StaticOverlay);

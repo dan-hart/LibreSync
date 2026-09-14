@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/dan-hart/LibreSync/security/advisories/new
+    about: Please use private reporting for anything security-sensitive.

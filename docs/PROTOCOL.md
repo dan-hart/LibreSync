@@ -48,8 +48,12 @@ peers still accept.
 
 Messages are UTF-8 JSON objects, one per line, terminated by `\n` (`\r\n` is
 tolerated on input). A message must not contain raw newlines. There is no
-length prefix; readers use line-based reads. Unknown JSON fields must be
-ignored; missing optional fields take their defaults.
+length prefix; readers use line-based reads. A single message must not exceed
+`MAX_MESSAGE_BYTES` (256 MiB including the newline); readers abort the
+connection with a `Protocol` error once that many bytes arrive without a
+newline, so an unauthenticated peer cannot force unbounded allocation before
+the `Hello` checks run. Unknown JSON fields must be ignored; missing optional
+fields take their defaults.
 
 Every message has the shape
 
@@ -237,8 +241,8 @@ reports version 1.
 - Linked device with a different fingerprint: reject with
   `FingerprintMismatch`; emit `FingerprintChanged`; never re-pin silently.
 - Decrypt failure: `Crypto` error, abort.
-- Malformed JSON, unknown `type`, or EOF before a complete line: `Protocol`
-  or `Serde` error, abort.
+- Malformed JSON, unknown `type`, EOF before a complete line, or a line longer
+  than `MAX_MESSAGE_BYTES`: `Protocol` or `Serde` error, abort.
 - Cancellation: a client may close the socket at any point; the listener
   must treat a truncated exchange as if it never happened (no cursor update
   without `Ack`).

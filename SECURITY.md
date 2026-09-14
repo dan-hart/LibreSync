@@ -96,9 +96,14 @@ Build tools can serialize environment variables. Before running builds:
 - Add new build artifacts to `.gitignore` first.
 
 ## Reporting Vulnerabilities
-This repository does not yet have a private security contact. If you find a vulnerability:
-1) Open a GitHub issue with **minimal details** and request a private channel.
-2) Avoid sharing proof-of-concept exploits or sensitive data publicly.
+Please report vulnerabilities privately through GitHub's private vulnerability
+reporting: <https://github.com/dan-hart/LibreSync/security/advisories/new>.
+
+- Do **not** open a public issue for security problems.
+- Include affected versions, a minimal reproduction, and impact (what an attacker
+  on the LAN, on the overlay, or with a linked device could do).
+- You should receive an acknowledgement within 7 days. Fixes ship as a patch
+  release with a `CHANGELOG.md` entry and a GitHub security advisory.
 
 ## Incident Response (Summary)
 If a secret or sensitive data is committed:
