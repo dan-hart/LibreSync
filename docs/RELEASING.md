@@ -50,12 +50,14 @@ After pushing the release tag:
 
 1. Create a GitHub release from it (`gh release create vX.Y.Z --notes-file ...`
    with the `RELEASES.md` section).
-2. Publish to crates.io in dependency order (needs `cargo login` once):
-   `cargo publish -p libresync && cargo publish -p libresync-cli && cargo publish -p libresync-ffi`
-   (or `cargo publish --workspace --exclude libresync-alwayson-daemon`).
-3. Update `Formula/libresync.rb` in `dan-hart/homebrew-tap`: point `url` at
+2. Update `Formula/libresync.rb` in `dan-hart/homebrew-tap`: point `url` at
    `https://github.com/dan-hart/LibreSync/archive/refs/tags/vX.Y.Z.tar.gz` and
    set `sha256` to `curl -sL <url> | sha256sum`.
+
+crates.io publishing is not part of the release process yet. The manifests are
+ready for it (`cargo publish --workspace --exclude libresync-alwayson-daemon --dry-run`
+passes); when the crates are first published, add the step above and the
+`cargo install libresync-cli` line to `README.md`.
 
 ## Notes
 

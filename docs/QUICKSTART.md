@@ -7,10 +7,6 @@ Homebrew:
 ```
 brew install dan-hart/tap/libresync
 ```
-crates.io:
-```
-cargo install libresync-cli
-```
 From a release tag:
 ```
 cargo install --git https://github.com/dan-hart/LibreSync --tag v0.6.1 libresync-cli

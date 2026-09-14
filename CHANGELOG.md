@@ -19,8 +19,8 @@ narrative context live in `RELEASES.md`.
 - `SECURITY.md` points at GitHub private vulnerability reporting.
 - Added `CODE_OF_CONDUCT.md`, issue and pull request templates, and crate
   metadata (`repository`, `readme`, `keywords`, `categories`).
-- Distribution: `libresync`, `libresync-cli` and `libresync-ffi` are published
-  to crates.io, and the CLI is installable with `brew install dan-hart/tap/libresync`.
+- Distribution: the CLI is installable with `brew install dan-hart/tap/libresync`.
+  Crate manifests carry crates.io metadata for a future publish.
 - Removed internal planning notes (`PROGRESS.md`, `docs/plans/`, `research/`);
   status lives in `CHANGELOG.md` and `RELEASES.md`.
 - Test fixtures use TEST-NET-2 documentation addresses instead of CGNAT ranges.

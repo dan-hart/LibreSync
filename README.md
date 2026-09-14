@@ -78,7 +78,6 @@ The CLI is a device-to-device testing tool that uses LAN/private-overlay discove
 
 ### Install
 - Homebrew (macOS/Linux): `brew install dan-hart/tap/libresync`
-- crates.io: `cargo install libresync-cli`
 - From a local checkout: `cargo install --path crates/libresync-cli --force`
 - From a release tag: `cargo install --git https://github.com/dan-hart/LibreSync --tag v0.6.1 libresync-cli`
 

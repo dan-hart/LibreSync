@@ -2,7 +2,7 @@
 
 ## v0.6.1 (2026-09-14)
 - Security: wire messages are capped at 256 MiB before the linking check; SQLite logical identifiers are quoted; rustls 0.23.45, crossbeam-epoch 0.9.21 and spin 0.9.9.
-- First public release: crates on crates.io (`libresync`, `libresync-cli`, `libresync-ffi`), Homebrew formula in `dan-hart/homebrew-tap`, private vulnerability reporting, code of conduct and issue templates.
+- First public release: Homebrew formula in `dan-hart/homebrew-tap`, private vulnerability reporting, code of conduct and issue templates.
 - Removed internal planning notes; test fixtures use documentation address ranges.
 
 ## v0.6.0 (2026-09-10)
