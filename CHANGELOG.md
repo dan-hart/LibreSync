@@ -4,6 +4,11 @@ All notable changes to LibreSync are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); release notes with
 narrative context live in `RELEASES.md`.
 
+## [Unreleased]
+
+### Added
+- LibreSync logo in the repository README.
+
 ## [0.6.1] - 2026-09-14
 
 ### Security

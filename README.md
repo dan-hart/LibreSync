@@ -1,4 +1,9 @@
 # LibreSync
+
+<p align="center">
+  <img src="docs/assets/libresync-logo.png" alt="LibreSync logo" width="640">
+</p>
+
 - Library enabling device to device data synchronization without connecting to the cloud.
 
 ## What is this?
