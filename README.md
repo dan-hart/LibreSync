@@ -1,175 +1,238 @@
 # LibreSync
 
 <p align="center">
-  <img src="docs/assets/libresync-logo.png" alt="LibreSync logo" width="640">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/libresync-logo-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/libresync-logo.png">
+    <img src="docs/assets/libresync-logo.png" alt="LibreSync logo" width="640">
+  </picture>
 </p>
 
-- Library enabling device to device data synchronization without connecting to the cloud.
+<p align="center">
+  <strong>Your data. Your devices. Your sync.</strong><br>
+  Encrypted, local-first synchronization for applications that do not need a cloud backend.
+</p>
 
-## What is this?
-- LibreSync is an open-source AGPLv3 Rust framework that enables real-time and eventual-consistency synchronization of structured application data directly between devices on the same local network (and optional private overlay) without touching the internet.
-- End-to-end encryption (E2EE) is enforced by the engine so any app can claim secure, private sync by default.
+<p align="center">
+  <a href="https://github.com/dan-hart/LibreSync/releases/latest"><img src="https://img.shields.io/github/v/release/dan-hart/LibreSync?style=for-the-badge&amp;logo=github&amp;logoColor=white&amp;labelColor=24292f&amp;color=FF6600" alt="Latest release"></a>
+  <a href="https://github.com/dan-hart/LibreSync/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/dan-hart/LibreSync/ci.yml?branch=main&amp;style=for-the-badge&amp;logo=githubactions&amp;logoColor=white&amp;label=CI&amp;labelColor=24292f" alt="CI status on main"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--only-FF6600?style=for-the-badge&amp;labelColor=24292f" alt="License: AGPL-3.0-only"></a>
+</p>
+<p align="center">
+  <a href="crates/libresync"><img src="https://img.shields.io/badge/built_with-Rust-FF6600?style=flat-square&amp;logo=rust&amp;logoColor=white&amp;labelColor=24292f" alt="Built with Rust"></a>
+  <a href="SECURITY.md"><img src="https://img.shields.io/badge/E2EE-always_on-2ea44f?style=flat-square&amp;labelColor=24292f" alt="End-to-end encryption: always on"></a>
+  <a href="docs/ARCHITECTURE.md"><img src="https://img.shields.io/badge/sync-device_to_device-FF6600?style=flat-square&amp;labelColor=24292f" alt="Device-to-device sync"></a>
+  <a href="PRIVACY.md"><img src="https://img.shields.io/badge/cloud_backend-not_required-2ea44f?style=flat-square&amp;labelColor=24292f" alt="No cloud backend required"></a>
+</p>
 
-## Vision
-LibreSync should be the gold standard for device-to-device, local-first data synchronization.
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#build-with-libresync">Rust integration</a> ·
+  <a href="#documentation">Documentation</a> ·
+  <a href="CHANGELOG.md">Changelog</a>
+</p>
 
-Success means:
-- Developers can add reliable sync without running always-on devices or maintaining backend infrastructure.
-- Users can link once and stay in sync automatically, with clear trust and status indicators.
-- Privacy and security are defaults, not optional add-ons.
+LibreSync is an open-source Rust sync engine for sharing application data between trusted devices on a LAN or an optional private overlay. It combines device discovery, explicit linking, encrypted data exchange, and deterministic conflict resolution without a LibreSync account or hosted sync service.
 
-## Experience goals
-DX (developer experience) means how easy it is to integrate, test, and ship with LibreSync.
-UX (user experience) means how clear and trustworthy sync feels to the person using the app.
+Use it for notes, tasks, preferences, local databases, and other structured app data. The repository includes the Rust library, a CLI, a C ABI with Swift/Kotlin wrappers, and an optional AlwaysOn desktop companion and daemon.
 
-Developer experience:
-- Small, stable API surface with strong defaults.
-- Clear integration guides, sample apps, and diagnostics.
-- Predictable conflict resolution and testable behavior.
+**Current release: [v0.6.1](https://github.com/dan-hart/LibreSync/releases/tag/v0.6.1).** LibreSync is pre-1.0. Desktop is the current focus; mobile SDKs and complex application integrations still need validation. CI exercises Linux and macOS; Windows is a desktop target but is not currently in the CI matrix.
 
-User experience:
-- No accounts, no cloud dependencies, no surprises.
-- Explicit linking and device trust, with easy revocation.
-- Always-on sync where possible, fast catch-up when returning online.
-- E2EE by default, with clear trust indicators.
+## Why LibreSync?
 
-## Who is this for?
-- Developers who want to add data synchronization to their desktop or mobile app, but don't want to run centralized infrastructure.
-- Privacy-conscious users looking for low-level structured data synchronization.
-- Researchers: this library can be used to keep several machine's data in sync.
+- **Keep control of your data.** Sync between your own devices without operating a backend or requiring cloud accounts.
+- **Work locally, catch up later.** Each device retains its data; peers exchange updates when they can connect again.
+- **Encrypt by default.** The engine enforces XChaCha20-Poly1305 payload encryption over TLS and encrypts its persisted state and backups.
+- **Trust devices explicitly.** Linking establishes per-app trust and exchanges app keys. Certificate fingerprints are pinned after linking; changed fingerprints require attention and re-linking.
+- **Merge at the right level.** Logical records support per-field clocks and configurable merge policies, so concurrent changes to different fields can survive synchronization.
+- **Send what changed.** Protocol v2 exchanges deltas over one connection, with a full snapshot on first contact or after a state reset.
+- **Keep the UI responsive.** A background engine, event queues, wakers, and cancellation support desktop app integration.
 
-## Why does this exist?
-- The cloud _sucks_, leave it behind and unleash local, direct information sharing.
-- We are tired of account or service-based sync, I want easy, free, and local sync.
-- All devices should be able to share data if consent is given.
+## How it works
 
-## Where can I use this?
-- In Rust. This repo is _only_ for the shared sync engine logic.
-- Platform-specific libraries are available but still early.
-- Desktop (Linux, macOS, Windows) is the supported target today; mobile SDKs remain early.
+1. **Discover** peers with the same app ID through LAN mDNS, configured addresses, or private-overlay discovery.
+2. **Link** with consent, verify fingerprints, and establish the shared app key. Discovery alone grants no trust.
+3. **Sync** through registered adapters. The engine encrypts outgoing data, merges incoming updates, and writes them to local storage.
+4. **Stay current** with file watching or periodic refresh. An optional AlwaysOn peer can remain available while your main app is closed.
 
----
+LAN sync does not require internet access. Optional overlays such as Tailscale or Headscale can connect devices across networks; their connectivity and relay behavior depend on the overlay configuration.
 
-## Library (libresync)
-- Register an adapter, start a listener, and enable auto refresh.
-- Logical record adapters are the intended primary integration path; file adapters remain available for arbitrary data.
-- Adapters can be logical (records) or file-based (JSON, SQLite, arbitrary files).
-- `InMemoryLogicalAdapter` provides a minimal record adapter for merge-policy testing.
-- `FileLogicalAdapter` persists logical records to a JSON file for simple app storage.
-- `SqliteLogicalAdapter` (feature `sqlite-logical`) supports dedicated record tables and mapped existing SQLite tables, including multi-table mappings.
-- SQLite file adapters can enable page-delta encoding to reduce payload size when changes are small.
-- Auto refresh polls for local changes and syncs with linked devices discovered on the LAN and private overlays.
-- Use `AutoRefreshConfig` to customize polling and refresh intervals.
-- Use `WatchedFileAdapter` for near-real-time local file change detection.
-- Attach an `EventStream` to update UI immediately after sync completes.
-- See `crates/libresync/examples/logical_record_sync.rs` for a minimal logical-record example.
-
-```rust
-use std::sync::Arc;
-use libresync::{Engine, EngineConfig, Identity, JsonFileAdapter, State};
-
-let identity = Identity::new("device-a", "com.example.app", "user-a");
-let state = State::new(identity.device_id.clone());
-let handler = Arc::new(MyHandler::new());
-let mut engine = Engine::new(EngineConfig::new(identity), state, handler);
-
-engine.register_adapter(Arc::new(JsonFileAdapter::new("file", "./data.json")))?;
-engine.start_listening()?;
-let _auto = engine.auto_refresh("file", "./state.json")?;
-```
-
-## CLI (libresync)
-The CLI is a device-to-device testing tool that uses LAN/private-overlay discovery, device linking, and JSON/SQLite adapter refresh.
+## Quick start
 
 ### Install
-- Homebrew (macOS/Linux): `brew install dan-hart/tap/libresync`
-- From a local checkout: `cargo install --path crates/libresync-cli --force`
-- From a release tag: `cargo install --git https://github.com/dan-hart/LibreSync --tag v0.6.1 libresync-cli`
 
-### Quick start
-1. Initialize a config on each device:
-   - `libresync init`
-2. Select a file adapter to keep in sync:
-   - `libresync select --file ./data.json`
-   - `libresync select --id db --kind sqlite --file ./app.db`
-3. Start the device listener (advertises via mDNS, default port 52345):
-   - `libresync listen`
-4. Link once between devices (consent required):
-   - `libresync link`
-5. Refresh the selected adapter:
-   - `libresync refresh`
-6. For continuous updates, run:
-   - `libresync watch`
-7. Check status (linked + discovered devices):
-   - `libresync status`
+With Homebrew on macOS or Linux:
 
-### Notes
-- Linking is required before refresh.
-- `link`/`refresh` will discover devices automatically; if multiple are found, you’ll be prompted to pick one.
-- `link` prints the local and remote fingerprints so you can verify trust out of band.
-- Use `unlink --device-id <device-id>` to revoke trust and force re-linking.
-- `watch` refreshes all linked devices on local changes and on a periodic interval (auto-starts a listener by default).
-- You can also target a specific device: `--device <ip:port>` or `--device-id <device-id>`.
-- Discovery is unauthenticated and only used to find devices; trust is established at linking.
-- Discovery includes LAN mDNS plus Tailscale/Headscale peers (when `tailscale` is available).
-- For other private overlays, set `LIBRESYNC_OVERLAY_PEERS` to comma-separated `ip[:port]` values.
-- `status` shows the selected file, listener status, connected devices (discovered now), last seen addresses, and last seen timestamps for linked devices.
-- Config defaults to the OS config directory (override with `--config`).
-- `listen` runs in the background by default; use `--foreground` to keep it in the terminal.
-- `listen` updates the selected adapter files when incoming refreshes are received.
-- `stop` terminates the background listener for the current config.
-- Use `--verbose` to include debug details when errors occur.
+```sh
+brew install dan-hart/tap/libresync
+```
 
-## LibreSyncAlwaysOn
-- Always-on desktop app (LAN-only) written in Rust + Tauri.
-- Runs as a device that keeps data synced even when the primary app is closed.
-- Status dashboard with manual refresh and per-app backup toggles.
-- Snapshot preview and restore controls (restore gated by allow-restore).
-- System tray controls and trust panel (linking + fingerprints).
-- Intended targets: macOS, Windows, Linux.
+With a Rust toolchain, install the published Git tag:
 
-## Current limitations
-- Logical record sync is the recommended integration path but still early for production apps.
-- The SQLite logical adapter supports mapped existing tables, but complex relational schemas still need careful field-policy tuning.
-- Discovery on iOS/macOS requires local network permissions and may be blocked by AP isolation.
-- SDK wrappers include Keychain/Keystore helpers but still need default integration and UX polish.
-- LibreSyncAlwaysOn uses a Linux systemd user service for background behavior; macOS/Windows rely on the tray app.
+```sh
+cargo install --git https://github.com/dan-hart/LibreSync --tag v0.6.1 libresync-cli
+```
 
-## Values
-- Privacy: a human right
-- Security: end-to-end encryption
-- Freedom: use this library for free, forever
+Or install from a checkout:
+
+```sh
+git clone https://github.com/dan-hart/LibreSync.git
+cd LibreSync
+cargo install --path crates/libresync-cli --locked
+```
+
+The crates are not yet published to crates.io. Use Homebrew, a Git tag, or a local checkout.
+
+### Sync between two devices
+
+Use two devices on the same LAN for this first run. On **both devices**, initialize the same app ID and select a demo JSON file:
+
+```sh
+libresync init --app-id com.example.notes
+libresync select --file ./libresync-demo.json
+libresync listen --foreground
+```
+
+Keep each listener terminal open so you can accept the incoming linking prompt. The default listener port is TCP `52345`; LAN discovery uses mDNS on UDP `5353`.
+
+In a **second terminal on one device**, discover and link:
+
+```sh
+libresync discover
+libresync link
+```
+
+Approve the request in the other device's listener terminal, then confirm locally. Check the reported fingerprints against the other device through a trusted channel. Linking establishes trust; it does not transfer your application data yet.
+
+Edit `libresync-demo.json` on one device, then exchange updates:
+
+```sh
+libresync refresh
+libresync status
+```
+
+For ongoing updates, run this in the second terminal on each device:
+
+```sh
+libresync watch --no-listen
+```
+
+`--no-listen` reuses the listener you already started. For later sessions, `libresync listen` starts a background listener and `libresync stop` stops it. Alternatively, `libresync watch` starts its own listener when no listener is running. Stop foreground listeners and watchers with Ctrl+C.
+
+### More CLI options
+
+| Task | Command |
+| --- | --- |
+| Select logical records | `libresync select --id records --kind logical-file --file ./records.json` |
+| Select a SQLite file | `libresync select --id db --kind sqlite --file ./app.db` |
+| Enable SQLite page deltas | `libresync select --id db --kind sqlite --page-delta 4096 --file ./app.db` |
+| Refresh all registered adapters | `libresync refresh --all-adapters` |
+| Refresh every linked device | `libresync refresh --all` |
+| Link at a known address | `libresync link --device 192.0.2.10:52345` |
+| Remove a trusted device | `libresync unlink --device-id <device-id>` |
+| Enable encrypted backups | `libresync backup configure --enable` |
+| Create a snapshot | `libresync backup snapshot --note "before import"` |
+| Diagnose connectivity | `libresync diagnose` |
+| Inspect available commands | `libresync --help` |
+
+Use matching adapter IDs and logical namespaces on peers. A logical-file adapter stores LibreSync records; it is not an arbitrary JSON document. For the address example, replace the documentation address with your peer's reachable IP.
+
+Configuration defaults to the OS config directory; commands accept `--config` for another path. Use `--verbose` for error details. Discovery also checks Tailscale/Headscale peers when the `tailscale` CLI is available; `LIBRESYNC_OVERLAY_PEERS` accepts comma-separated `ip[:port]` addresses. See the [CLI reference](docs/CLI.md) and [two-device testing guide](TESTING.md).
+
+## Build with LibreSync
+
+Add the core library from a release tag:
+
+```toml
+[dependencies]
+libresync = { git = "https://github.com/dan-hart/LibreSync", tag = "v0.6.1" }
+```
+
+Enable `features = ["sqlite-logical"]` on that dependency to use SQLite record mapping. The optional `tailscale-local-api` feature supports discovery through Tailscale's local API socket where the CLI is unavailable.
+
+### Choose an adapter
+
+| Adapter | Best for |
+| --- | --- |
+| `FileLogicalAdapter` | Structured records persisted in a JSON file |
+| `SqliteLogicalAdapter` | Record tables or mappings over existing SQLite tables, including multiple tables; requires `sqlite-logical` |
+| `InMemoryLogicalAdapter` | Merge-policy experiments and tests |
+| `JsonFileAdapter` | Whole-file JSON synchronization using last-writer-wins |
+| `SqliteFileAdapter` | SQLite snapshots with WAL/SHM sidecars and optional page deltas |
+| `WatchedFileAdapter` | File adapters with local change notifications |
+
+Logical adapters are the recommended path for structured app data. Policies include last-writer-wins, set union, counters, list append, append-only logs, and app-defined custom merges. Keep record IDs stable and advance the record clock for every local edit. See [logical record sync](docs/LOGICAL.md) for schema and merge semantics.
+
+### Integrate the engine
+
+Create an `Engine` with your identity, persisted state, and a `DeviceHandler` that manages consent, trust, and key material. Register adapters, start listening, discover and link peers, then request sync or enable auto-refresh.
+
+For GUI apps, use `Engine::spawn()` to obtain a `BackgroundEngine`. Subscribe to its events and submit sync work without blocking the UI. `EventStream` supports draining, wakers, and a readiness descriptor on supported platforms; cancellation lets the app stop pending sync operations. The [API guide](docs/API.md) includes integration examples and the 0.6 migration notes.
+
+A small [logical-record example](crates/libresync/examples/logical_record_sync.rs) demonstrates record creation and persistence:
+
+```sh
+cargo run -p libresync --example logical_record_sync
+```
+
+This example writes `./records.json`; it does not establish a two-device sync session.
+
+### Swift, Kotlin, and C
+
+The [`libresync-ffi`](crates/libresync-ffi) crate exposes C ABI version 2, including an event queue, asynchronous sync, and cancellation.
+
+- **Swift:** a Swift package, `LibreSyncEventPump`, key-storage helpers, and SQLite mapping samples. macOS CI builds the universal FFI library and runs Swift package tests.
+- **Kotlin:** an early JNI-style wrapper with key-storage helpers and Room-style SQLite mapping samples. Native packaging and app integration still need work.
+- **C and other languages:** start with the [C header](bindings/include/libresync.h) and [SDK surface](docs/SDK.md).
+
+See the [bindings overview](bindings/README.md), [macOS packaging](docs/PACKAGING-MACOS.md), and [Linux packaging](docs/PACKAGING-LINUX.md) for build steps and platform requirements.
+
+## AlwaysOn companion
+
+[LibreSyncAlwaysOn](alwaysOn/README.md) is an optional Rust + Tauri desktop app that acts as another sync peer. It provides a status dashboard, tray controls, a trust panel, manual refresh, and opt-in snapshots with preview, restore, and retention controls.
+
+The workspace also includes `libresync-alwayson-daemon` for headless operation. Linux systemd and macOS launchd templates live in [`contrib/`](contrib/README.md); additional service templates are in [`alwaysOn/service/`](alwaysOn/service/). An always-on peer is optional and does not become a central authority.
+
+## Security and current limits
+
+- Payloads, engine state files, and snapshots are encrypted. Application files managed by adapters are not automatically encrypted at rest; apps remain responsible for their local data and key storage.
+- The `KeyStore` interface includes file, Linux Secret Service, and macOS Keychain backends. Apps must choose and integrate the appropriate backend.
+- Initial linking uses trust on first use. Verify fingerprints through a trusted channel; later mismatches are rejected rather than silently trusted.
+- Removing a device revokes its allowlist entry. Guided re-keying remains unfinished; use the documented key-rotation workflow when shared keys must change.
+- Devices must be reachable at the same time to exchange updates. LAN firewalls, Wi-Fi client isolation, and platform local-network permissions can prevent discovery or sync.
+- Logical records and complex relational schemas still require application-specific merge design and testing. File adapters do not provide record-level merging.
+- Mobile SDKs are early. Platform background limits and packaging require additional integration work; desktop CI coverage is not a mobile support guarantee.
+
+Read the [security policy](SECURITY.md), [privacy policy](PRIVACY.md), and [wire protocol](docs/PROTOCOL.md). Report vulnerabilities through [GitHub private vulnerability reporting](https://github.com/dan-hart/LibreSync/security/advisories/new).
+
+## Development
+
+From the repository root:
+
+```sh
+cargo build --workspace
+cargo test --workspace
+cargo test -p libresync --all-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+```
+
+CI runs Rust tests and strict Clippy on Linux and macOS, two-device sync tests, FFI builds/tests, and macOS Swift builds/tests. The Linux release checks also run repository and dependency audits, release-version checks, an AlwaysOn smoke build, and a **75% region-coverage minimum**. The CI badge reports workflow status; the coverage threshold is a configured gate, not a live coverage measurement.
+
+Before contributing, follow [CONTRIBUTING.md](CONTRIBUTING.md) for the required git-secrets and ASP hooks, and read the [code of conduct](CODE_OF_CONDUCT.md). See [TESTING.md](TESTING.md) for manual and automated validation and the [release guide](docs/RELEASING.md) for release checks.
+
+## Documentation
+
+| Start here | Go deeper |
+| --- | --- |
+| [Quickstart](docs/QUICKSTART.md) | [Architecture](docs/ARCHITECTURE.md) |
+| [CLI reference](docs/CLI.md) | [Wire protocol](docs/PROTOCOL.md) |
+| [Logical record sync](docs/LOGICAL.md) | [API stability and GUI integration](docs/API.md) |
+| [Bindings](bindings/README.md) | [SDK surface](docs/SDK.md) |
+| [AlwaysOn](alwaysOn/README.md) | [Service and packaging templates](contrib/README.md) |
+| [Debugging](docs/DEBUGGING.md) | [Linux packaging](docs/PACKAGING-LINUX.md) / [macOS packaging](docs/PACKAGING-MACOS.md) |
+| [Why LibreSync](docs/WHY.md) | [Research](RESEARCH.md) |
+| [Changelog](CHANGELOG.md) | [Release history](RELEASES.md) |
 
 ## License
-AGPLv3 - Why? Because it's what we decided upon.
 
-## Security & Privacy Checks
-- Install git-secrets and hooks:
-  - `brew install git-secrets`
-  - `git secrets --install`
-  - `git secrets --register-aws`
-- Or run the one-shot setup: `./scripts/automation/setup-repo-security.sh .`
-- Install the ASP pre-commit hook: `./scripts/automation/install-asp-hooks.sh .`
-- Run a full audit before pushing: `./scripts/utilities/security-audit.sh`
-- See `SECURITY.md`, `PRIVACY.md`, and `CONTRIBUTING.md` for full guidance.
-
-## Additional documents
-- [Quickstart](docs/QUICKSTART.md)
-- [Why LibreSync](docs/WHY.md)
-- [Research](RESEARCH.md)
-- [Security](SECURITY.md)
-- [Privacy](PRIVACY.md)
-- [Contributing](CONTRIBUTING.md)
-- [LibreSyncAlwaysOn](alwaysOn/README.md)
-- [Logical record sync](docs/LOGICAL.md)
-- [API stability and GUI integration](docs/API.md)
-- [Wire protocol](docs/PROTOCOL.md)
-- [Packaging on Linux (Flatpak, firewalls, systemd)](docs/PACKAGING-LINUX.md)
-- [Packaging on macOS (Swift package, entitlements, Keychain, launchd)](docs/PACKAGING-MACOS.md)
-- [Changelog](CHANGELOG.md)
-- [SDK surface](docs/SDK.md)
-- [Bindings](bindings/README.md)
-- [Debugging](docs/DEBUGGING.md)
-- [Releasing](docs/RELEASING.md)
-- [Releases](RELEASES.md)
-- [License](LICENSE)
+LibreSync is licensed under [GNU AGPL v3 only](LICENSE) (`AGPL-3.0-only`).

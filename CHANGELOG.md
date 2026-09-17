@@ -9,6 +9,10 @@ narrative context live in `RELEASES.md`.
 ### Added
 - LibreSync logo in the repository README.
 
+### Changed
+- Refresh the README with Shields.io badges, current 0.6.1 features, installation and pairing steps, SDK guidance, and platform limitations.
+- Replace the README logo with a compact crop of the updated artwork and light/dark variants that follow the GitHub theme.
+
 ## [0.6.1] - 2026-09-14
 
 ### Security
