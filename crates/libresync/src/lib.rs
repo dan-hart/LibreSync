@@ -13,6 +13,7 @@ mod logical;
 mod pairing;
 mod protocol;
 mod record;
+mod session;
 #[cfg(feature = "sqlite-logical")]
 mod sqlite_logical;
 mod state;
@@ -59,13 +60,20 @@ pub use logical::{FileLogicalAdapter, InMemoryLogicalAdapter};
 pub use pairing::{
     link_secure, recover_secure_link, AdapterDescriptor, AppManifest, DeviceMetadata,
     PairChallenge, PairHello, PairingDescriptor, PairingInvitation, PairingManager,
-    SecurePairingOutcome,
+    SecurePairingOutcome, PAIRING_VERSION,
 };
 pub use protocol::{read_message, write_message, Message, PROTOCOL_VERSION};
 pub use record::{
     entry_to_record, parse_record_key, record_entry_key, record_to_entry, FieldValue, MergePolicy,
     RecordCompactionPolicy, RecordCompactionSummary, RecordKeyParts, RecordState, RecordView,
     SyncRecord,
+};
+pub use session::{
+    AckDisposition, AdapterInspection, ApplicationInbox, BootstrapDecision, BootstrapPreview,
+    DiagnosticAction, DiagnosticEvidence, ExportBatch, ManagedAdapter, ManagedReceipt,
+    ManagedRecord, PeerSnapshot, PeerState, PermissionState, PreparedChange, RecordsAdapter,
+    RecoverySnapshot, Session, SessionConfig, SessionErrorCode, SessionEvent, SessionInvitation,
+    SessionPhase, SessionSnapshot,
 };
 #[cfg(feature = "sqlite-logical")]
 pub use sqlite_logical::{

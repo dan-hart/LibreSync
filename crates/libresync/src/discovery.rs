@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 use std::{env, process::Command};
 
-use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use mdns_sd::{ResolvedService, ScopedIp, ServiceDaemon, ServiceEvent, ServiceInfo};
 use serde::Deserialize;
 
 use crate::{Error, Identity, Result};
@@ -74,7 +74,9 @@ impl MdnsAdvertiser {
     pub fn shutdown(self) -> Result<()> {
         self.mdns
             .shutdown()
-            .map_err(|error| Error::Protocol(error.to_string()))?;
+            .map_err(|error| Error::Protocol(error.to_string()))?
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|error| Error::Protocol(format!("discovery shutdown: {error}")))?;
         Ok(())
     }
 }
@@ -123,7 +125,7 @@ pub fn browse_mdns(app_id: &str, timeout: Duration) -> Result<Vec<DiscoveredDevi
         let event = receiver.recv_timeout(remaining.min(Duration::from_millis(200)));
         let event = match event {
             Ok(event) => event,
-            Err(flume::RecvTimeoutError::Timeout) => continue,
+            Err(mdns_sd::RecvTimeoutError::Timeout) => continue,
             Err(error) => return Err(Error::Protocol(error.to_string())),
         };
 
@@ -469,7 +471,7 @@ fn overlay_identity(app_id: &str, label: &str, user: &str, fallback_index: usize
     Identity::new(format!("overlay-{slug}"), app_id, user)
 }
 
-fn parse_service_info(info: &ServiceInfo, expected_app_id: &str) -> Option<DiscoveredDevice> {
+fn parse_service_info(info: &ResolvedService, expected_app_id: &str) -> Option<DiscoveredDevice> {
     let properties = info.get_properties();
     let app_id = properties.get("app_id")?.val_str();
     if app_id != expected_app_id {
@@ -486,27 +488,24 @@ fn parse_service_info(info: &ServiceInfo, expected_app_id: &str) -> Option<Disco
     })
 }
 
-fn pick_address(info: &ServiceInfo, port: u16) -> Option<SocketAddr> {
-    let addresses = info.get_addresses();
-    if let Some(ip) = addresses.iter().find_map(|addr| match addr {
-        IpAddr::V4(ip) => Some(IpAddr::V4(*ip)),
-        _ => None,
-    }) {
-        return Some(SocketAddr::new(ip, port));
+fn scoped_address(ip: &ScopedIp, port: u16) -> SocketAddr {
+    match ip {
+        ScopedIp::V4(v4) => SocketAddr::new(IpAddr::V4(*v4.addr()), port),
+        ScopedIp::V6(v6) => {
+            std::net::SocketAddrV6::new(*v6.addr(), port, 0, v6.scope_id().index).into()
+        }
+        _ => SocketAddr::new(ip.to_ip_addr(), port),
     }
-
-    if let Some(ip) = addresses.iter().find_map(|addr| match addr {
-        IpAddr::V6(ip) if !ip.is_unicast_link_local() => Some(IpAddr::V6(*ip)),
-        _ => None,
-    }) {
-        return Some(SocketAddr::new(ip, port));
-    }
-
-    let ip = addresses.iter().find_map(|addr| match addr {
-        IpAddr::V6(ip) => Some(IpAddr::V6(*ip)),
-        _ => None,
-    })?;
-    Some(SocketAddr::new(ip, port))
+}
+fn pick_address(info: &ResolvedService, port: u16) -> Option<SocketAddr> {
+    info.get_addresses()
+        .iter()
+        .min_by_key(|ip| match ip.to_ip_addr() {
+            IpAddr::V4(_) => 0,
+            IpAddr::V6(ip) if !ip.is_unicast_link_local() => 1,
+            _ => 2,
+        })
+        .map(|ip| scoped_address(ip, port))
 }
 
 fn local_ips(listen_ip: IpAddr) -> Result<Vec<IpAddr>> {
@@ -564,8 +563,9 @@ mod tests {
         )
         .expect("service info");
 
-        assert!(parse_service_info(&info, "com.other.app").is_none());
-        let parsed = parse_service_info(&info, "com.example.app").expect("parsed");
+        assert!(parse_service_info(&info.clone().as_resolved_service(), "com.other.app").is_none());
+        let parsed = parse_service_info(&info.clone().as_resolved_service(), "com.example.app")
+            .expect("parsed");
         assert_eq!(parsed.identity.device_id, "device-a");
         assert_eq!(
             parsed.address,
@@ -594,7 +594,7 @@ mod tests {
         )
         .expect("service info");
 
-        let addr = pick_address(&info, 4321).expect("addr");
+        let addr = pick_address(&info.clone().as_resolved_service(), 4321).expect("addr");
         assert_eq!(addr, SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4321));
     }
 
@@ -780,7 +780,7 @@ impl PeerAdvertisement {
             && self.contract_digest == manifest.contract_digest()?)
     }
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct DiscoveredPeer {
     pub identity: Identity,
     pub addresses: Vec<SocketAddr>,
@@ -831,16 +831,45 @@ pub fn register_mdns_metadata_with_invitation(
     metadata: &crate::DeviceMetadata,
     invitation: Option<&crate::PairingDescriptor>,
 ) -> Result<MdnsAdvertiser> {
+    let mdns = ServiceDaemon::new().map_err(|e| Error::Protocol(e.to_string()))?;
+    mdns.register(managed_service(identity, listen, metadata, invitation)?)
+        .map_err(|e| Error::Protocol(e.to_string()))?;
+    Ok(MdnsAdvertiser { mdns })
+}
+impl MdnsAdvertiser {
+    pub(crate) fn browse_managed(&self) -> Result<mdns_sd::Receiver<ServiceEvent>> {
+        self.mdns
+            .browse(SERVICE_TYPE)
+            .map_err(|e| Error::Protocol(e.to_string()))
+    }
+    pub(crate) fn refresh_managed(
+        &self,
+        identity: &Identity,
+        listen: SocketAddr,
+        metadata: &crate::DeviceMetadata,
+        invitation: Option<&crate::PairingDescriptor>,
+    ) -> Result<()> {
+        self.mdns
+            .register(managed_service(identity, listen, metadata, invitation)?)
+            .map_err(|e| Error::Protocol(e.to_string()))
+    }
+}
+fn managed_service(
+    identity: &Identity,
+    listen: SocketAddr,
+    metadata: &crate::DeviceMetadata,
+    invitation: Option<&crate::PairingDescriptor>,
+) -> Result<ServiceInfo> {
     let mut properties = metadata_properties(identity, metadata)?;
     if let Some(invitation) = invitation {
         invitation.with_code(metadata.clone(), "000000")?;
+        properties.insert("pair_version".into(), invitation.version.to_string());
         properties.insert("pair_id".into(), invitation.invitation_id.clone());
         properties.insert("pair_fp".into(), invitation.inviter_fingerprint.clone());
         properties.insert("pair_expires".into(), invitation.expires_at.to_string());
     }
-    let mdns = ServiceDaemon::new().map_err(|e| Error::Protocol(e.to_string()))?;
     let ips = local_ips(listen.ip())?;
-    let service = ServiceInfo::new(
+    ServiceInfo::new(
         SERVICE_TYPE,
         &identity.device_id,
         &format!("{}.local.", identity.device_id),
@@ -848,12 +877,9 @@ pub fn register_mdns_metadata_with_invitation(
         listen.port(),
         properties,
     )
-    .map_err(|e| Error::Protocol(e.to_string()))?;
-    mdns.register(service)
-        .map_err(|e| Error::Protocol(e.to_string()))?;
-    Ok(MdnsAdvertiser { mdns })
+    .map_err(|e| Error::Protocol(e.to_string()))
 }
-fn parse_peer_info(info: &ServiceInfo, app_id: &str) -> Option<DiscoveredPeer> {
+pub(crate) fn parse_peer_info(info: &ResolvedService, app_id: &str) -> Option<DiscoveredPeer> {
     let device = parse_service_info(info, app_id)?;
     let props = info.get_properties();
     let text = |key| {
@@ -886,8 +912,7 @@ fn parse_peer_info(info: &ServiceInfo, app_id: &str) -> Option<DiscoveredPeer> {
     let mut addresses: Vec<_> = info
         .get_addresses()
         .iter()
-        .filter(|ip| !matches!(ip,IpAddr::V6(v6) if v6.is_unicast_link_local()))
-        .map(|ip| SocketAddr::new(*ip, info.get_port()))
+        .map(|ip| scoped_address(ip, info.get_port()))
         .collect();
     addresses.sort();
     addresses.dedup();
@@ -896,7 +921,9 @@ fn parse_peer_info(info: &ServiceInfo, app_id: &str) -> Option<DiscoveredPeer> {
     }
     let invitation = (|| {
         Some(crate::PairingDescriptor {
-            version: 1,
+            version: text("pair_version")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1),
             invitation_id: text("pair_id")
                 .filter(|s| s.len() == 32 && s.bytes().all(|b| b.is_ascii_hexdigit()))?,
             inviter_fingerprint: text("pair_fp")
@@ -942,7 +969,7 @@ pub fn browse_mdns_metadata(app_id: &str, timeout: Duration) -> Result<Vec<Disco
                     merge_discovered(&mut peers, peer);
                 }
             }
-            Ok(_) | Err(flume::RecvTimeoutError::Timeout) => {}
+            Ok(_) | Err(mdns_sd::RecvTimeoutError::Timeout) => {}
             Err(e) => return Err(Error::Protocol(e.to_string())),
         }
     }
@@ -981,6 +1008,7 @@ mod metadata_tests {
         let invitation = PairingManager::new()
             .create_code_invitation(metadata.clone(), "00".repeat(32))
             .unwrap();
+        props.insert("pair_version".into(), invitation.version.to_string());
         props.insert("pair_id".into(), invitation.invitation_id.clone());
         props.insert("pair_fp".into(), invitation.inviter_fingerprint.clone());
         props.insert("pair_expires".into(), invitation.expires_at.to_string());
@@ -997,7 +1025,7 @@ mod metadata_tests {
                 props.clone(),
             )
             .unwrap();
-            let peer = parse_peer_info(&info, "test.app").unwrap();
+            let peer = parse_peer_info(&info.clone().as_resolved_service(), "test.app").unwrap();
             let ad = peer.advertisement.as_ref().unwrap();
             assert_eq!(ad.display_name, "Dan's laptop");
             assert_eq!(ad.role, "companion");
@@ -1007,6 +1035,37 @@ mod metadata_tests {
         }
         assert_eq!(peers.len(), 1);
         assert_eq!(peers["test-device"].addresses.len(), 2);
+    }
+    #[test]
+    fn missing_pairing_version_does_not_claim_current_protocol_compatibility() {
+        let identity = Identity::new("legacy-device", "test.app", "user");
+        let metadata = metadata();
+        let invitation = PairingManager::new()
+            .create_code_invitation(metadata.clone(), "00".repeat(32))
+            .unwrap();
+        let mut props = metadata_properties(&identity, &metadata).unwrap();
+        props.insert("pair_id".into(), invitation.invitation_id);
+        props.insert("pair_fp".into(), invitation.inviter_fingerprint);
+        props.insert("pair_expires".into(), invitation.expires_at.to_string());
+        let info = ServiceInfo::new(
+            SERVICE_TYPE,
+            &identity.device_id,
+            "legacy.local.",
+            "192.0.2.1",
+            52345,
+            props,
+        )
+        .unwrap();
+        let peer = parse_peer_info(&info.as_resolved_service(), "test.app").unwrap();
+        assert!(peer
+            .advertisement
+            .unwrap()
+            .compatible_with(&metadata.manifest)
+            .unwrap());
+        let descriptor = peer.invitation.unwrap();
+        assert_eq!(descriptor.version, 1);
+        assert_ne!(descriptor.version, crate::PAIRING_VERSION);
+        assert!(descriptor.with_code(metadata, "000000").is_err());
     }
     #[test]
     fn advertisements_are_hints_and_legacy_records_remain_visible() {
@@ -1024,10 +1083,10 @@ mod metadata_tests {
             props,
         )
         .unwrap();
-        let peer = parse_peer_info(&info, "test.app").unwrap();
+        let peer = parse_peer_info(&info.clone().as_resolved_service(), "test.app").unwrap();
         assert!(peer.advertisement.is_none());
         assert!(peer.invitation.is_none());
-        assert!(parse_peer_info(&info, "other.app").is_none());
+        assert!(parse_peer_info(&info.clone().as_resolved_service(), "other.app").is_none());
         let mut m = metadata();
         m.display_name = "x".repeat(129);
         assert!(metadata_properties(&Identity::new("d", "test.app", "u"), &m).is_err());

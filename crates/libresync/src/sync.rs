@@ -83,7 +83,7 @@ impl CancelToken {
         }
     }
 
-    fn register(&self, stream: &TcpStream) -> Result<()> {
+    pub(crate) fn register(&self, stream: &TcpStream) -> Result<()> {
         let clone = stream.try_clone()?;
         if let Ok(mut sockets) = self.inner.sockets.lock() {
             sockets.push(clone);
@@ -735,6 +735,13 @@ fn handle_connection(stream: TcpStream, shared: &ListenerShared) -> Result<()> {
                 &shared.device_keys,
                 &fingerprint,
                 handler,
+                |stream| {
+                    if let Some(timeout) = crate::pairing::authenticated_budget(handler)? {
+                        stream.sock.inner.set_read_timeout(Some(timeout))?;
+                        stream.sock.inner.set_write_timeout(Some(timeout))?;
+                    }
+                    Ok(())
+                },
             );
         }
         Message::PairRecover {
@@ -748,6 +755,13 @@ fn handle_connection(stream: TcpStream, shared: &ListenerShared) -> Result<()> {
                 identity,
                 &fingerprint,
                 handler,
+                |stream| {
+                    if let Some(timeout) = crate::pairing::authenticated_budget(handler)? {
+                        stream.sock.inner.set_read_timeout(Some(timeout))?;
+                        stream.sock.inner.set_write_timeout(Some(timeout))?;
+                    }
+                    Ok(())
+                },
             );
         }
         Message::LinkRequest {
@@ -1037,7 +1051,7 @@ impl ByteCounters {
 /// A `TcpStream` that counts bytes crossing the socket (TLS bytes, i.e. what
 /// is on the wire).
 pub struct CountingStream {
-    inner: TcpStream,
+    pub(crate) inner: TcpStream,
     sent: Arc<AtomicU64>,
     received: Arc<AtomicU64>,
 }
@@ -1136,7 +1150,10 @@ pub(crate) fn tls_client_stream(
     tls_client_stream_pinned(stream, device_keys, None, None)
 }
 
-fn tls_server_stream(stream: TcpStream, device_keys: &DeviceKeys) -> Result<ServerStream> {
+pub(crate) fn tls_server_stream(
+    stream: TcpStream,
+    device_keys: &DeviceKeys,
+) -> Result<ServerStream> {
     let config = server_config(device_keys)?;
     let conn = ServerConnection::new(config)?;
     let stream = CountingStream {
@@ -1165,6 +1182,10 @@ fn client_config(
         .with_custom_certificate_verifier(verifier)
         .with_client_auth_cert(certs, key)?;
     Ok(Arc::new(config))
+}
+
+pub(crate) fn validate_device_keys(keys: &DeviceKeys) -> Result<()> {
+    server_config(keys).map(|_| ())
 }
 
 fn server_config(device_keys: &DeviceKeys) -> Result<Arc<ServerConfig>> {

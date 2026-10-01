@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-pub const PAIRING_VERSION: u32 = 1;
+pub const PAIRING_VERSION: u32 = 2;
 pub const MAX_PAIRING_BYTES: u64 = 16 * 1024;
 const MAX_TTL: Duration = Duration::from_secs(300);
 
@@ -210,6 +210,14 @@ impl PairingManager {
         metadata: DeviceMetadata,
         fingerprint: String,
     ) -> Result<PairingInvitation> {
+        self.create_code_invitation_with_ttl(metadata, fingerprint, MAX_TTL)
+    }
+    pub fn create_code_invitation_with_ttl(
+        &self,
+        metadata: DeviceMetadata,
+        fingerprint: String,
+        ttl: Duration,
+    ) -> Result<PairingInvitation> {
         // Rejection sampling avoids modulo bias over the million possibilities.
         let number = loop {
             let n = OsRng.next_u32();
@@ -217,7 +225,7 @@ impl PairingManager {
                 break n % 1_000_000;
             }
         };
-        self.create(metadata, fingerprint, MAX_TTL, format!("{number:06}"))
+        self.create(metadata, fingerprint, ttl, format!("{number:06}"))
     }
     fn create(
         &self,
@@ -369,6 +377,8 @@ struct Transcript<'a> {
 struct Confirmations {
     client: [u8; 32],
     server: [u8; 32],
+    ready: [u8; 32],
+    prepared: [u8; 32],
     accepted: [u8; 32],
     commit: [u8; 32],
     transcript: Vec<u8>,
@@ -376,7 +386,7 @@ struct Confirmations {
 impl Confirmations {
     fn new(shared: &[u8], hello: &PairHello, challenge: &PairChallenge) -> Result<Self> {
         let json = serde_json::to_vec(&Transcript {
-            domain: "libresync-managed-pair-v1",
+            domain: "libresync-managed-pair-v2",
             hello,
             server_identity: &challenge.identity,
             server_metadata: &challenge.metadata,
@@ -389,6 +399,8 @@ impl Confirmations {
         let mut keys = Self {
             client: [0; 32],
             server: [0; 32],
+            ready: [0; 32],
+            prepared: [0; 32],
             accepted: [0; 32],
             commit: [0; 32],
             transcript,
@@ -396,6 +408,8 @@ impl Confirmations {
         for (label, key) in [
             (b"client-confirm".as_slice(), &mut keys.client),
             (b"server-confirm".as_slice(), &mut keys.server),
+            (b"server-ready".as_slice(), &mut keys.ready),
+            (b"client-prepared".as_slice(), &mut keys.prepared),
             (b"accepted-key".as_slice(), &mut keys.accepted),
             (b"commit".as_slice(), &mut keys.commit),
         ] {
@@ -422,8 +436,8 @@ impl Confirmations {
 }
 fn pake_ids(id: &str) -> (Vec<u8>, Vec<u8>) {
     (
-        format!("libresync-managed-pair-v1/client/{id}").into_bytes(),
-        format!("libresync-managed-pair-v1/inviter/{id}").into_bytes(),
+        format!("libresync-managed-pair-v2/client/{id}").into_bytes(),
+        format!("libresync-managed-pair-v2/inviter/{id}").into_bytes(),
     )
 }
 fn validate_identity(identity: &Identity, metadata: &DeviceMetadata) -> Result<()> {
@@ -546,16 +560,48 @@ fn link_secure_inner(
         .map_err(|_| Error::Protocol("invalid SPAKE2 response".into()))?;
     let keys = Confirmations::new(&shared, &hello, &challenge)?;
     keys.verify(&keys.server, &[], &challenge.confirmation)?;
+    write_message(
+        reader.get_mut(),
+        &Message::PairConfirm {
+            confirmation: keys.mac(&keys.client, &[])?,
+        },
+    )?;
+    let ready = match read_pair(&mut reader)? {
+        Message::PairReady { confirmation } => confirmation,
+        _ => return fail("expected authenticated preparation readiness"),
+    };
+    keys.verify(&keys.ready, &[], &ready)?;
+    if let Some(timeout) = authenticated_budget(handler)? {
+        reader
+            .get_mut()
+            .sock
+            .inner
+            .set_read_timeout(Some(timeout))?;
+        reader
+            .get_mut()
+            .sock
+            .inner
+            .set_write_timeout(Some(timeout))?;
+    }
+    if let Some(cancel) = &options.cancel {
+        cancel.check()?;
+    }
     handler.prepare_secure_pairing(&SecurePairingOutcome {
         invitation_id: invitation.invitation_id.clone(),
         identity: challenge.identity.clone(),
         metadata: challenge.metadata.clone(),
         fingerprint: fingerprint.clone(),
     })?;
+    if invitation.expires_at <= now()? {
+        return fail("invitation expired before preparation proof");
+    }
+    if let Some(cancel) = &options.cancel {
+        cancel.check()?;
+    }
     write_message(
         reader.get_mut(),
-        &Message::PairConfirm {
-            confirmation: keys.mac(&keys.client, &[])?,
+        &Message::PairPrepared {
+            confirmation: keys.mac(&keys.prepared, &[])?,
         },
     )?;
     let (app_key, confirmation) = match read_pair(&mut reader)? {
@@ -597,6 +643,13 @@ fn link_secure_inner(
     })
 }
 
+pub(crate) fn authenticated_budget(handler: &dyn DeviceHandler) -> Result<Option<Duration>> {
+    let timeout = handler.authenticated_pairing_io_timeout();
+    if timeout.is_some_and(|t| t.is_zero() || t > Duration::from_secs(300)) {
+        return fail("invalid authenticated pairing I/O budget");
+    }
+    Ok(timeout)
+}
 pub(crate) fn accept_secure<R: BufRead + Write>(
     reader: &mut std::io::BufReader<R>,
     hello: PairHello,
@@ -604,6 +657,7 @@ pub(crate) fn accept_secure<R: BufRead + Write>(
     device_keys: &DeviceKeys,
     fingerprint: &str,
     handler: &dyn DeviceHandler,
+    authenticated: impl FnOnce(&mut R) -> Result<()>,
 ) -> Result<()> {
     validate_identity(&hello.identity, &hello.metadata)?;
     if hello.version != PAIRING_VERSION
@@ -655,6 +709,22 @@ pub(crate) fn accept_secure<R: BufRead + Write>(
             _ => return fail("expected client confirmation"),
         };
         keys.verify(&keys.client, &[], &confirmation)?;
+        authenticated(reader.get_mut())?;
+        if invitation.expires_at <= now()? {
+            return fail("invitation expired before preparation readiness");
+        }
+        // Send immediately after authentication: no durable app work precedes Ready.
+        write_message(
+            reader.get_mut(),
+            &Message::PairReady {
+                confirmation: keys.mac(&keys.ready, &[])?,
+            },
+        )?;
+        let prepared = match read_pair(reader)? {
+            Message::PairPrepared { confirmation } => confirmation,
+            _ => return fail("expected durable client preparation proof"),
+        };
+        keys.verify(&keys.prepared, &[], &prepared)?;
         // Inviter key is authoritative; no joining peer-supplied key exists.
         let key = manager.commit(&hello.invitation_id, || {
             let key = handler.app_key()?;
@@ -765,6 +835,18 @@ fn recover_secure_link_inner(
     if let Some(cancel) = &options.cancel {
         cancel.check()?;
     }
+    if let Some(timeout) = authenticated_budget(handler)? {
+        reader
+            .get_mut()
+            .sock
+            .inner
+            .set_read_timeout(Some(timeout))?;
+        reader
+            .get_mut()
+            .sock
+            .inner
+            .set_write_timeout(Some(timeout))?;
+    }
     handler.commit_secure_pairing(
         &previous.invitation_id,
         &peer,
@@ -785,6 +867,7 @@ pub(crate) fn accept_recovery<R: BufRead + Write>(
     identity: &Identity,
     fingerprint: &str,
     handler: &dyn DeviceHandler,
+    authenticated: impl FnOnce(&mut R) -> Result<()>,
 ) -> Result<()> {
     let peer_metadata = handler
         .recover_secure_pairing(id, peer, fingerprint)?
@@ -798,6 +881,7 @@ pub(crate) fn accept_recovery<R: BufRead + Write>(
     if !metadata.manifest.compatible_with(&peer_metadata.manifest) {
         return fail("recovery manifest mismatch");
     }
+    authenticated(reader.get_mut())?;
     let key = handler.app_key()?;
     write_message(
         reader.get_mut(),
@@ -842,8 +926,13 @@ mod socket_tests {
         key: AppKey,
         links: Mutex<Vec<SecurePairingOutcome>>,
         prepared: Mutex<Option<SecurePairingOutcome>>,
+        delay_ms: std::sync::atomic::AtomicU64,
+        budget: Mutex<Option<Duration>>,
     }
     impl DeviceHandler for Handler {
+        fn authenticated_pairing_io_timeout(&self) -> Option<Duration> {
+            *self.budget.lock().unwrap()
+        }
         fn app_id(&self) -> &str {
             "test.app"
         }
@@ -880,6 +969,9 @@ mod socket_tests {
             f: &str,
             _: &AppKey,
         ) -> Result<()> {
+            std::thread::sleep(Duration::from_millis(
+                self.delay_ms.load(std::sync::atomic::Ordering::SeqCst),
+            ));
             self.links.lock().unwrap().push(SecurePairingOutcome {
                 invitation_id: id.into(),
                 identity: i.clone(),
@@ -910,7 +1002,139 @@ mod socket_tests {
             key: AppKey::generate().unwrap(),
             links: Mutex::new(Vec::new()),
             prepared: Mutex::new(None),
+            delay_ms: std::sync::atomic::AtomicU64::new(0),
+            budget: Mutex::new(None),
         })
+    }
+    #[test]
+    fn recovery_budget_waits_for_authenticated_slow_durable_commit() {
+        for extend in [false, true] {
+            let server = handler("server");
+            let client = handler("client");
+            let client_identity = Identity::new("client", "test.app", "u");
+            let server_identity = Identity::new("server", "test.app", "u");
+            let previous = SecurePairingOutcome {
+                invitation_id: "recovery-budget".into(),
+                identity: server_identity.clone(),
+                metadata: metadata(),
+                fingerprint: server.keys.fingerprint().into(),
+            };
+            server.links.lock().unwrap().push(SecurePairingOutcome {
+                identity: client_identity.clone(),
+                fingerprint: client.keys.fingerprint().into(),
+                ..previous.clone()
+            });
+            *client.budget.lock().unwrap() = Some(Duration::from_secs(2));
+            client
+                .delay_ms
+                .store(300, std::sync::atomic::Ordering::SeqCst);
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let worker = std::thread::spawn(move || {
+                let (socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_millis(150)))
+                    .unwrap();
+                socket
+                    .set_write_timeout(Some(Duration::from_millis(150)))
+                    .unwrap();
+                let mut reader = std::io::BufReader::new(
+                    crate::sync::tls_server_stream(socket, &server.keys).unwrap(),
+                );
+                let (id, peer) = match read_pair(&mut reader).unwrap() {
+                    Message::PairRecover {
+                        invitation_id,
+                        identity,
+                    } => (invitation_id, identity),
+                    _ => panic!("recovery"),
+                };
+                let fp = crate::sync::device_fingerprint(reader.get_mut().conn.peer_certificates())
+                    .unwrap();
+                accept_recovery(
+                    &mut reader,
+                    &id,
+                    &peer,
+                    &server_identity,
+                    &fp,
+                    server.as_ref(),
+                    |stream| {
+                        if extend {
+                            stream
+                                .sock
+                                .inner
+                                .set_read_timeout(Some(Duration::from_secs(2)))?;
+                            stream
+                                .sock
+                                .inner
+                                .set_write_timeout(Some(Duration::from_secs(2)))?;
+                        }
+                        Ok(())
+                    },
+                )
+            });
+            let result = recover_secure_link(
+                &client_identity,
+                &metadata(),
+                address,
+                &client.keys,
+                &previous,
+                client.as_ref(),
+                &SyncOptions::default()
+                    .with_timeouts(Duration::from_millis(300), Duration::from_millis(150)),
+            );
+            let server_result = worker.join().unwrap();
+            if extend {
+                result.unwrap();
+                server_result.unwrap();
+            } else {
+                assert!(
+                    server_result.is_err(),
+                    "baseline short timeout unexpectedly covered slow commit"
+                );
+            }
+        }
+    }
+    #[test]
+    fn untrusted_or_revoked_recovery_never_extends_budget_or_releases_key() {
+        let server = handler("server");
+        let client = handler("client");
+        let peer = Identity::new("client", "test.app", "u");
+        server.links.lock().unwrap().push(SecurePairingOutcome {
+            invitation_id: "exact-journal".into(),
+            identity: peer.clone(),
+            metadata: metadata(),
+            fingerprint: client.keys.fingerprint().into(),
+        });
+        for revoked in [false, true] {
+            if revoked {
+                server.links.lock().unwrap().clear();
+            }
+            let called = std::sync::atomic::AtomicBool::new(false);
+            let mut reader = std::io::BufReader::new(std::io::Cursor::new(Vec::new()));
+            let fingerprint = if revoked {
+                client.keys.fingerprint()
+            } else {
+                "wrong-certificate"
+            };
+            assert!(accept_recovery(
+                &mut reader,
+                "exact-journal",
+                &peer,
+                &Identity::new("server", "test.app", "u"),
+                fingerprint,
+                server.as_ref(),
+                |_| {
+                    called.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                }
+            )
+            .is_err());
+            assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
+            assert!(
+                reader.into_inner().into_inner().is_empty(),
+                "untrusted recovery disclosed a key"
+            );
+        }
     }
     fn setup(ttl: Duration) -> (Arc<Handler>, Arc<Handler>, SyncListener, PairingInvitation) {
         let server = handler("server");
@@ -953,7 +1177,7 @@ mod socket_tests {
             &spake2::Identity::new(&b),
         );
         let hello = PairHello {
-            version: 1,
+            version: PAIRING_VERSION,
             invitation_id: invite.invitation_id.clone(),
             identity: Identity::new("client", "test.app", "u"),
             metadata: metadata(),
@@ -973,6 +1197,64 @@ mod socket_tests {
             .unwrap();
         (r, hello, challenge, keys)
     }
+    fn prepared_phase(
+        reader: &mut std::io::BufReader<crate::sync::ClientStream>,
+        keys: &Confirmations,
+    ) {
+        let tag = match read_pair(reader).unwrap() {
+            Message::PairReady { confirmation } => confirmation,
+            _ => panic!("ready"),
+        };
+        keys.verify(&keys.ready, &[], &tag).unwrap();
+        write_message(
+            reader.get_mut(),
+            &Message::PairPrepared {
+                confirmation: keys.mac(&keys.prepared, &[]).unwrap(),
+            },
+        )
+        .unwrap();
+    }
+    #[test]
+    fn wrong_reflected_and_replayed_prepared_proofs_never_enroll_or_disclose_key() {
+        let (old_server, old_client, old_listener, old_invitation) =
+            setup(Duration::from_secs(300));
+        let (old_reader, _, _, old_keys) = begin(&old_listener, &old_client, &old_invitation);
+        let replay = old_keys.mac(&old_keys.prepared, &[]).unwrap();
+        drop(old_reader);
+        old_listener.shutdown().unwrap();
+        assert!(old_server.links.lock().unwrap().is_empty());
+        for mode in 0..3 {
+            let (server, client, listener, invitation) = setup(Duration::from_secs(300));
+            let (mut reader, _, _, keys) = begin(&listener, &client, &invitation);
+            write_message(
+                reader.get_mut(),
+                &Message::PairConfirm {
+                    confirmation: keys.mac(&keys.client, &[]).unwrap(),
+                },
+            )
+            .unwrap();
+            let ready = match read_pair(&mut reader).unwrap() {
+                Message::PairReady { confirmation } => confirmation,
+                _ => panic!("ready"),
+            };
+            keys.verify(&keys.ready, &[], &ready).unwrap();
+            let proof = match mode {
+                0 => vec![0; 32],
+                1 => ready,
+                _ => replay.clone(),
+            };
+            write_message(
+                reader.get_mut(),
+                &Message::PairPrepared {
+                    confirmation: proof,
+                },
+            )
+            .unwrap();
+            assert!(read_pair(&mut reader).is_err());
+            assert!(server.links.lock().unwrap().is_empty());
+            listener.shutdown().unwrap();
+        }
+    }
     #[test]
     fn no_key_before_confirmation_and_disconnect_reserves_one_attempt() {
         let (server, client, l, invite) = setup(Duration::from_secs(300));
@@ -990,6 +1272,28 @@ mod socket_tests {
         assert!(!server.manager.is_open(&invite.invitation_id));
         assert!(server.links.lock().unwrap().is_empty());
         l.shutdown().unwrap();
+    }
+    #[test]
+    fn client_proof_without_durable_prepared_phase_cannot_enroll_or_disclose_key() {
+        let (server, client, listener, invitation) = setup(Duration::from_secs(300));
+        let (mut reader, _, _, keys) = begin(&listener, &client, &invitation);
+        write_message(
+            reader.get_mut(),
+            &Message::PairConfirm {
+                confirmation: keys.mac(&keys.client, &[]).unwrap(),
+            },
+        )
+        .unwrap();
+        let response = read_pair(&mut reader).unwrap();
+        assert_eq!(
+            serde_json::to_value(&response).unwrap()["type"],
+            "PairReady",
+            "client proof allowed enrollment before durable preparation"
+        );
+        assert!(server.links.lock().unwrap().is_empty());
+        drop(reader);
+        listener.shutdown().unwrap();
+        assert!(server.links.lock().unwrap().is_empty());
     }
     #[test]
     fn invalid_confirmation_transcript_never_commits() {
@@ -1025,7 +1329,17 @@ mod socket_tests {
                 },
             )
             .unwrap();
-            assert!(read_pair(&mut r).is_err());
+            if let Ok(Message::PairReady { confirmation }) = read_pair(&mut r) {
+                keys.verify(&keys.ready, &[], &confirmation).unwrap();
+                write_message(
+                    r.get_mut(),
+                    &Message::PairPrepared {
+                        confirmation: keys.mac(&keys.prepared, &[]).unwrap(),
+                    },
+                )
+                .unwrap();
+                assert!(read_pair(&mut r).is_err());
+            }
             assert!(server.links.lock().unwrap().is_empty());
             l.shutdown().unwrap();
         }
@@ -1048,6 +1362,7 @@ mod socket_tests {
             },
         )
         .unwrap();
+        prepared_phase(&mut r, &keys);
         drop(r);
         for _ in 0..100 {
             if !server.links.lock().unwrap().is_empty() {
@@ -1087,7 +1402,7 @@ mod socket_tests {
             write_message(
                 r.get_mut(),
                 &Message::PairHello(PairHello {
-                    version: 1,
+                    version: PAIRING_VERSION,
                     invitation_id: invite.invitation_id.clone(),
                     identity: Identity::new("client", "test.app", "u"),
                     metadata: metadata(),
@@ -1134,6 +1449,7 @@ mod socket_tests {
             },
         )
         .unwrap();
+        prepared_phase(&mut first, &keys);
         let key = match read_pair(&mut first).unwrap() {
             Message::PairAccepted {
                 app_key,
@@ -1169,7 +1485,7 @@ mod socket_tests {
         write_message(
             r.get_mut(),
             &Message::PairHello(PairHello {
-                version: 1,
+                version: PAIRING_VERSION,
                 invitation_id: invite.invitation_id.clone(),
                 identity: Identity::new("client", "test.app", "u"),
                 metadata: metadata(),
@@ -1194,7 +1510,7 @@ mod socket_tests {
         write_message(
             r.get_mut(),
             &Message::PairHello(PairHello {
-                version: 1,
+                version: PAIRING_VERSION,
                 invitation_id: invite.invitation_id.clone(),
                 identity: Identity::new("client", "test.app", "u"),
                 metadata: metadata(),
@@ -1233,7 +1549,7 @@ mod socket_tests {
             write_message(
                 r.get_mut(),
                 &Message::PairHello(PairHello {
-                    version: 1,
+                    version: PAIRING_VERSION,
                     invitation_id: invite.invitation_id.clone(),
                     identity: Identity::new("client", "test.app", "u"),
                     metadata: metadata(),
@@ -1307,7 +1623,7 @@ mod transcript_tests {
             },
         };
         let hello = PairHello {
-            version: 1,
+            version: PAIRING_VERSION,
             invitation_id: "00".repeat(16),
             identity: Identity::new("client", "test.app", "u"),
             metadata: metadata.clone(),

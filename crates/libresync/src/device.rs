@@ -11,7 +11,11 @@ pub trait DeviceHandler: Send + Sync {
     fn pairing_manager(&self) -> Option<std::sync::Arc<crate::PairingManager>> {
         None
     }
-    /// Persist an authenticated server challenge before sending client proof.
+    /// Idle I/O budget after authenticated PAKE readiness; initial proof remains short.
+    fn authenticated_pairing_io_timeout(&self) -> Option<std::time::Duration> {
+        None
+    }
+    /// Persist an authenticated server challenge before sending durable preparation proof.
     /// This journal permits recovery if the server commits but acceptance is
     /// lost. Do not activate trust or replace the group key at this step.
     fn prepare_secure_pairing(&self, _pending: &crate::SecurePairingOutcome) -> Result<()> {

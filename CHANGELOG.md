@@ -7,11 +7,18 @@ narrative context live in `RELEASES.md`.
 ## [Unreleased]
 
 ### Added
+
+- Managed `Session` lifecycle with automatic authenticated exchanges, persistent named-device discovery, QR/code invitation endpoints, typed status/evidence, exact Stored/Applied receipts, and explicit repair/removal.
+- Encrypted atomic managed journals with separate stable storage keys, pure transactional logical adapters, consent-bound populated bootstrap previews, coherent app inbox acknowledgment, and restart recovery.
+- Compact managed transport with 64 MiB record and 128 MiB authoritative batch bounds, bounded authenticated transfer budgets, and durable enrollment-bound checkpoint proofs.
+- Runnable two-peer managed demo and localhost lifecycle, concurrent-edit, cancellation, revocation, app-isolation, and storage-fault acceptance tests.
+
 - Authenticated, expiring QR and short-code pairing primitives with certificate-bound SPAKE2 confirmations, single-use invitations, bounded attempts, and recoverable enrollment hooks.
 - Friendly mDNS device/app metadata, compatibility hints, public pairing descriptors, and device-identity address deduplication.
 - LibreSync logo in the repository README.
 
 ### Changed
+- Update mDNS multicast rate limiting and macOS interface selection to keep concurrent discovery and enrollment responsive; retain scoped IPv6 endpoints.
 - Refresh the README with Shields.io badges, current 0.6.1 features, installation and pairing steps, SDK guidance, and platform limitations.
 - Replace the README logo with a compact crop of the updated artwork and light/dark variants that follow the GitHub theme.
 
