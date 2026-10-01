@@ -39,6 +39,28 @@ pub enum Message {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         app_key: Option<Vec<u8>>,
     },
+    PairHello(crate::pairing::PairHello),
+    PairChallenge(crate::pairing::PairChallenge),
+    PairConfirm {
+        confirmation: Vec<u8>,
+    },
+    PairAccepted {
+        app_key: Vec<u8>,
+        confirmation: Vec<u8>,
+    },
+    PairCommit {
+        confirmation: Vec<u8>,
+    },
+    PairComplete,
+    PairRecover {
+        invitation_id: String,
+        identity: Identity,
+    },
+    PairRecovered {
+        identity: Identity,
+        metadata: crate::DeviceMetadata,
+        app_key: Vec<u8>,
+    },
     SnapshotRequest,
     Snapshot {
         entries: Vec<Entry>,

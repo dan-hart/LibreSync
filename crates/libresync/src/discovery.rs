@@ -750,12 +750,286 @@ mod tests {
         );
 
         assert_eq!(devices.len(), 2);
-        assert_eq!(devices[0].address, "198.51.100.5:7000".parse().expect("addr"));
+        assert_eq!(
+            devices[0].address,
+            "198.51.100.5:7000".parse().expect("addr")
+        );
         assert_eq!(
             devices[1].address,
             "198.51.100.6:52345".parse().expect("addr")
         );
         assert_eq!(devices[0].source, DiscoverySource::StaticOverlay);
         assert_eq!(devices[1].source, DiscoverySource::StaticOverlay);
+    }
+}
+
+/// Unauthenticated mDNS labels and compatibility hints. Never use these to
+/// authorize trust; secure pairing rechecks the complete manifest.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct PeerAdvertisement {
+    pub display_name: String,
+    pub device_kind: String,
+    pub role: String,
+    pub app_display_name: String,
+    pub schema_version: u32,
+    pub contract_digest: String,
+}
+impl PeerAdvertisement {
+    pub fn compatible_with(&self, manifest: &crate::AppManifest) -> Result<bool> {
+        Ok(self.schema_version == manifest.schema_version
+            && self.contract_digest == manifest.contract_digest()?)
+    }
+}
+#[derive(Clone, Debug)]
+pub struct DiscoveredPeer {
+    pub identity: Identity,
+    pub addresses: Vec<SocketAddr>,
+    pub advertisement: Option<PeerAdvertisement>,
+    pub invitation: Option<crate::PairingDescriptor>,
+}
+fn metadata_properties(
+    identity: &Identity,
+    metadata: &crate::DeviceMetadata,
+) -> Result<HashMap<String, String>> {
+    metadata.validate()?;
+    if identity.app_id != metadata.manifest.app_id {
+        return Err(Error::Protocol(
+            "discovery manifest identity mismatch".into(),
+        ));
+    }
+    let mut p = HashMap::new();
+    for (key, value) in [
+        ("app_id", identity.app_id.clone()),
+        ("device_id", identity.device_id.clone()),
+        ("user_id", identity.user_id.clone()),
+        ("name", metadata.display_name.clone()),
+        ("kind", metadata.device_kind.clone()),
+        ("role", metadata.role.clone()),
+        ("app_name", metadata.manifest.display_name.clone()),
+        ("schema", metadata.manifest.schema_version.to_string()),
+        ("contract", metadata.manifest.contract_digest()?),
+        ("managed", "1".into()),
+    ] {
+        if value.is_empty() || value.len() > 128 || value.chars().any(char::is_control) {
+            return Err(Error::Protocol("invalid discovery field".into()));
+        }
+        p.insert(key.into(), value);
+    }
+    Ok(p)
+}
+pub fn register_mdns_metadata(
+    identity: &Identity,
+    listen: SocketAddr,
+    metadata: &crate::DeviceMetadata,
+) -> Result<MdnsAdvertiser> {
+    register_mdns_metadata_with_invitation(identity, listen, metadata, None)
+}
+/// Publish public code-entry hints only. QR secrets and codes never enter TXT.
+pub fn register_mdns_metadata_with_invitation(
+    identity: &Identity,
+    listen: SocketAddr,
+    metadata: &crate::DeviceMetadata,
+    invitation: Option<&crate::PairingDescriptor>,
+) -> Result<MdnsAdvertiser> {
+    let mut properties = metadata_properties(identity, metadata)?;
+    if let Some(invitation) = invitation {
+        invitation.with_code(metadata.clone(), "000000")?;
+        properties.insert("pair_id".into(), invitation.invitation_id.clone());
+        properties.insert("pair_fp".into(), invitation.inviter_fingerprint.clone());
+        properties.insert("pair_expires".into(), invitation.expires_at.to_string());
+    }
+    let mdns = ServiceDaemon::new().map_err(|e| Error::Protocol(e.to_string()))?;
+    let ips = local_ips(listen.ip())?;
+    let service = ServiceInfo::new(
+        SERVICE_TYPE,
+        &identity.device_id,
+        &format!("{}.local.", identity.device_id),
+        ips.as_slice(),
+        listen.port(),
+        properties,
+    )
+    .map_err(|e| Error::Protocol(e.to_string()))?;
+    mdns.register(service)
+        .map_err(|e| Error::Protocol(e.to_string()))?;
+    Ok(MdnsAdvertiser { mdns })
+}
+fn parse_peer_info(info: &ServiceInfo, app_id: &str) -> Option<DiscoveredPeer> {
+    let device = parse_service_info(info, app_id)?;
+    let props = info.get_properties();
+    let text = |key| {
+        props
+            .get(key)
+            .map(|v| v.val_str().to_string())
+            .filter(|s| !s.is_empty() && s.len() <= 128 && !s.chars().any(char::is_control))
+    };
+    if [
+        device.identity.device_id.as_str(),
+        device.identity.app_id.as_str(),
+        device.identity.user_id.as_str(),
+    ]
+    .iter()
+    .any(|s| s.is_empty() || s.len() > 128 || s.chars().any(char::is_control))
+    {
+        return None;
+    }
+    let advertisement = (|| {
+        Some(PeerAdvertisement {
+            display_name: text("name")?,
+            device_kind: text("kind")?,
+            role: text("role")?,
+            app_display_name: text("app_name")?,
+            schema_version: text("schema")?.parse().ok()?,
+            contract_digest: text("contract")
+                .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))?,
+        })
+    })();
+    let mut addresses: Vec<_> = info
+        .get_addresses()
+        .iter()
+        .filter(|ip| !matches!(ip,IpAddr::V6(v6) if v6.is_unicast_link_local()))
+        .map(|ip| SocketAddr::new(*ip, info.get_port()))
+        .collect();
+    addresses.sort();
+    addresses.dedup();
+    if addresses.is_empty() {
+        addresses.push(device.address);
+    }
+    let invitation = (|| {
+        Some(crate::PairingDescriptor {
+            version: 1,
+            invitation_id: text("pair_id")
+                .filter(|s| s.len() == 32 && s.bytes().all(|b| b.is_ascii_hexdigit()))?,
+            inviter_fingerprint: text("pair_fp")
+                .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))?,
+            expires_at: text("pair_expires")?.parse().ok()?,
+        })
+    })();
+    Some(DiscoveredPeer {
+        identity: device.identity,
+        addresses,
+        advertisement,
+        invitation,
+    })
+}
+fn merge_discovered(peers: &mut BTreeMap<String, DiscoveredPeer>, mut peer: DiscoveredPeer) {
+    if let Some(existing) = peers.get_mut(&peer.identity.device_id) {
+        existing.addresses.append(&mut peer.addresses);
+        existing.addresses.sort();
+        existing.addresses.dedup();
+        if peer.advertisement.is_some() {
+            existing.advertisement = peer.advertisement;
+        }
+        existing.invitation = peer.invitation;
+    } else {
+        peers.insert(peer.identity.device_id.clone(), peer);
+    }
+}
+pub fn browse_mdns_metadata(app_id: &str, timeout: Duration) -> Result<Vec<DiscoveredPeer>> {
+    let mdns = ServiceDaemon::new().map_err(|e| Error::Protocol(e.to_string()))?;
+    let receiver = mdns
+        .browse(SERVICE_TYPE)
+        .map_err(|e| Error::Protocol(e.to_string()))?;
+    let start = Instant::now();
+    let mut peers = BTreeMap::new();
+    while start.elapsed() < timeout {
+        match receiver.recv_timeout(
+            timeout
+                .saturating_sub(start.elapsed())
+                .min(Duration::from_millis(200)),
+        ) {
+            Ok(ServiceEvent::ServiceResolved(info)) => {
+                if let Some(peer) = parse_peer_info(&info, app_id) {
+                    merge_discovered(&mut peers, peer);
+                }
+            }
+            Ok(_) | Err(flume::RecvTimeoutError::Timeout) => {}
+            Err(e) => return Err(Error::Protocol(e.to_string())),
+        }
+    }
+    mdns.shutdown()
+        .map_err(|e| Error::Protocol(e.to_string()))?;
+    Ok(peers.into_values().collect())
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+    use crate::{AdapterDescriptor, AppManifest, DeviceMetadata, PairingManager};
+    fn metadata() -> DeviceMetadata {
+        DeviceMetadata {
+            display_name: "Dan's laptop".into(),
+            device_kind: "desktop".into(),
+            role: "companion".into(),
+            manifest: AppManifest {
+                app_id: "test.app".into(),
+                display_name: "Notes".into(),
+                schema_version: 7,
+                adapters: vec![AdapterDescriptor {
+                    id: "ops".into(),
+                    namespace: "test.app".into(),
+                    schema: "test-v7".into(),
+                    transactional: true,
+                }],
+            },
+        }
+    }
+    #[test]
+    fn friendly_metadata_txt_roundtrip_and_dedup_keep_all_addresses() {
+        let identity = Identity::new("test-device", "test.app", "user");
+        let metadata = metadata();
+        let mut props = metadata_properties(&identity, &metadata).unwrap();
+        let invitation = PairingManager::new()
+            .create_code_invitation(metadata.clone(), "00".repeat(32))
+            .unwrap();
+        props.insert("pair_id".into(), invitation.invitation_id.clone());
+        props.insert("pair_fp".into(), invitation.inviter_fingerprint.clone());
+        props.insert("pair_expires".into(), invitation.expires_at.to_string());
+        assert!(props.iter().all(|(k, v)| k.len() + 1 + v.len() <= 255));
+        assert!(!props.values().any(|v| v == &invitation.secret));
+        let mut peers = BTreeMap::new();
+        for ip in ["192.0.2.1", "192.0.2.2"] {
+            let info = ServiceInfo::new(
+                SERVICE_TYPE,
+                &identity.device_id,
+                "test-device.local.",
+                ip,
+                52345,
+                props.clone(),
+            )
+            .unwrap();
+            let peer = parse_peer_info(&info, "test.app").unwrap();
+            let ad = peer.advertisement.as_ref().unwrap();
+            assert_eq!(ad.display_name, "Dan's laptop");
+            assert_eq!(ad.role, "companion");
+            assert!(ad.compatible_with(&metadata.manifest).unwrap());
+            assert_eq!(peer.invitation.as_ref().unwrap(), &invitation.descriptor());
+            merge_discovered(&mut peers, peer);
+        }
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers["test-device"].addresses.len(), 2);
+    }
+    #[test]
+    fn advertisements_are_hints_and_legacy_records_remain_visible() {
+        let identity = Identity::new("test-device", "test.app", "user");
+        let mut props = HashMap::new();
+        props.insert("app_id".into(), identity.app_id);
+        props.insert("device_id".into(), identity.device_id);
+        props.insert("user_id".into(), identity.user_id);
+        let info = ServiceInfo::new(
+            SERVICE_TYPE,
+            "test-device",
+            "test-device.local.",
+            "192.0.2.1",
+            52345,
+            props,
+        )
+        .unwrap();
+        let peer = parse_peer_info(&info, "test.app").unwrap();
+        assert!(peer.advertisement.is_none());
+        assert!(peer.invitation.is_none());
+        assert!(parse_peer_info(&info, "other.app").is_none());
+        let mut m = metadata();
+        m.display_name = "x".repeat(129);
+        assert!(metadata_properties(&Identity::new("d", "test.app", "u"), &m).is_err());
     }
 }

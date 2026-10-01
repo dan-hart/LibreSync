@@ -7,6 +7,8 @@ narrative context live in `RELEASES.md`.
 ## [Unreleased]
 
 ### Added
+- Authenticated, expiring QR and short-code pairing primitives with certificate-bound SPAKE2 confirmations, single-use invitations, bounded attempts, and recoverable enrollment hooks.
+- Friendly mDNS device/app metadata, compatibility hints, public pairing descriptors, and device-identity address deduplication.
 - LibreSync logo in the repository README.
 
 ### Changed

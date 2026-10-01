@@ -116,3 +116,38 @@ If a secret or sensitive data is committed:
 PRs affecting discovery, authentication, encryption, or key storage should include:
 - A short security rationale.
 - Notes on compatibility with the threat model in `RESEARCH.md`.
+
+## Managed pairing boundary
+
+Managed pairing uses mutually presented TLS certificates with SPAKE2 to prove
+knowledge of an expiring QR secret or short code. Confirmations bind both TLS
+fingerprints, both identities/manifests, invitation ID/version, and both PAKE
+messages. This prevents a relay presenting different certificates from obtaining
+a valid confirmation. QR pairing additionally verifies the pinned inviter
+certificate during the TLS handshake. Only the inviter supplies the app group
+key, and only after mutual password confirmation.
+
+The selected RustCrypto `spake2` 0.4.0 implementation states that it has not had
+an independent security audit and is probably not constant-time; using it does
+not establish that LibreSync pairing has been independently audited. See the
+[dependency security documentation](https://docs.rs/spake2/0.4.0/spake2/#security).
+Short codes have limited entropy. Five challenge attempts and a five-minute
+expiry limit online guessing for one invitation; users must not disclose a
+code to an untrusted person or repeatedly create new codes for a suspicious
+peer. Invitation `Debug` formatting omits secrets. Applications must not log
+secret-bearing serialized invitations or raw protocol messages containing keys.
+
+Malformed initial requests cannot consume an invitation. A valid challenge
+counts an attempt even when its requester disconnects. A single claim is
+serialized with durable approval and revocation. Pairing transport bounds
+initial/pair messages to 16 KiB and uses socket timeouts. Discovery names,
+schema hints, and advertised pins are never authorization evidence.
+
+The protocol requires a durable authenticated-challenge journal on the client
+and durable approval/key/trust commit callbacks on both sides. Recovery accepts
+only the original journaled identity and observed TLS fingerprint with the
+original pin. Applications implementing `DeviceHandler` must serialize these
+callbacks, refuse silent existing-group key changes or identity/certificate
+overwrite, preserve errors from unavailable secure storage, and check shutdown
+and revocation in their enrollment coordinator. The low-level pairing API does
+not implement application storage or an OS secure store on their behalf.
