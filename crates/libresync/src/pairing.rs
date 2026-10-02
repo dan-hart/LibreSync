@@ -1186,6 +1186,12 @@ mod socket_tests {
             pake,
         };
         let mut r = raw(l, c);
+        // Allow the legitimate PAKE challenge to complete on busy test hosts.
+        r.get_mut()
+            .sock
+            .inner
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
         write_message(r.get_mut(), &Message::PairHello(hello.clone())).unwrap();
         let challenge = match read_pair(&mut r).unwrap() {
             Message::PairChallenge(c) => c,
@@ -1194,6 +1200,12 @@ mod socket_tests {
         let shared = state.finish(&challenge.pake).unwrap();
         let keys = Confirmations::new(&shared, &hello, &challenge).unwrap();
         keys.verify(&keys.server, &[], &challenge.confirmation)
+            .unwrap();
+        // Keep short deadlines for the callers' negative-response assertions.
+        r.get_mut()
+            .sock
+            .inner
+            .set_read_timeout(Some(Duration::from_millis(150)))
             .unwrap();
         (r, hello, challenge, keys)
     }
@@ -1309,19 +1321,16 @@ mod socket_tests {
         l.shutdown().unwrap();
     }
     #[test]
-    fn server_expiry_and_revocation_rechecked_after_authenticated_challenge() {
+    fn server_expiry_and_revocation_rechecked_at_prepared_commit() {
         for expired in [false, true] {
-            let (server, client, l, invite) = setup(if expired {
-                Duration::from_secs(1)
-            } else {
-                Duration::from_secs(300)
-            });
+            let (server, client, l, invite) = setup(Duration::from_secs(300));
             let (mut r, _, _, keys) = begin(&l, &client, &invite);
-            if expired {
-                std::thread::sleep(Duration::from_millis(1100));
-            } else {
-                server.manager.revoke(&invite.invitation_id).unwrap();
-            }
+            assert!(server.links.lock().unwrap().is_empty());
+            r.get_mut()
+                .sock
+                .inner
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
             write_message(
                 r.get_mut(),
                 &Message::PairConfirm {
@@ -1329,19 +1338,45 @@ mod socket_tests {
                 },
             )
             .unwrap();
-            if let Ok(Message::PairReady { confirmation }) = read_pair(&mut r) {
-                keys.verify(&keys.ready, &[], &confirmation).unwrap();
-                write_message(
-                    r.get_mut(),
-                    &Message::PairPrepared {
-                        confirmation: keys.mac(&keys.prepared, &[]).unwrap(),
-                    },
-                )
-                .unwrap();
-                assert!(read_pair(&mut r).is_err());
+            let confirmation = match read_pair(&mut r).unwrap() {
+                Message::PairReady { confirmation } => confirmation,
+                _ => panic!("ready"),
+            };
+            keys.verify(&keys.ready, &[], &confirmation).unwrap();
+            assert!(server.links.lock().unwrap().is_empty());
+            // Ready has authenticated the still-valid invitation. Change only the
+            // authoritative entry before Prepared to exercise the commit recheck.
+            if expired {
+                let mut invitations = server.manager.invitations.lock().unwrap();
+                let state = invitations.get_mut(&invite.invitation_id).unwrap();
+                assert!(state.claimed);
+                state.invitation.expires_at = 0;
+            } else {
+                server.manager.revoke(&invite.invitation_id).unwrap();
             }
+            r.get_mut()
+                .sock
+                .inner
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            write_message(
+                r.get_mut(),
+                &Message::PairPrepared {
+                    confirmation: keys.mac(&keys.prepared, &[]).unwrap(),
+                },
+            )
+            .unwrap();
+            // Any response, including PairAccepted with the app key, is a failure.
+            assert!(matches!(
+                read_pair(&mut r),
+                Err(Error::Io(error)) if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset
+                )
+            ));
             assert!(server.links.lock().unwrap().is_empty());
             l.shutdown().unwrap();
+            assert!(server.links.lock().unwrap().is_empty());
         }
     }
     #[test]
