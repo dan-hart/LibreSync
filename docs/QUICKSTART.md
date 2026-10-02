@@ -77,11 +77,12 @@ libresync diagnose
 ```
 
 ## 10) AlwaysOn (optional)
-For background sync on Linux, you can run the headless daemon:
+For background managed sync, enroll a supported app using its expiring invitation, then run the headless daemon with secure OS key storage:
 ```
-cargo run -p libresync-alwayson-daemon -- --auto-accept --pairing-secret "my-shared-secret"
+cargo run -p libresync-alwayson-daemon -- enroll -
+cargo run -p libresync-alwayson-daemon -- serve
 ```
-See `alwaysOn/README.md` for systemd user service setup.
+Maintenance enrollment runs while the service is stopped. There is no ambient automatic approval. See [AlwaysOn setup](../alwaysOn/README.md) for supported app contracts, explicit headless file-key mode, and service setup.
 
 ## Notes
 - Linking is required before refresh.

@@ -8,7 +8,8 @@ Runs `libresync-alwayson-daemon` for your user, restarted on failure.
 
 ```bash
 cargo install --path crates/libresync-alwayson-daemon --root ~/.local
-mkdir -p ~/.config/systemd/user
+mkdir -p ~/.config/systemd/user ~/.local/share/libresync
+chmod 700 ~/.local/share/libresync
 cp contrib/systemd/libresync-alwayson-daemon.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now libresync-alwayson-daemon.service
@@ -21,6 +22,8 @@ systemctl --user status libresync-alwayson-daemon.service
 journalctl --user -u libresync-alwayson-daemon.service -f
 ```
 
+Enroll app spaces with the service stopped using `--root ~/.local/share/libresync/managed-v1 enroll -`. The service requires an unlocked Secret Service. Headless operators can explicitly add `--file-keys` to both maintenance and service commands; this stores owner-only plaintext secret files. No automatic approval is supported.
+
 Keep it running after logout (otherwise user services stop with the session):
 
 ```bash
@@ -30,8 +33,7 @@ loginctl enable-linger "$USER"
 Edit `ExecStart` in the unit if the binary lives elsewhere (`systemctl --user
 edit libresync-alwayson-daemon.service` creates an override). The unit uses
 `Restart=on-failure` with a 5 s delay and no start-rate limit, and confines
-writes to `~/.config/libresync` and `~/.local/share/libresync`; add paths to
-`ReadWritePaths` if your adapters live elsewhere.
+writes to `~/.local/share/libresync`; create that directory before starting the unit. App data remains inside isolated managed spaces.
 
 Firewall rules for mDNS and the listener port are in
 `docs/PACKAGING-LINUX.md`.
@@ -55,8 +57,7 @@ rm ~/Library/LaunchAgents/com.codedbydan.libresync.alwayson.plist
 
 `KeepAlive/SuccessfulExit=false` restarts the daemon only after a failure and
 `NetworkState=true` keeps it stopped while the machine is offline. Logs go to
-`/tmp/libresync-alwayson.{out,err}.log`. The first launch triggers the Local
-Network permission prompt; approve it or discovery stays empty. See
+`/tmp/libresync-alwayson.{out,err}.log`. If macOS requests Local Network permission, allow it. Empty discovery alone does not prove a permission denial. See
 `docs/PACKAGING-MACOS.md` for entitlements, Bonjour and Keychain notes.
 
 ## Flatpak manifest fragment (`contrib/flatpak/`)

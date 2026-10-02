@@ -1,0 +1,169 @@
+//! Opt-in managed transport for Momentum. Legacy P2p is not auto-upgraded.
+//! The app must durably commit decoded inbox records before acknowledging.
+use crate::{Action, Error, FieldValue, Op, OpRecord, Result, Snapshot, SyncRecord};
+use libresync::{
+    companion::{momentum_manifest, MomentumAdapter},
+    ApplicationInbox, DeviceMetadata, KeyStore, LamportClock, Session, SessionConfig,
+};
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+};
+
+pub struct ManagedMomentum {
+    pub session: Session,
+    publish_lock: Mutex<()>,
+}
+pub struct ManagedInbox {
+    pub checkpoint: ApplicationInbox,
+    pub ops: Vec<OpRecord>,
+    pub snapshot: Option<Snapshot>,
+}
+impl ManagedMomentum {
+    /// Use a NEW managed directory. Do not reuse legacy P2p state or keys.
+    pub fn open(dir: &Path, name: &str, keys: Arc<dyn KeyStore>) -> Result<Self> {
+        let config = SessionConfig::new(
+            dir,
+            DeviceMetadata {
+                display_name: name.into(),
+                device_kind: "application".into(),
+                role: "application".into(),
+                manifest: momentum_manifest(),
+            },
+        )
+        .with_adapter(Arc::new(MomentumAdapter))?;
+        Ok(Self {
+            session: Session::open(config, keys)?,
+            publish_lock: Mutex::new(()),
+        })
+    }
+    fn write(&self, mut record: SyncRecord) -> Result<()> {
+        let _guard = self
+            .publish_lock
+            .lock()
+            .map_err(|_| Error::Protocol("publish lock poisoned".into()))?;
+        let records = self.session.records("ops")?;
+        let existing = records
+            .iter()
+            .map(MomentumAdapter::decode)
+            .collect::<Result<Vec<_>>>()?;
+        if existing.iter().any(|old| {
+            old.entity == record.entity
+                && old.id == record.id
+                && old.fields == record.fields
+                && old.tombstone == record.tombstone
+        }) {
+            return Ok(());
+        }
+        let counter = records
+            .iter()
+            .map(|r| r.clock.counter)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| Error::Protocol("clock exhausted".into()))?;
+        record.clock = LamportClock {
+            counter,
+            device_id: self.session.snapshot()?.identity.device_id,
+        };
+        record.stamp_field_clocks(None);
+        self.session
+            .import_records(&[MomentumAdapter::encode(&record)?])
+    }
+    pub fn publish(&self, op: &Op, action: &Action) -> Result<()> {
+        let op = OpRecord {
+            id: op.id.clone(),
+            t: op.t,
+            origin: op.c.clone(),
+            op: serde_json::to_value(op)?,
+            action: serde_json::to_value(action)?,
+        };
+        self.write(crate::op_record(&op, false))
+    }
+    pub fn publish_snapshot(&self, json: &[u8]) -> Result<()> {
+        let identity = self.session.snapshot()?.identity;
+        let snapshot = Snapshot::new(&identity.device_id, json);
+        MomentumAdapter::validate_snapshot(
+            &snapshot.gz_b64,
+            libresync::companion::MAX_SNAPSHOT_COMPRESSED,
+            libresync::companion::MAX_SNAPSHOT_EXPANDED,
+        )?;
+        self.write(SyncRecord {
+            schema: "momentum".into(),
+            entity: "Snapshot".into(),
+            id: "latest".into(),
+            fields: std::collections::BTreeMap::from([
+                ("t".into(), FieldValue::I64(snapshot.t as i64)),
+                ("origin".into(), FieldValue::String(snapshot.origin)),
+                ("gz_b64".into(), FieldValue::String(snapshot.gz_b64)),
+            ]),
+            updated_at: Some(snapshot.t),
+            ..SyncRecord::default()
+        })
+    }
+    /// Explicit record-copy migration only, preserving wire clocks/tombstones.
+    /// This imports NO legacy certificates, keys, pairing state, or receipts.
+    pub fn import_legacy_copy(&self, records: &[SyncRecord]) -> Result<()> {
+        let records = records
+            .iter()
+            .map(MomentumAdapter::encode)
+            .collect::<Result<Vec<_>>>()?;
+        self.session.import_records(&records)
+    }
+    pub fn inbox(&self) -> Result<ManagedInbox> {
+        let checkpoint = self.session.application_inbox()?;
+        let mut ops = Vec::new();
+        let mut snapshot = None;
+        for wire in &checkpoint.records {
+            let record = MomentumAdapter::decode(wire)?;
+            if record.tombstone {
+                continue;
+            }
+            let t = crate::field_i64(&record, "t")
+                .and_then(|t| u64::try_from(t).ok())
+                .ok_or_else(|| Error::Protocol("invalid Momentum timestamp".into()))?;
+            let origin = crate::field_str(&record, "origin")
+                .ok_or_else(|| Error::Protocol("Momentum origin absent".into()))?
+                .to_string();
+            if record.entity == "Op" {
+                let op: Op = serde_json::from_str(
+                    crate::field_str(&record, "op")
+                        .ok_or_else(|| Error::Protocol("Momentum op absent".into()))?,
+                )?;
+                let action: Action = serde_json::from_str(
+                    crate::field_str(&record, "action")
+                        .ok_or_else(|| Error::Protocol("Momentum action absent".into()))?,
+                )?;
+                if op.id != record.id {
+                    return Err(Error::Protocol("Momentum op ID mismatch".into()));
+                }
+                ops.push(OpRecord {
+                    id: record.id,
+                    t,
+                    origin,
+                    op: serde_json::to_value(op)?,
+                    action: serde_json::to_value(action)?,
+                });
+            } else {
+                snapshot = Some(Snapshot {
+                    t,
+                    origin,
+                    gz_b64: crate::field_str(&record, "gz_b64")
+                        .ok_or_else(|| Error::Protocol("Momentum snapshot absent".into()))?
+                        .into(),
+                });
+            }
+        }
+        ops.sort_by(|a, b| (a.t, &a.id).cmp(&(b.t, &b.id)));
+        Ok(ManagedInbox {
+            checkpoint,
+            ops,
+            snapshot,
+        })
+    }
+    /// Call ONLY after the Momentum app transaction has durably committed.
+    /// Retries must deduplicate operations in that same app transaction.
+    pub fn acknowledge_committed(&self, inbox: &ManagedInbox) -> Result<()> {
+        self.session.acknowledge_inbox(&inbox.checkpoint)
+    }
+}

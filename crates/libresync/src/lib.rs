@@ -1,5 +1,6 @@
 mod adapter;
 mod backup;
+pub mod companion;
 mod crypto;
 mod device;
 mod discovery;
@@ -85,3 +86,6 @@ pub use sync::{
     sync_with_device_using, CancelToken, ListenerOptions, SyncListener, SyncOptions, SyncOutcome,
     SyncStats,
 };
+
+#[cfg(target_os = "macos")]
+pub use keystore::NativeKeychainKeyStore;

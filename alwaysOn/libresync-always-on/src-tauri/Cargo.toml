@@ -6,7 +6,7 @@ license = "AGPL-3.0-only"
 description = "Always-on desktop device for LibreSync."
 
 [build-dependencies]
-tauri-build = { version = "1" }
+tauri-build = { version = "2.6.3" }
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -15,7 +15,7 @@ base64 = "0.22"
 uuid = { version = "1.6", features = ["v4"] }
 whoami = "1.5"
 libresync = { path = "../../../crates/libresync" }
-tauri = { version = "1", features = ["system-tray"] }
+tauri = { version = "2.12.1", features = ["tray-icon"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

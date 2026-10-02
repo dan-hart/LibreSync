@@ -613,6 +613,10 @@ mod tests {
             .unwrap();
         b.set("records", "local", b"preserved".to_vec()).unwrap();
         let id = a.snapshot().unwrap().identity.device_id;
+        b.remove_peer(&id).unwrap();
+        let removed = serde_json::to_value(b.snapshot().unwrap()).unwrap();
+        assert_eq!(removed["peers"][0]["revoked"], true);
+        assert!(b.resume_peer(&id).is_err());
         let mut invitation = a.create_invitation(Duration::from_secs(30)).unwrap();
         invitation.invitation.secret = "00".repeat(32);
         assert!(b.repair_peer(&id, &invitation).is_err());
@@ -621,11 +625,21 @@ mod tests {
             Some(b"preserved".to_vec())
         );
         assert!(lock(&b.inner.envelope).unwrap().peers[&id].revoked);
+        let public = serde_json::to_value(b.snapshot().unwrap()).unwrap();
+        assert_eq!(public["peers"][0]["revoked"], true);
+        assert!(b.resume_peer(&id).is_err());
+
         assert!(b
             .connect(&a.create_invitation(Duration::from_secs(30)).unwrap())
             .is_err());
         b.repair_peer(&id, &a.create_invitation(Duration::from_secs(30)).unwrap())
             .unwrap();
         assert!(!lock(&b.inner.envelope).unwrap().peers[&id].revoked);
+        let public = serde_json::to_value(b.snapshot().unwrap()).unwrap();
+        assert_eq!(public["peers"][0]["revoked"], false);
+        assert_eq!(
+            b.get("records", "local").unwrap(),
+            Some(b"preserved".to_vec())
+        );
     }
 }

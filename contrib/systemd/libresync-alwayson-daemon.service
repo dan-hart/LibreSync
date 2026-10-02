@@ -9,8 +9,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 # Adjust the path if you installed the binary elsewhere (e.g. ~/.cargo/bin).
-ExecStart=%h/.local/bin/libresync-alwayson-daemon
-# Optional flags: --auto-accept, --auto-approve, --pairing-secret <secret>
+ExecStart=%h/.local/bin/libresync-alwayson-daemon --root %h/.local/share/libresync/managed-v1 serve
+# Secure Secret Service keys are the default. --file-keys is an explicit
+# operator opt-in for unattended installations; never add automatic approval.
 Restart=on-failure
 RestartSec=5
 # Keep restarting on flapping networks instead of giving up.
@@ -21,7 +22,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/.config/libresync %h/.local/share/libresync
+ReadWritePaths=%h/.local/share/libresync
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

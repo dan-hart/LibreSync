@@ -167,3 +167,20 @@ Managed record values and encrypted batch bytes use bounded base64 JSON. Each re
 Exact checkpoint receipts carry a 32-byte HMAC proof minted only at export. A purpose-separated HKDF key binds the application domain, full enrolled peer identity, certificate fingerprint, durable enrollment incarnation, source epoch, and sequence using length-prefixed encoding. Constant-time verification accepts legitimately delayed receipts across ordinary restart while removal, repair, and fresh enrollment rotate the incarnation. Invalid cursor hints trigger an authoritative full export; stale processing proofs cannot advance Applied and do not prevent recovery. No growing issued-checkpoint history is retained.
 
 Pairing protocol version 2 separates authentication from durable preparation. The joiner promptly sends `PairConfirm` after verifying the server challenge. The inviter verifies it under the short initial deadline and immediately returns `PairReady`, authenticated with its separate transcript-derived ready key, without committing enrollment or releasing the app key. The joiner verifies Ready, extends only its authenticated I/O budget, durably prepares its challenge journal, and sends `PairPrepared` authenticated with the distinct prepared key. Only after verifying Prepared may the inviter commit and send the authoritative key. Missing, reflected, wrong, and replayed preparation tags cannot enroll a peer. The inviter extends its budget only after verified client proof. Version 1 is rejected explicitly; legacy Engine exchange is unchanged.
+
+## Managed companion isolation
+
+AlwaysOn enrolls only operator-registered exact app/schema policies using authenticated expiring invitations. Every space has independent identity, keys, storage, trust and receipts. Discovery names are untrusted text; the dashboard restricts CSP and renders names with DOM text APIs. The native macOS Keychain backend keeps binary secrets out of process arguments and treats only item-not-found as absence. Linux secure-store failures do not trigger plaintext fallback. Explicit headless file-key mode uses owner-only files and requires operator choice. Missing backup keys beside existing backups are errors, never key regeneration. Recovery exports contain sensitive unencrypted app data and require explicit UI confirmation. Legacy recovery copies import no trust or automatic approval. See [the companion contract](docs/COMPANION.md) for limits and recovery semantics.
+
+### Tauri dependency audit qualification
+
+The Tauri 2 lock audit reports no vulnerability entries, but retains two warnings:
+`RUSTSEC-2024-0370` for unmaintained `proc-macro-error` 1.0.4 and
+`RUSTSEC-2024-0429` for the unsound `glib` 0.18.5 `VariantStrIter` API.
+The latter dependency belongs to the Linux GTK3 stack; its API is not called by
+LibreSync or the resolved downloaded dependency sources outside glib's own API
+definitions. The former is a compile-time dependency of GTK/glib macros.
+This source reachability assessment does not remove the advisory or establish
+that all Linux behavior is safe. GTK3 requires its matching glib version, so an
+independent glib upgrade is not compatible. No audit warning is ignored; Linux
+release qualification must include this known dependency limitation.

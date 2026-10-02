@@ -26,6 +26,8 @@ pub struct SessionConfig {
     pub debounce: std::time::Duration,
     /// Idle I/O budget after an enrolled peer is authenticated (maximum five minutes).
     pub authenticated_io_timeout: std::time::Duration,
+    /// Maximum encrypted pre-merge recovery copies. Live records are not pruned.
+    pub recovery_retention: usize,
     adapters: BTreeMap<String, Arc<dyn ManagedAdapter>>,
 }
 impl SessionConfig {
@@ -51,6 +53,7 @@ impl SessionConfig {
             catch_up: std::time::Duration::from_secs(2),
             debounce: std::time::Duration::from_millis(50),
             authenticated_io_timeout: std::time::Duration::from_secs(60),
+            recovery_retention: 20,
             adapters,
         }
     }
@@ -136,7 +139,8 @@ impl Session {
                 "registered adapters differ from manifest",
             );
         }
-        if config.catch_up.is_zero()
+        if !(1..=100).contains(&config.recovery_retention)
+            || config.catch_up.is_zero()
             || config.debounce > std::time::Duration::from_secs(5)
             || config.authenticated_io_timeout.is_zero()
             || config.authenticated_io_timeout > std::time::Duration::from_secs(300)
@@ -248,6 +252,7 @@ impl Session {
                         identity: p.identity.clone(),
                         metadata: p.metadata.clone(),
                         fingerprint: p.fingerprint.clone(),
+                        revoked: p.revoked,
                         pending: count,
                         stored: p.stored.clone(),
                         applied: p.applied.clone(),
@@ -411,6 +416,11 @@ impl Inner {
                     records: current.records.values().cloned().collect(),
                 });
             }
+            let remove = candidate
+                .recovery
+                .len()
+                .saturating_sub(self.config.recovery_retention);
+            candidate.recovery.drain(..remove);
             let mut changes = Vec::new();
             for adapter in self.config.adapters.keys() {
                 let before: Vec<_> = current
@@ -497,6 +507,9 @@ pub struct PeerSnapshot {
     pub identity: Identity,
     pub metadata: DeviceMetadata,
     pub fingerprint: String,
+    /// Removed trust tombstone. A fresh invitation and explicit repair are required.
+    #[serde(default)]
+    pub revoked: bool,
     pub pending: usize,
     pub stored: ManagedReceipt,
     pub applied: ManagedReceipt,
@@ -931,4 +944,58 @@ fn fail_code<T>(code: SessionErrorCode, message: &str) -> Result<T> {
         code,
         message: message.into(),
     })
+}
+
+impl Session {
+    /// Import an app-produced logical batch, preserving original clocks and
+    /// tombstones. Validation and durable publication are atomic. This is a
+    /// local app write, not a bootstrap consent bypass or Applied receipt.
+    pub fn import_records(&self, records: &[ManagedRecord]) -> Result<()> {
+        for record in records {
+            self.check_adapter(&record.adapter)?;
+        }
+        limits::batch(&ExportBatch {
+            checkpoint: ManagedReceipt::default(),
+            records: records.to_vec(),
+            full: false,
+        })?;
+        self.inner.mutate(|e| {
+            let prepared = self.inner.prepare_records(e, records)?;
+            let before = e.revision;
+            self.inner.commit_records(e, &prepared, None)?;
+            if e.revision != before {
+                e.local_revision = e
+                    .local_revision
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Protocol("local revision exhausted".into()))?;
+            }
+            Ok(())
+        })?;
+        self.inner.wake();
+        Ok(())
+    }
+    /// Metadata-only recovery inspection for UI polling. Tuples contain
+    /// (snapshot ID, source revision, record count); payloads are not cloned.
+    pub fn recovery_snapshot_sizes(&self) -> Result<Vec<(String, u64, usize)>> {
+        Ok(lock(&self.inner.envelope)?
+            .recovery
+            .iter()
+            .map(|snapshot| {
+                (
+                    snapshot.id.clone(),
+                    snapshot.revision,
+                    snapshot.records.len(),
+                )
+            })
+            .collect())
+    }
+    /// Prune encrypted pre-merge recovery copies only; live records and their
+    /// tombstones are unaffected. The caller declares the retention limit.
+    pub fn prune_recovery_snapshots(&self, retain: usize) -> Result<()> {
+        self.inner.mutate(|e| {
+            let remove = e.recovery.len().saturating_sub(retain);
+            e.recovery.drain(..remove);
+            Ok(())
+        })
+    }
 }
