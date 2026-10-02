@@ -1,6 +1,7 @@
 package libresync
 
 object LibreSyncNative {
+    private fun <T> unsupported():T = throw UnsupportedOperationException("Legacy Engine JNI is unsupported. Migrate to LibreSync Session.")
     init {
         System.loadLibrary("libresync_ffi")
     }
@@ -8,30 +9,47 @@ object LibreSyncNative {
     external fun libresync_abi_version(): Int
     external fun libresync_generate_app_key(): String?
     external fun libresync_generate_device_keys(deviceId: String, appId: String, userId: String): String?
-    external fun libresync_engine_create(configJson: String, statePath: String): Long
-    external fun libresync_engine_free(handle: Long)
+    @Deprecated("Legacy Engine JNI is unsupported. Use managed Session; legacy C remains available.")
+    fun libresync_engine_create(configJson: String, statePath: String): Long = unsupported()
+    @Deprecated("Legacy Engine JNI is unsupported. Use managed Session; legacy C remains available.")
+    fun libresync_engine_free(handle: Long):Unit = unsupported()
 
-    external fun libresync_engine_register_json_adapter(handle: Long, adapterId: String, path: String): Boolean
-    external fun libresync_engine_register_logical_file_adapter(handle: Long, adapterId: String, namespaceName: String, path: String): Boolean
-    external fun libresync_engine_register_sqlite_adapter(handle: Long, adapterId: String, path: String, pageDelta: Long): Boolean
-    external fun libresync_engine_register_sqlite_logical_adapter(handle: Long, adapterId: String, namespaceName: String, path: String, mappingJson: String): Boolean
+    @Deprecated("Legacy Engine JNI is unsupported. Use managed Session; legacy C remains available.")
+    fun libresync_engine_register_json_adapter(handle: Long, adapterId: String, path: String): Boolean = unsupported()
+    @Deprecated("Legacy Engine JNI is unsupported. Use managed Session; legacy C remains available.")
+    fun libresync_engine_register_logical_file_adapter(handle: Long, adapterId: String, namespaceName: String, path: String): Boolean = unsupported()
+    @Deprecated("Legacy Engine JNI is unsupported. Use managed Session; legacy C remains available.")
+    fun libresync_engine_register_sqlite_adapter(handle: Long, adapterId: String, path: String, pageDelta: Long): Boolean = unsupported()
+    @Deprecated("Legacy Engine JNI is unsupported. Use managed Session; legacy C remains available.")
+    fun libresync_engine_register_sqlite_logical_adapter(handle: Long, adapterId: String, namespaceName: String, path: String, mappingJson: String): Boolean = unsupported()
 
-    external fun libresync_engine_start_listening(handle: Long): Boolean
-    external fun libresync_engine_stop_listening(handle: Long): Boolean
+    @Deprecated("Legacy Engine JNI is unsupported. Use managed Session; legacy C remains available.")
+    fun libresync_engine_start_listening(handle: Long): Boolean = unsupported()
+    @Deprecated("Legacy Engine JNI is unsupported. Use managed Session; legacy C remains available.")
+    fun libresync_engine_stop_listening(handle: Long): Boolean = unsupported()
 
-    external fun libresync_engine_discover(handle: Long, timeoutMs: Long): String?
-    external fun libresync_engine_link(handle: Long, address: String): String?
-    external fun libresync_engine_sync_now(handle: Long, address: String, adapterId: String): Boolean
+    @Deprecated("Legacy Engine JNI is unsupported. Use managed Session; legacy C remains available.")
+    fun libresync_engine_discover(handle: Long, timeoutMs: Long): String? = unsupported()
+    @Deprecated("Legacy Engine JNI is unsupported. Use managed Session; legacy C remains available.")
+    fun libresync_engine_link(handle: Long, address: String): String? = unsupported()
+    @Deprecated("Legacy Engine JNI is unsupported. Use managed Session; legacy C remains available.")
+    fun libresync_engine_sync_now(handle: Long, address: String, adapterId: String): Boolean = unsupported()
 
-    external fun libresync_backup_snapshot(handle: Long, adapterId: String, note: String?): String?
-    external fun libresync_backup_list(handle: Long, adapterId: String): String?
-    external fun libresync_backup_preview(handle: Long, adapterId: String, snapshotId: String): String?
-    external fun libresync_backup_restore(handle: Long, adapterId: String, snapshotId: String): Boolean
-    external fun libresync_backup_prune(handle: Long, adapterId: String, maxSnapshots: Long, maxAgeDays: Long): Boolean
+    @Deprecated("Legacy Engine JNI is unsupported. Use managed Session; legacy C remains available.")
+    fun libresync_backup_snapshot(handle: Long, adapterId: String, note: String?): String? = unsupported()
+    @Deprecated("Legacy Engine JNI is unsupported. Use managed Session; legacy C remains available.")
+    fun libresync_backup_list(handle: Long, adapterId: String): String? = unsupported()
+    @Deprecated("Legacy Engine JNI is unsupported. Use managed Session; legacy C remains available.")
+    fun libresync_backup_preview(handle: Long, adapterId: String, snapshotId: String): String? = unsupported()
+    @Deprecated("Legacy Engine JNI is unsupported. Use managed Session; legacy C remains available.")
+    fun libresync_backup_restore(handle: Long, adapterId: String, snapshotId: String): Boolean = unsupported()
+    @Deprecated("Legacy Engine JNI is unsupported. Use managed Session; legacy C remains available.")
+    fun libresync_backup_prune(handle: Long, adapterId: String, maxSnapshots: Long, maxAgeDays: Long): Boolean = unsupported()
 
     external fun libresync_last_error(): String?
 }
 
+@Deprecated("Use managed Session. The historical Engine Kotlin boundary had no JNI implementation.")
 class LibreSyncEngine(configJson: String, statePath: String) {
     private val handle: Long = LibreSyncNative.libresync_engine_create(configJson, statePath)
 

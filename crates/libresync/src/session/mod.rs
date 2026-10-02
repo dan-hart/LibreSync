@@ -710,7 +710,9 @@ impl Inner {
 impl Session {
     pub fn subscribe(&self) -> Result<flume::Receiver<SessionEvent>> {
         let (s, r) = flume::bounded(256);
-        lock(&self.inner.events)?.push(s);
+        let mut events = lock(&self.inner.events)?;
+        events.retain(|sender| !sender.is_disconnected());
+        events.push(s);
         Ok(r)
     }
     pub fn report_platform_evidence(
@@ -997,5 +999,180 @@ impl Session {
             e.recovery.drain(..remove);
             Ok(())
         })
+    }
+}
+
+/// Public platform advertisement. Contains no enrollment secret or trust grant.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PlatformAdvertisement {
+    pub service_type: String,
+    pub instance: String,
+    pub port: u16,
+    pub ipv6: bool,
+    pub txt: std::collections::HashMap<String, String>,
+}
+impl Session {
+    /// Platform Bonjour uses the actual Rust listener; never creates a second listener.
+    pub fn platform_advertisement(&self) -> Result<PlatformAdvertisement> {
+        let address = self.address()?;
+        let identity = lock(&self.inner.envelope)?.identity.clone();
+        let invitation = lock(&self.inner.invitation)?
+            .clone()
+            .filter(|d| self.inner.pairing.is_open(&d.invitation_id));
+        Ok(PlatformAdvertisement {
+            service_type: "_libresync._tcp.".into(),
+            instance: identity.device_id.clone(),
+            port: address.port(),
+            ipv6: address.is_ipv6(),
+            txt: crate::discovery::platform_properties(
+                &identity,
+                &self.inner.config.metadata,
+                invitation.as_ref(),
+            )?,
+        })
+    }
+    /// Bounded, untrusted endpoint hints. TLS pinning and authenticated schema
+    /// checks still govern every connection. IPv4 listeners discard AAAA hints.
+    pub fn ingest_platform_discovery(&self, mut peer: crate::DiscoveredPeer) -> Result<()> {
+        let own = lock(&self.inner.envelope)?.identity.clone();
+        if peer.identity == own {
+            return Ok(());
+        }
+        let bounded = |s: &str| !s.is_empty() && s.len() <= 128 && !s.chars().any(char::is_control);
+        if peer.identity.app_id != own.app_id
+            || !bounded(&peer.identity.device_id)
+            || !bounded(&peer.identity.user_id)
+            || peer.addresses.is_empty()
+            || peer.addresses.len() > 32
+        {
+            return fail_code(
+                SessionErrorCode::InvalidConfiguration,
+                "invalid platform discovery hint",
+            );
+        }
+        let ad = peer.advertisement.as_ref().ok_or_else(|| Error::Managed {
+            code: SessionErrorCode::InvalidConfiguration,
+            message: "missing platform metadata".into(),
+        })?;
+        if !bounded(&ad.display_name)
+            || !bounded(&ad.device_kind)
+            || !bounded(&ad.role)
+            || !bounded(&ad.app_display_name)
+            || ad.contract_digest.len() != 64
+            || !ad.contract_digest.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return fail_code(
+                SessionErrorCode::InvalidConfiguration,
+                "invalid platform metadata",
+            );
+        }
+        if let Some(d) = &peer.invitation {
+            if d.invitation_id.len() != 32
+                || !d.invitation_id.bytes().all(|b| b.is_ascii_hexdigit())
+                || d.inviter_fingerprint.len() != 64
+                || !d.inviter_fingerprint.bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                return fail_code(
+                    SessionErrorCode::InvalidConfiguration,
+                    "invalid pairing hints",
+                );
+            }
+        }
+        let ipv6 = self.address()?.is_ipv6();
+        peer.addresses.retain(|a| {
+            a.port() != 0
+                && !a.ip().is_unspecified()
+                && !a.ip().is_multicast()
+                && (ipv6 || a.is_ipv4())
+        });
+        peer.addresses.sort();
+        peer.addresses.dedup();
+        if peer.addresses.is_empty() {
+            return Ok(());
+        }
+        {
+            let mut discovered = lock(&self.inner.discovered)?;
+            if discovered.len() >= 256 && !discovered.contains_key(&peer.identity.device_id) {
+                return fail_code(
+                    SessionErrorCode::Busy,
+                    "platform discovery capacity reached",
+                );
+            }
+            if discovered.get(&peer.identity.device_id) == Some(&peer) {
+                return Ok(());
+            }
+            discovered.insert(peer.identity.device_id.clone(), peer.clone());
+        }
+        self.inner.emit(SessionEvent::Changed);
+        self.inner.wake();
+        Ok(())
+    }
+    /// Withdraw a browse result; enrollment and stored records remain intact.
+    pub fn withdraw_platform_discovery(&self, device_id: &str) -> Result<()> {
+        lock(&self.inner.discovered)?.remove(device_id);
+        self.inner.emit(SessionEvent::Changed);
+        Ok(())
+    }
+    /// Cancel current network operations while retaining enrollment and data.
+    /// Future wake/scheduler cycles may retry; use pause for sustained suspension.
+    pub fn cancel_operations(&self) -> Result<()> {
+        for token in lock(&self.inner.operations)?.values() {
+            token.cancel();
+        }
+        Ok(())
+    }
+}
+
+impl Inner {
+    fn endpoint_hints(
+        &self,
+        identity: &Identity,
+        fallback: &[std::net::SocketAddr],
+    ) -> Result<Vec<std::net::SocketAddr>> {
+        Ok(lock(&self.discovered)?
+            .get(&identity.device_id)
+            .filter(|p| p.identity == *identity && !p.addresses.is_empty())
+            .map(|p| p.addresses.clone())
+            .unwrap_or_else(|| fallback.to_vec()))
+    }
+}
+
+#[cfg(test)]
+mod subscription_tests {
+    use super::*;
+    #[test]
+    fn idle_subscription_churn_is_bounded_and_preserves_live_observers() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = SessionConfig::new(
+            dir.path(),
+            DeviceMetadata {
+                display_name: "Observers".into(),
+                device_kind: "desktop".into(),
+                role: "device".into(),
+                manifest: crate::companion::notes_manifest(),
+            },
+        );
+        config.advertise = false;
+        let session = Session::open(config, Arc::new(crate::MemoryKeyStore::new())).unwrap();
+        let first = session.subscribe().unwrap();
+        for _ in 0..512 {
+            drop(session.subscribe().unwrap());
+        }
+        assert!(
+            lock(&session.inner.events).unwrap().len() <= 2,
+            "Idle dropped queues must be pruned without waiting for an event"
+        );
+        let second = session.subscribe().unwrap();
+        session
+            .set("records", "observed", b"change".to_vec())
+            .unwrap();
+        assert!(matches!(
+            first.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(SessionEvent::Changed)
+        ));
+        assert!(matches!(
+            second.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(SessionEvent::Changed)
+        ));
     }
 }

@@ -184,3 +184,9 @@ This source reachability assessment does not remove the advisory or establish
 that all Linux behavior is safe. GTK3 requires its matching glib version, so an
 independent glib upgrade is not compatible. No audit warning is ignored; Linux
 release qualification must include this known dependency limitation.
+
+## Managed native SDK boundary
+
+Managed handles are opaque registry IDs; closing fences new calls before cleanup and retains secure-storage callback context through acquired calls. Native callbacks must serialize secure storage and must never reenter LibreSync. Unavailable or corrupt Keychain/Keystore reads fail closed and do not regenerate identity. Android alias/file operations use a kernel lease plus process mutex.
+
+Native Bonjour supplies bounded, ephemeral endpoint hints and reviewed public metadata only. Hints cannot establish identity or schema trust; existing certificate pins, authenticated pairing and contract validation remain authoritative. Apple uses the fixed declared system Bonjour service rather than raw multicast on iOS. Application inbox receipts retain their opaque HMAC proof; Applied acknowledgement follows the app’s durable records-and-receipts transaction.

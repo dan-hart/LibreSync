@@ -130,8 +130,35 @@ pub(super) fn lease(config: &SessionConfig) -> Result<fs::File> {
         options.mode(0o600);
     }
     let file = options.open(config.state_dir.join("session.lock"))?;
-    file.try_lock().map_err(|e| {
-        crate::Error::Protocol(format!("managed state directory is already open: {e}"))
+    // Rust 1.91 std::File::try_lock deliberately reports Unsupported on Android.
+    // Bionic provides flock; the kernel lease still excludes independent sessions
+    // and is released by closing this exact file descriptor (including crashes).
+    #[cfg(target_os = "android")]
+    {
+        use std::os::fd::AsRawFd;
+        // SAFETY: file owns a live descriptor, flags have no pointer arguments.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            let error = std::io::Error::last_os_error();
+            return Err(crate::Error::Managed {
+                code: if error.kind() == std::io::ErrorKind::WouldBlock {
+                    super::SessionErrorCode::Busy
+                } else {
+                    super::SessionErrorCode::StorageUnavailable
+                },
+                message: format!("managed state lease failed: {error}"),
+            });
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    file.try_lock().map_err(|error| match error {
+        std::fs::TryLockError::WouldBlock => crate::Error::Managed {
+            code: super::SessionErrorCode::Busy,
+            message: "managed state directory is already open".into(),
+        },
+        std::fs::TryLockError::Error(error) => crate::Error::Managed {
+            code: super::SessionErrorCode::StorageUnavailable,
+            message: format!("managed state lease failed: {error}"),
+        },
     })?;
     Ok(file)
 }

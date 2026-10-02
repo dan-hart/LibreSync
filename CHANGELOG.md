@@ -6,6 +6,8 @@ narrative context live in `RELEASES.md`.
 
 ## [Unreleased]
 
+- Add managed C, Swift and Android SDKs with typed sessions, secure platform storage, native QR/code discovery and consent UI, durable proof-bearing inbox acknowledgements, complete Apple slices and Android JNI/AAR packaging.
+
 ### Added
 
 - Managed multi-app AlwaysOn dashboard and daemon with separately trusted app spaces, local expiring QR/code invitations, merge consent, repair, truthful Stored/Applied status, and encrypted bounded recovery exports.

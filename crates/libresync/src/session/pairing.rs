@@ -373,7 +373,8 @@ pub(super) fn recover_pending(inner: &Arc<Inner>, cancel: &crate::CancelToken) -
         .cloned()
         .collect();
     let active = lock(&inner.active_pairings)?.clone();
-    for pending in preparations {
+    for mut pending in preparations {
+        pending.addresses = inner.endpoint_hints(&pending.outcome.identity, &pending.addresses)?;
         if active.contains(&pending.outcome.invitation_id) {
             continue;
         }

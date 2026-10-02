@@ -18,6 +18,8 @@ libresync = { path = "../libresync", version = "0.6.1", features = ["sqlite-logi
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 base64 = "0.22"
+flume = "0.11"
+jni = "0.21"
 
 [dev-dependencies]
 tempfile = "3.10"

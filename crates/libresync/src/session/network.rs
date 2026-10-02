@@ -558,7 +558,7 @@ fn outbound(
 ) -> Result<()> {
     let handler = context(inner)?;
     let mut last = Error::Protocol("peer destination not yet known".into());
-    for target in &peer.addresses {
+    for target in &inner.endpoint_hints(&peer.identity, &peer.addresses)? {
         cancel.check()?;
         let operation = OperationGuard::new(inner)?;
         let token = operation.token.clone();

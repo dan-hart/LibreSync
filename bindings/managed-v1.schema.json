@@ -1,0 +1,1185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://libresync.io/managed-v1.schema.json",
+  "$defs": {
+    "identity": {
+      "type": "object",
+      "properties": {
+        "device_id": {
+          "type": "string"
+        },
+        "app_id": {
+          "type": "string"
+        },
+        "user_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "device_id",
+        "app_id",
+        "user_id"
+      ],
+      "additionalProperties": false
+    },
+    "adapter": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": "string"
+        },
+        "schema": {
+          "type": "string"
+        },
+        "transactional": {
+          "const": true
+        }
+      },
+      "required": [
+        "id",
+        "namespace",
+        "schema",
+        "transactional"
+      ],
+      "additionalProperties": false
+    },
+    "manifest": {
+      "type": "object",
+      "properties": {
+        "app_id": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "schema_version": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "adapters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/adapter"
+          },
+          "minItems": 1,
+          "maxItems": 16
+        }
+      },
+      "required": [
+        "app_id",
+        "display_name",
+        "schema_version",
+        "adapters"
+      ],
+      "additionalProperties": false
+    },
+    "clock": {
+      "type": "object",
+      "properties": {
+        "counter": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "device_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "counter",
+        "device_id"
+      ],
+      "additionalProperties": false
+    },
+    "record": {
+      "type": "object",
+      "properties": {
+        "adapter": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "value": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "maxLength": 89478488
+        },
+        "deleted": {
+          "type": "boolean"
+        },
+        "clock": {
+          "$ref": "#/$defs/clock"
+        }
+      },
+      "required": [
+        "adapter",
+        "id",
+        "value",
+        "deleted",
+        "clock"
+      ],
+      "additionalProperties": false
+    },
+    "receipt": {
+      "type": "object",
+      "properties": {
+        "epoch": {
+          "type": "string"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "proof": {
+          "type": "string",
+          "contentEncoding": "base64"
+        }
+      },
+      "required": [
+        "epoch",
+        "sequence",
+        "proof"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "epoch": {
+                "minLength": 1
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "proof": {
+                "pattern": "^[A-Za-z0-9+/]{43}=$"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "acknowledgement": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "receipts": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/receipt"
+          }
+        },
+        "records": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/record"
+          }
+        }
+      },
+      "required": [
+        "revision",
+        "receipts"
+      ],
+      "additionalProperties": false
+    },
+    "inbox": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "records": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/record"
+          }
+        },
+        "receipts": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/receipt"
+          }
+        }
+      },
+      "required": [
+        "revision",
+        "records",
+        "receipts"
+      ],
+      "additionalProperties": false
+    },
+    "batch": {
+      "type": "object",
+      "properties": {
+        "checkpoint": {
+          "$ref": "#/$defs/receipt"
+        },
+        "records": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/record"
+          }
+        },
+        "full": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "checkpoint",
+        "records",
+        "full"
+      ],
+      "additionalProperties": false
+    },
+    "preview": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string"
+        },
+        "peer": {
+          "type": "string"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "local_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "batch": {
+          "$ref": "#/$defs/batch"
+        }
+      },
+      "required": [
+        "token",
+        "peer",
+        "fingerprint",
+        "local_revision",
+        "batch"
+      ],
+      "additionalProperties": false
+    },
+    "descriptor": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer"
+        },
+        "invitation_id": {
+          "type": "string"
+        },
+        "inviter_fingerprint": {
+          "type": "string"
+        },
+        "expires_at": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      },
+      "required": [
+        "version",
+        "invitation_id",
+        "inviter_fingerprint",
+        "expires_at"
+      ],
+      "additionalProperties": false
+    },
+    "advertisement": {
+      "type": "object",
+      "properties": {
+        "display_name": {
+          "type": "string"
+        },
+        "device_kind": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "app_display_name": {
+          "type": "string"
+        },
+        "contract_digest": {
+          "type": "string"
+        },
+        "schema_version": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "display_name",
+        "device_kind",
+        "role",
+        "app_display_name",
+        "contract_digest",
+        "schema_version"
+      ],
+      "additionalProperties": false
+    },
+    "nearby": {
+      "type": "object",
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/identity"
+        },
+        "addresses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32
+        },
+        "advertisement": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/advertisement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "invitation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/descriptor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "identity",
+        "addresses",
+        "advertisement",
+        "invitation"
+      ],
+      "additionalProperties": false
+    },
+    "config": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "enum": [
+            "notes",
+            "momentum",
+            "records"
+          ]
+        },
+        "manifest": {
+          "$ref": "#/$defs/manifest"
+        },
+        "state_dir": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "device_kind": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "listen": {
+          "type": "string"
+        },
+        "advertise": {
+          "type": "boolean"
+        },
+        "authenticated_io_timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300000
+        }
+      },
+      "required": [
+        "policy",
+        "state_dir",
+        "display_name",
+        "device_kind"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "policy": {
+                "const": "records"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "manifest"
+            ],
+            "properties": {
+              "manifest": {
+                "properties": {
+                  "adapters": {
+                    "items": {
+                      "properties": {
+                        "schema": {
+                          "const": "logical-records-v1"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "command": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "start"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "shutdown"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "pause"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "resume"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "wake"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "snapshot"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "discovery"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "pending_pairings"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "recover_pairing"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "close_pairing"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "inbox"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "recovery"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "recovery_sizes"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "inspections"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "platform_advertisement"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "cancel"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "set"
+            },
+            "adapter": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string",
+              "contentEncoding": "base64"
+            }
+          },
+          "required": [
+            "op",
+            "adapter",
+            "id",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "delete"
+            },
+            "adapter": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "adapter",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "get"
+            },
+            "adapter": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "adapter",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "records"
+            },
+            "adapter": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "adapter"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "import"
+            },
+            "records": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/record"
+              }
+            }
+          },
+          "required": [
+            "op",
+            "records"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "acknowledge_inbox"
+            },
+            "inbox": {
+              "$ref": "#/$defs/acknowledgement"
+            }
+          },
+          "required": [
+            "op",
+            "inbox"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "invitation"
+            },
+            "ttl_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 300000
+            },
+            "code": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "op",
+            "ttl_ms",
+            "code"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "connect"
+            },
+            "invitation": {
+              "type": "string",
+              "maxLength": 16384
+            }
+          },
+          "required": [
+            "op",
+            "invitation"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "connect_code"
+            },
+            "peer": {
+              "$ref": "#/$defs/nearby"
+            },
+            "code": {
+              "type": "string",
+              "pattern": "^[0-9]{6}$"
+            }
+          },
+          "required": [
+            "op",
+            "peer",
+            "code"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "repair"
+            },
+            "peer": {
+              "type": "string"
+            },
+            "invitation": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "peer",
+            "invitation"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "remove_peer"
+            },
+            "peer": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "peer"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "pause_peer"
+            },
+            "peer": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "peer"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "resume_peer"
+            },
+            "peer": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "peer"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "bootstrap_preview"
+            },
+            "peer": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "peer"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "stored_receipt"
+            },
+            "peer": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "peer"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "resolve_bootstrap"
+            },
+            "preview": {
+              "$ref": "#/$defs/preview"
+            },
+            "decision": {
+              "enum": [
+                "Merge",
+                "Cancel"
+              ]
+            }
+          },
+          "required": [
+            "op",
+            "preview",
+            "decision"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "acknowledge_applied"
+            },
+            "peer": {
+              "type": "string"
+            },
+            "receipt": {
+              "$ref": "#/$defs/receipt"
+            }
+          },
+          "required": [
+            "op",
+            "peer",
+            "receipt"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "prune_recovery"
+            },
+            "retain": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            }
+          },
+          "required": [
+            "op",
+            "retain"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "events"
+            },
+            "timeout_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000
+            },
+            "subscription": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "subscribe"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "unsubscribe"
+            },
+            "subscription": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            }
+          },
+          "required": [
+            "op",
+            "subscription"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "evidence"
+            },
+            "platform": {
+              "type": "string"
+            },
+            "permission": {
+              "type": "string"
+            },
+            "state": {
+              "enum": [
+                "Allowed",
+                "Denied",
+                "Unknown"
+              ]
+            }
+          },
+          "required": [
+            "op",
+            "platform",
+            "permission",
+            "state"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "ingest_discovery"
+            },
+            "peer": {
+              "$ref": "#/$defs/nearby"
+            }
+          },
+          "required": [
+            "op",
+            "peer"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "withdraw_discovery"
+            },
+            "device_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "device_id"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "enum": [
+            "Closed",
+            "Cancelled",
+            "InvalidOperation",
+            "InvalidConfiguration",
+            "InvalidAdapter",
+            "InvalidRecord",
+            "IncompatibleSchema",
+            "StaleBootstrap",
+            "GroupConflict",
+            "PeerRevoked",
+            "StorageUnavailable",
+            "StorageCommitUncertain",
+            "Busy",
+            "OperationFailed"
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "response": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "abi": {
+              "const": 1
+            },
+            "ok": {
+              "const": true
+            },
+            "value": {}
+          },
+          "required": [
+            "abi",
+            "ok",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "abi": {
+              "const": 1
+            },
+            "ok": {
+              "const": false
+            },
+            "error": {
+              "$ref": "#/$defs/error"
+            }
+          },
+          "required": [
+            "abi",
+            "ok",
+            "error"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/config"
+    },
+    {
+      "$ref": "#/$defs/command"
+    },
+    {
+      "$ref": "#/$defs/response"
+    }
+  ]
+}

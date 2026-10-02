@@ -94,3 +94,11 @@ bindings/swift/.build/
 
 # Tauri 2 generated IPC schemas
 /alwaysOn/libresync-always-on/src-tauri/gen/
+
+# Native Android SDK build caches and packaged native binaries
+.gradle/
+**/build/
+bindings/kotlin/src/main/jniLibs/
+
+# Public SDK build settings contain no credentials.
+!bindings/kotlin/gradle.properties

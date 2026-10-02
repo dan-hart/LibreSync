@@ -860,14 +860,7 @@ fn managed_service(
     metadata: &crate::DeviceMetadata,
     invitation: Option<&crate::PairingDescriptor>,
 ) -> Result<ServiceInfo> {
-    let mut properties = metadata_properties(identity, metadata)?;
-    if let Some(invitation) = invitation {
-        invitation.with_code(metadata.clone(), "000000")?;
-        properties.insert("pair_version".into(), invitation.version.to_string());
-        properties.insert("pair_id".into(), invitation.invitation_id.clone());
-        properties.insert("pair_fp".into(), invitation.inviter_fingerprint.clone());
-        properties.insert("pair_expires".into(), invitation.expires_at.to_string());
-    }
+    let properties = platform_properties(identity, metadata, invitation)?;
     let ips = local_ips(listen.ip())?;
     ServiceInfo::new(
         SERVICE_TYPE,
@@ -1091,4 +1084,20 @@ mod metadata_tests {
         m.display_name = "x".repeat(129);
         assert!(metadata_properties(&Identity::new("d", "test.app", "u"), &m).is_err());
     }
+}
+
+pub(crate) fn platform_properties(
+    identity: &Identity,
+    metadata: &crate::DeviceMetadata,
+    invitation: Option<&crate::PairingDescriptor>,
+) -> Result<HashMap<String, String>> {
+    let mut properties = metadata_properties(identity, metadata)?;
+    if let Some(invitation) = invitation {
+        invitation.with_code(metadata.clone(), "000000")?;
+        properties.insert("pair_version".into(), invitation.version.to_string());
+        properties.insert("pair_id".into(), invitation.invitation_id.clone());
+        properties.insert("pair_fp".into(), invitation.inviter_fingerprint.clone());
+        properties.insert("pair_expires".into(), invitation.expires_at.to_string());
+    }
+    Ok(properties)
 }
