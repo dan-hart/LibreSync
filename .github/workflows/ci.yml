@@ -120,10 +120,11 @@ jobs:
           echo no | avdmanager create avd --force --name libresync37 --package 'system-images;android-37.0;google_apis_ps16k;x86_64'
           # avdmanager currently parses ApiLevel=37.0 as android-0; correct only the AVD target.
           sed -i 's/^target=.*/target=android-37/' "$ANDROID_AVD_HOME/libresync37.ini"
-          emulator -avd libresync37 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          test -x "$ANDROID_HOME/emulator/emulator"
+          "$ANDROID_HOME/emulator/emulator" -avd libresync37 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect > "$RUNNER_TEMP/emulator.log" 2>&1 &
           emulator_pid=$!
           trap 'kill "$emulator_pid" || true' EXIT
-          adb wait-for-device
+          timeout 180 adb wait-for-device
           for attempt in $(seq 1 180); do
             [ "$(adb shell getprop sys.boot_completed | tr -d '\r')" = 1 ] && break
             sleep 2

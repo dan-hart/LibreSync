@@ -6,6 +6,10 @@ narrative context live in `RELEASES.md`.
 
 ## [Unreleased]
 
+### Fixed
+
+- Launch the CI Android emulator from its installed SDK path and bound startup waits.
+
 ## [0.7.0] - 2026-10-01
 
 - Add managed C, Swift and Android SDKs with typed sessions, secure platform storage, native QR/code discovery and consent UI, durable proof-bearing inbox acknowledgements, complete Apple slices and Android JNI/AAR packaging.
