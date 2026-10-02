@@ -115,26 +115,68 @@ jobs:
       - name: Run actual x86_64 API37 16 KiB JNI tests
         timeout-minutes: 20
         run: |
+          set -euo pipefail
           export ANDROID_AVD_HOME="$RUNNER_TEMP/libresync-avd"
           mkdir -p "$ANDROID_AVD_HOME"
           echo no | avdmanager create avd --force --name libresync37 --package 'system-images;android-37.0;google_apis_ps16k;x86_64'
           # avdmanager currently parses ApiLevel=37.0 as android-0; correct only the AVD target.
           sed -i 's/^target=.*/target=android-37/' "$ANDROID_AVD_HOME/libresync37.ini"
-          emulator -avd libresync37 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          emulator_bin="$ANDROID_HOME/emulator/emulator"
+          adb_bin="$ANDROID_HOME/platform-tools/adb"
+          test -x "$emulator_bin" || { echo "Missing SDK emulator executable: $emulator_bin" >&2; exit 1; }
+          test -x "$adb_bin" || { echo "Missing SDK ADB executable: $adb_bin" >&2; exit 1; }
+          export ANDROID_SERIAL=emulator-5554
+          emulator_log="$RUNNER_TEMP/emulator.log"
+          "$emulator_bin" -avd libresync37 -port 5554 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect > "$emulator_log" 2>&1 &
           emulator_pid=$!
-          trap 'kill "$emulator_pid" || true' EXIT
-          adb wait-for-device
+          cleanup() {
+            status=$?
+            trap - EXIT
+            kill "$emulator_pid" 2>/dev/null || true
+            for attempt in $(seq 1 10); do
+              kill -0 "$emulator_pid" 2>/dev/null || break
+              sleep 1
+            done
+            kill -KILL "$emulator_pid" 2>/dev/null || true
+            wait "$emulator_pid" 2>/dev/null || true
+            if [ "$status" -ne 0 ]; then tail -n 120 "$emulator_log" >&2; fi
+            exit "$status"
+          }
+          trap cleanup EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          timeout --kill-after=1s 10s "$adb_bin" start-server
+          boot_completed=''
+          boot_deadline=$((SECONDS + 360))
           for attempt in $(seq 1 180); do
-            [ "$(adb shell getprop sys.boot_completed | tr -d '\r')" = 1 ] && break
-            sleep 2
+            remaining=$((boot_deadline - SECONDS))
+            [ "$remaining" -gt 0 ] || break
+            probe_seconds=2
+            [ "$remaining" -ge "$probe_seconds" ] || probe_seconds=$remaining
+            if ! kill -0 "$emulator_pid" 2>/dev/null; then
+              echo 'Owned emulator exited before boot completed' >&2
+              exit 1
+            fi
+            # Each ADB probe is bounded; an absent device never blocks the loop.
+            if ! boot_completed="$(timeout --kill-after=1s "${probe_seconds}s" "$adb_bin" -s "$ANDROID_SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"; then
+              boot_completed=''
+            fi
+            [ "$boot_completed" = 1 ] && break
+            remaining=$((boot_deadline - SECONDS))
+            [ "$remaining" -gt 0 ] || break
+            sleep_seconds=2
+            [ "$remaining" -ge "$sleep_seconds" ] || sleep_seconds=$remaining
+            sleep "$sleep_seconds"
           done
-          test "$(adb shell getprop sys.boot_completed | tr -d '\r')" = 1
-          test "$(adb shell getprop ro.build.version.sdk | tr -d '\r')" = 37
-          test "$(adb shell getprop ro.product.cpu.abi | tr -d '\r')" = x86_64
-          test "$(adb shell getconf PAGE_SIZE | tr -d '\r')" = 16384
-          adb shell getprop ro.build.version.sdk
-          adb shell getprop ro.product.cpu.abi
-          adb shell getconf PAGE_SIZE
+          test "$boot_completed" = 1
+          kill -0 "$emulator_pid"
+          sdk="$(timeout --kill-after=1s 10s "$adb_bin" -s "$ANDROID_SERIAL" shell getprop ro.build.version.sdk | tr -d '\r')"
+          abi="$(timeout --kill-after=1s 10s "$adb_bin" -s "$ANDROID_SERIAL" shell getprop ro.product.cpu.abi | tr -d '\r')"
+          page_size="$(timeout --kill-after=1s 10s "$adb_bin" -s "$ANDROID_SERIAL" shell getconf PAGE_SIZE | tr -d '\r')"
+          test "$sdk" = 37
+          test "$abi" = x86_64
+          test "$page_size" = 16384
+          printf 'SDK=%s\nABI=%s\nPAGE_SIZE=%s\n' "$sdk" "$abi" "$page_size"
           bindings/kotlin/gradlew -p bindings/kotlin connectedDebugAndroidTest
       - uses: actions/upload-artifact@v4
         if: always()

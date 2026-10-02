@@ -15,6 +15,7 @@ narrative context live in `RELEASES.md`.
 - Release managed Session and companion leases after runtime teardown even when child processes retain duplicated descriptors; preserve live-owner exclusion and kernel crash cleanup.
 - Keep managed registry ID allocation compatible with current stable Rust without wrapping or reusing IDs.
 - Install supported Android `platform-tools` in CI instead of the removed legacy `tools` package.
+- Launch the CI emulator from its installed SDK path and fail promptly if startup exits or bounded device-readiness checks fail.
 
 ### Added
 
