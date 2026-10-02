@@ -1311,14 +1311,20 @@ mod socket_tests {
     #[test]
     fn server_expiry_and_revocation_rechecked_after_authenticated_challenge() {
         for expired in [false, true] {
-            let (server, client, l, invite) = setup(if expired {
-                Duration::from_secs(1)
-            } else {
-                Duration::from_secs(300)
-            });
+            let (server, client, l, invite) = setup(Duration::from_secs(300));
             let (mut r, _, _, keys) = begin(&l, &client, &invite);
             if expired {
-                std::thread::sleep(Duration::from_millis(1100));
+                // Expire only after the challenge. A one-second wall-clock TTL
+                // can expire during the handshake on a loaded CI runner.
+                server
+                    .manager
+                    .invitations
+                    .lock()
+                    .unwrap()
+                    .get_mut(&invite.invitation_id)
+                    .unwrap()
+                    .invitation
+                    .expires_at = 0;
             } else {
                 server.manager.revoke(&invite.invitation_id).unwrap();
             }
@@ -1329,16 +1335,20 @@ mod socket_tests {
                 },
             )
             .unwrap();
-            if let Ok(Message::PairReady { confirmation }) = read_pair(&mut r) {
-                keys.verify(&keys.ready, &[], &confirmation).unwrap();
-                write_message(
-                    r.get_mut(),
-                    &Message::PairPrepared {
-                        confirmation: keys.mac(&keys.prepared, &[]).unwrap(),
-                    },
-                )
-                .unwrap();
-                assert!(read_pair(&mut r).is_err());
+            match read_pair(&mut r) {
+                Ok(Message::PairReady { confirmation }) => {
+                    keys.verify(&keys.ready, &[], &confirmation).unwrap();
+                    write_message(
+                        r.get_mut(),
+                        &Message::PairPrepared {
+                            confirmation: keys.mac(&keys.prepared, &[]).unwrap(),
+                        },
+                    )
+                    .unwrap();
+                    assert!(read_pair(&mut r).is_err());
+                }
+                Err(_) => {}
+                Ok(other) => panic!("expired or revoked invitation was not rejected: {other:?}"),
             }
             assert!(server.links.lock().unwrap().is_empty());
             l.shutdown().unwrap();
