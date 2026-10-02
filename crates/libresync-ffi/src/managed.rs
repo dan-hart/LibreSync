@@ -23,6 +23,18 @@ struct Handle {
 }
 static HANDLES: OnceLock<Mutex<HashMap<u64, Arc<Handle>>>> = OnceLock::new();
 static NEXT: AtomicU64 = AtomicU64::new(1);
+// Use compare_exchange to retain Rust 1.89 compatibility without the deprecated
+// fetch_update API. Exhaustion must never wrap and reuse a registry ID.
+fn next_id(counter: &AtomicU64) -> std::result::Result<u64, ()> {
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        let next = current.checked_add(1).ok_or(())?;
+        match counter.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(id) => return Ok(id),
+            Err(actual) => current = actual,
+        }
+    }
+}
 fn handles() -> &'static Mutex<HashMap<u64, Arc<Handle>>> {
     HANDLES.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -149,9 +161,7 @@ pub(super) fn open(input: Value, keys: Arc<dyn KeyStore>) -> Value {
                 Ok(v) => v,
                 Err(e) => return convert(e),
             };
-            let id = match NEXT
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-            {
+            let id = match next_id(&NEXT) {
                 Ok(id) => id,
                 Err(_) => return error("Busy", "managed handle space exhausted"),
             };
@@ -460,9 +470,7 @@ pub(super) fn dispatch(id: u64, input: Value) -> Value {
                         message: "subscription capacity reached".into(),
                     });
                 }
-                let id = NEXT
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
-                    .map_err(|_| invalid("subscription ID exhausted"))?;
+                let id = next_id(&NEXT).map_err(|_| invalid("subscription ID exhausted"))?;
                 subscriptions.insert(id, s.subscribe()?);
                 json!(id)
             }
@@ -716,6 +724,38 @@ mod tests {
         let context = unsafe { Box::from_raw(ctx as *mut CallbackContext) };
         context.drops.fetch_add(1, Ordering::SeqCst);
     }
+    #[test]
+    fn registry_ids_do_not_wrap_at_exhaustion() {
+        let counter = AtomicU64::new(u64::MAX - 1);
+        assert_eq!(next_id(&counter), Ok(u64::MAX - 1));
+        assert_eq!(next_id(&counter), Err(()));
+        assert_eq!(next_id(&counter), Err(()));
+        assert_eq!(counter.load(Ordering::Relaxed), u64::MAX);
+    }
+
+    #[test]
+    fn registry_ids_are_unique_under_contention() {
+        let counter = AtomicU64::new(1);
+        let mut ids = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        (0..1000)
+                            .map(|_| next_id(&counter).unwrap())
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .flat_map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        ids.sort_unstable();
+        assert_eq!(ids, (1..=8000).collect::<Vec<_>>());
+        assert_eq!(counter.load(Ordering::Relaxed), 8001);
+    }
+
     #[test]
     fn close_does_not_wait_for_a_subscription_consumer() {
         let dir = tempfile::tempdir().unwrap();

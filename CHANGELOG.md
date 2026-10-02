@@ -6,6 +6,11 @@ narrative context live in `RELEASES.md`.
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep managed registry ID allocation compatible with Rust 1.89 and current stable Rust, retaining overflow protection and unique IDs under contention.
+- Install supported Android platform tools in CI instead of the removed legacy SDK tools package.
+
 ## [0.7.0] - 2026-10-01
 
 - Add managed C, Swift and Android SDKs with typed sessions, secure platform storage, native QR/code discovery and consent UI, durable proof-bearing inbox acknowledgements, complete Apple slices and Android JNI/AAR packaging.
