@@ -6,6 +6,7 @@ import org.junit.Assert.*
 import org.junit.runner.RunWith
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlinx.serialization.json.*
 import java.io.File
 import java.util.UUID
 @RunWith(AndroidJUnit4::class)
@@ -19,7 +20,27 @@ class ManagedSessionDeviceTest {
   try {
    a.set("records","one","hello".toByteArray());b.set("records","two","world".toByteArray());a.start();b.start()
    val invite=a.invitation();b.connect(invite.encoded())
-   repeat(100){for(session in listOf(a,b)){for(peer in session.snapshot().peers){session.bootstrap(peer.identity.device_id)?.let{session.resolve(it,BootstrapDecision.Merge)}}};if(b.records("records").size==2)return@repeat;delay(30)}
+   val aId=a.snapshot().identity.device_id;val bId=b.snapshot().identity.device_id
+   withTimeout(5000){while(a.bootstrap(bId)==null||b.bootstrap(aId)==null)delay(30)}
+   // Each merge changes the other device's incoming candidate. Stop both owned
+   // runtimes before capturing consent so neither reviewed preview can change.
+   a.pause();b.pause()
+   assertEquals(SessionPhase.Paused,a.snapshot().phase);assertEquals(SessionPhase.Paused,b.snapshot().phase)
+   assertEquals(1,a.records("records").size);assertEquals(1,b.records("records").size)
+   val aPreview=requireNotNull(a.bootstrap(bId));val bPreview=requireNotNull(b.bootstrap(aId))
+   a.resolve(aPreview,BootstrapDecision.Merge);b.resolve(bPreview,BootstrapDecision.Merge)
+   val aAddress=a.resume();val bAddress=b.resume()
+   suspend fun refreshHint(source:Session,target:Session,address:String){
+    // The loopback fixture has no discovery provider. Supply only the real
+    // resumed listener and its own public metadata through the discovery API.
+    val txt=source.command("platform_advertisement").jsonObject.getValue("txt").jsonObject
+    fun field(key:String)=txt.getValue(key).jsonPrimitive.content
+    val ad=Advertisement(field("name"),field("kind"),field("role"),field("app_name"),field("schema").toUInt(),field("contract"))
+    val peer=NearbyDevice(source.snapshot().identity,listOf(address),ad)
+    target.command("ingest_discovery",mapOf("peer" to Session.json.encodeToJsonElement(peer)))
+   }
+   refreshHint(a,b,aAddress);refreshHint(b,a,bAddress)
+   withTimeout(5000){while(b.records("records").size!=2||b.inbox().receipts.isEmpty())delay(30)}
    val inbox=b.inbox();assertEquals(2,inbox.records.size);assertTrue(inbox.receipts.isNotEmpty());assertTrue(inbox.receipts.values.all{it.proof.size==32})
    val source=a.snapshot().identity.device_id;val checkpoint=inbox.receipts.getValue(source)
    assertFalse(a.snapshot().peers.first().applied.proof.contentEquals(checkpoint.proof))

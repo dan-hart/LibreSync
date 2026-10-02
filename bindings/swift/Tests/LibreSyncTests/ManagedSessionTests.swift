@@ -74,25 +74,30 @@ final class ManagedSessionTests:XCTestCase {
         _ = try await a.start();_ = try await b.start()
         let providers=await MainActor.run{(LibreSyncBonjour(session:a),LibreSyncBonjour(session:b))}
         try await providers.0.start();try await providers.1.start()
+        let deviceID=try await b.snapshot().identity.device_id
         var found=false
-        for _ in 0..<100 {if try await a.nearby().contains(where:{$0.advertisement?.display_name=="Bonjour B"}){found=true;break};try await Task.sleep(nanoseconds:100_000_000)}
+        for _ in 0..<100 {if try await a.nearby().contains(where:{$0.identity.device_id==deviceID && $0.advertisement?.display_name=="Bonjour B"}){found=true;break};try await Task.sleep(nanoseconds:100_000_000)}
         XCTAssertTrue(found,"system Bonjour should resolve actual Rust listener")
         let i=try await b.invitation(code:true)
         for _ in 0..<100 {if try await a.nearby().contains(where:{$0.invitation?.invitation_id==i.invitation.invitation_id}){break};try await Task.sleep(nanoseconds:100_000_000)}
         let refreshed=try await a.nearby().contains(where:{$0.invitation?.invitation_id==i.invitation.invitation_id});XCTAssertTrue(refreshed)
         try await b.closePairing()
-        for _ in 0..<100 {if try await a.nearby().contains(where:{$0.advertisement?.display_name=="Bonjour B" && $0.invitation==nil}){break};try await Task.sleep(nanoseconds:100_000_000)}
-        let closed=try await a.nearby();XCTAssertTrue(closed.contains{$0.advertisement?.display_name=="Bonjour B" && $0.invitation==nil})
-        _ = try await b.invitation(code:true,ttl:0.5)
-        try await Task.sleep(nanoseconds:1_000_000_000)
-        let expired=try await a.nearby();XCTAssertTrue(expired.contains{$0.advertisement?.display_name=="Bonjour B" && $0.invitation==nil})
+        for _ in 0..<100 {if try await a.nearby().contains(where:{$0.identity.device_id==deviceID && $0.advertisement?.display_name=="Bonjour B" && $0.invitation==nil}){break};try await Task.sleep(nanoseconds:100_000_000)}
+        let closedTXT=try await b.platformAdvertisement().txt;XCTAssertNil(closedTXT["pair_id"])
+        let closed=try await a.nearby();XCTAssertTrue(closed.contains{$0.identity.device_id==deviceID && $0.advertisement?.display_name=="Bonjour B" && $0.invitation==nil})
+        let expiring=try await b.invitation(code:true,ttl:3)
+        for _ in 0..<100 {if try await a.nearby().contains(where:{$0.identity.device_id==deviceID && $0.invitation?.invitation_id==expiring.invitation.invitation_id}){break};try await Task.sleep(nanoseconds:100_000_000)}
+        let reopened=try await a.nearby().contains(where:{$0.identity.device_id==deviceID && $0.invitation?.invitation_id==expiring.invitation.invitation_id});XCTAssertTrue(reopened)
+        for _ in 0..<100 {if try await a.nearby().contains(where:{$0.identity.device_id==deviceID && $0.invitation==nil}), try await b.platformAdvertisement().txt["pair_id"]==nil {break};try await Task.sleep(nanoseconds:100_000_000)}
+        let expiredTXT=try await b.platformAdvertisement().txt;XCTAssertNil(expiredTXT["pair_id"])
+        let expired=try await a.nearby();XCTAssertTrue(expired.contains{$0.identity.device_id==deviceID && $0.advertisement?.display_name=="Bonjour B" && $0.invitation==nil})
         await providers.1.stop()
-        for _ in 0..<100 {if try await a.nearby().allSatisfy({$0.advertisement?.display_name != "Bonjour B"}){break};try await Task.sleep(nanoseconds:100_000_000)}
-        let withdrawn=try await a.nearby();XCTAssertFalse(withdrawn.contains{$0.advertisement?.display_name=="Bonjour B"})
+        for _ in 0..<100 {if try await a.nearby().allSatisfy({$0.identity.device_id != deviceID}){break};try await Task.sleep(nanoseconds:100_000_000)}
+        let withdrawn=try await a.nearby();XCTAssertFalse(withdrawn.contains{$0.identity.device_id==deviceID && $0.advertisement?.display_name=="Bonjour B"})
         try await b.pause();_ = try await b.resume();try await providers.1.start()
-        for _ in 0..<100 {if try await a.nearby().contains(where:{$0.advertisement?.display_name=="Bonjour B"}){break};try await Task.sleep(nanoseconds:100_000_000)}
+        for _ in 0..<100 {if try await a.nearby().contains(where:{$0.identity.device_id==deviceID && $0.advertisement?.display_name=="Bonjour B"}){break};try await Task.sleep(nanoseconds:100_000_000)}
         let restarted=try await a.nearby();let realPort=try await b.platformAdvertisement().port
-        XCTAssertTrue(restarted.contains{$0.advertisement?.display_name=="Bonjour B" && $0.addresses.contains(where:{$0.hasSuffix(":\(realPort)")})})
+        XCTAssertTrue(restarted.contains{$0.identity.device_id==deviceID && $0.advertisement?.display_name=="Bonjour B" && $0.addresses.contains(where:{$0.hasSuffix(":\(realPort)")})})
         await providers.0.stop();await providers.1.stop();await a.close();await b.close()
     }
     func testNativePairBootstrapDurableInboxProofAndReconnect() async throws {
@@ -105,9 +110,27 @@ final class ManagedSessionTests:XCTestCase {
         try await providers.0.start();try await providers.1.start()
         let invite=try await a.invitation()
         _ = try await b.connect(invite.encoded())
+        let aID=try await a.snapshot().identity.device_id;let bID=try await b.snapshot().identity.device_id
         for _ in 0..<100 {
-            for session in [a,b] {for peer in try await session.snapshot().peers {if let preview=try await session.bootstrap(peer:peer.identity.device_id){try await session.resolve(preview,decision:.combine)}}}
-            if try await b.records(adapter:"records").count==2 {break};try await Task.sleep(nanoseconds:100_000_000)
+            if try await a.bootstrap(peer:bID) != nil, try await b.bootstrap(peer:aID) != nil {break}
+            try await Task.sleep(nanoseconds:100_000_000)
+        }
+        // Each merge changes the other device's incoming candidate. Quiesce both
+        // owned runtimes before capturing the exact previews being approved.
+        await providers.0.stop();await providers.1.stop()
+        try await a.pause();try await b.pause()
+        let aPhase=try await a.snapshot().phase;let bPhase=try await b.snapshot().phase
+        XCTAssertEqual(aPhase,.paused);XCTAssertEqual(bPhase,.paused)
+        let aBefore=try await a.records(adapter:"records");let bBefore=try await b.records(adapter:"records")
+        XCTAssertEqual(aBefore.count,1);XCTAssertEqual(bBefore.count,1)
+        let aCandidate=try await a.bootstrap(peer:bID);let bCandidate=try await b.bootstrap(peer:aID)
+        let aPreview=try XCTUnwrap(aCandidate);let bPreview=try XCTUnwrap(bCandidate)
+        try await a.resolve(aPreview,decision:.combine);try await b.resolve(bPreview,decision:.combine)
+        _ = try await a.resume();_ = try await b.resume()
+        try await providers.0.start();try await providers.1.start()
+        for _ in 0..<100 {
+            if try await b.records(adapter:"records").count==2, try await !b.inbox().receipts.isEmpty {break}
+            try await Task.sleep(nanoseconds:100_000_000)
         }
         let inbox=try await b.inbox();XCTAssertEqual(inbox.records.count,2)
         XCTAssertFalse(inbox.receipts.isEmpty)
@@ -129,7 +152,7 @@ final class ManagedSessionTests:XCTestCase {
         for _ in 0..<100{if try await a.snapshot().peers.first?.applied==checkpoint{break};try await Task.sleep(nanoseconds:100_000_000)}
         let acknowledged=try await a.snapshot().peers.first?.applied
         XCTAssertEqual(acknowledged,checkpoint)
-        try await b.pause();_ = try await b.resume()
+        await providers.1.stop();try await b.pause();_ = try await b.resume();try await providers.1.start()
         try await a.set(adapter:"records",id:"after-resume",value:Data("reconnect".utf8))
         for _ in 0..<100 {if try await b.records(adapter:"records").count==3{break};try await Task.sleep(nanoseconds:100_000_000)}
         let records=try await b.records(adapter:"records");XCTAssertEqual(records.count,3)
@@ -169,4 +192,199 @@ private final class TestTaskGate:@unchecked Sendable {
     private let semaphore=DispatchSemaphore(value:0)
     func wait(){semaphore.wait()}
     func signal(){semaphore.signal()}
+}
+
+extension ManagedSessionTests {
+ @MainActor func testReplacedResolvedServiceCannotReplayClosedInvitation() async throws {
+  let a=try await LibreSyncSession.open(.notes(stateDirectory:FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),displayName:"Callback A"),keys:TestKeys())
+  let b=try await LibreSyncSession.open(.notes(stateDirectory:FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),displayName:"Callback B"),keys:TestKeys())
+  _ = try await a.start();_ = try await b.start()
+  let pa=LibreSyncBonjour(session:a);let pb=LibreSyncBonjour(session:b)
+  try await pa.start();try await pb.start();let id=try await b.snapshot().identity.device_id
+  _ = try await b.invitation(code:true);let ad=try await b.platformAdvertisement()
+  for _ in 0..<100 {if try await a.nearby().contains(where:{$0.identity.device_id==id&&$0.invitation != nil}){break};try await Task.sleep(nanoseconds:100_000_000)}
+  let services=try XCTUnwrap(Mirror(reflecting:pa).children.first(where:{$0.label=="services"})?.value as? [String:NetService]);let old=try XCTUnwrap(services[id])
+  try await b.closePairing()
+  for _ in 0..<100 {if try await a.nearby().contains(where:{$0.identity.device_id==id&&$0.invitation==nil}){break};try await Task.sleep(nanoseconds:100_000_000)}
+  let closed=try await a.nearby();XCTAssertTrue(closed.contains{$0.identity.device_id==id&&$0.invitation==nil})
+  let replacement=NetService(domain:"local.",type:"_libresync._tcp.",name:id,port:Int32(ad.port))
+  let browser=try XCTUnwrap(Mirror(reflecting:pa).children.first(where:{$0.label=="browser"})?.value as? NetServiceBrowser)
+  pa.netServiceBrowser(browser,didRemove:old,moreComing:false)
+  pa.netServiceBrowser(browser,didFind:replacement,moreComing:false)
+  pa.netService(old,didUpdateTXTRecord:NetService.data(fromTXTRecord:ad.txt.mapValues{Data($0.utf8)}))
+  let delivery=try XCTUnwrap(Mirror(reflecting:pa).children.first(where:{$0.label=="delivery"})?.value as? LibreSyncDiscoveryDelivery)
+  await delivery.drain()
+  let after=try await a.nearby();XCTAssertFalse(after.contains{$0.identity.device_id==id&&$0.invitation != nil},"Retired callback resurrected a closed invitation")
+  await pa.stop();await pb.stop();await a.close();await b.close()
+ }
+}
+
+extension ManagedSessionTests {
+ @MainActor func testDiscoveryDeliveryCoalescesAndDrainsBeforeWithdrawal() async throws {
+  let entered=expectation(description:"first delivery entered")
+  var release:CheckedContinuation<Void,Never>?
+  var delivered:[String]=[]
+  let delivery=LibreSyncDiscoveryDelivery {change in
+   guard case .discovered(let peer)=change else{return true}
+   let id=peer.identity.device_id
+   if id=="old"{await withCheckedContinuation{release=$0;entered.fulfill()}}
+   delivered.append(id);return true
+  }
+  delivery.submit(.discovered(deliveryPeer("old")),deviceID:"peer")
+  await fulfillment(of:[entered],timeout:2)
+  for i in 0..<1000 {delivery.submit(.discovered(deliveryPeer("new-\(i)")),deviceID:"peer")}
+  XCTAssertEqual(delivery.pendingCount,1)
+  release?.resume();await delivery.drain()
+  XCTAssertEqual(delivered,["old","new-999"])
+ }
+ @MainActor func testDiscoveryStopWaitsForInflightAndDiscardsQueuedHints() async throws {
+  let entered=expectation(description:"first delivery entered")
+  var release:CheckedContinuation<Void,Never>?
+  var delivered:[String]=[]
+  let delivery=LibreSyncDiscoveryDelivery {change in
+   guard case .discovered(let peer)=change else{return true}
+   let id=peer.identity.device_id
+   await withCheckedContinuation{release=$0;entered.fulfill()};delivered.append(id);return true
+  }
+  delivery.submit(.discovered(deliveryPeer("old")),deviceID:"peer")
+  await fulfillment(of:[entered],timeout:2)
+  for i in 0..<1000 {delivery.submit(.discovered(deliveryPeer("queued-\(i)")),deviceID:"peer-\(i)")}
+  delivery.submit(.permission(.unknown),deviceID:"")
+  XCTAssertEqual(delivery.pendingCount,257)
+  var drained=false
+  let stop=Task{await delivery.discardAndDrain();drained=true}
+  await Task.yield();XCTAssertFalse(drained)
+  release?.resume();await stop.value
+  XCTAssertTrue(drained);XCTAssertEqual(delivered,["old"]);XCTAssertEqual(delivery.pendingCount,0)
+ }
+}
+
+extension ManagedSessionTests {
+ @MainActor func testDiscoveryWithdrawalHasPriorityAtCapacity() async throws {
+  let entered=expectation(description:"old hint in flight")
+  var release:CheckedContinuation<Void,Never>?
+  var values:[String]=[]
+  let delivery=LibreSyncDiscoveryDelivery {change in
+   switch change {
+   case .discovered(let peer):
+    if peer.identity.device_id=="old"{await withCheckedContinuation{release=$0;entered.fulfill()}}
+    values.append("discovered:"+peer.identity.device_id)
+   case .withdrawn(let id):values.append("withdrawn:"+id)
+   case .permission:break
+   }
+   return true
+  }
+  func peer(_ id:String)->LibreSyncNearbyDevice{LibreSyncNearbyDevice(identity:LibreSyncIdentity(device_id:id,user_id:"u",app_id:"app"),addresses:[],advertisement:nil,invitation:nil)}
+  delivery.submit(.discovered(peer("old")),deviceID:"old")
+  await fulfillment(of:[entered],timeout:2)
+  for i in 0..<256{delivery.submit(.discovered(peer("queued-\(i)")),deviceID:"queued-\(i)")}
+  delivery.submit(.withdrawn("old"),deviceID:"old")
+  XCTAssertEqual(delivery.pendingCount,256)
+  release?.resume();await delivery.drain()
+  XCTAssertEqual(Array(values.prefix(2)),["discovered:old","withdrawn:old"])
+  XCTAssertEqual(values.count,257)
+ }
+}
+
+extension ManagedSessionTests {
+ @MainActor func testDiscoveryOwnedWithdrawalCannotBeDroppedByBogusWithdrawalCapacity() async throws {
+  let entered=expectation(description:"blocking hint")
+  var release:CheckedContinuation<Void,Never>?
+  var withdrawn:[String]=[]
+  let delivery=LibreSyncDiscoveryDelivery {change in
+   switch change {
+   case .discovered(let p):if p.identity.device_id=="block"{await withCheckedContinuation{release=$0;entered.fulfill()}}
+   case .withdrawn(let id):withdrawn.append(id)
+   case .permission:break
+   }
+   return true
+  }
+  func peer(_ id:String)->LibreSyncNearbyDevice{LibreSyncNearbyDevice(identity:LibreSyncIdentity(device_id:id,user_id:"u",app_id:"app"),addresses:[],advertisement:nil,invitation:nil)}
+  delivery.submit(.discovered(peer("victim")),deviceID:"victim");await delivery.drain()
+  delivery.submit(.discovered(peer("block")),deviceID:"block");await fulfillment(of:[entered],timeout:2)
+  for i in 0..<256{delivery.submit(.withdrawn("unknown-\(i)"),deviceID:"unknown-\(i)")}
+  delivery.submit(.withdrawn("victim"),deviceID:"victim")
+  release?.resume();await delivery.drain()
+  XCTAssertTrue(withdrawn.contains("victim"),"Owned hint withdrawal was dropped")
+ }
+ @MainActor func testDiscoveryOwnedWithdrawalSurvivesStopWhileQueued() async throws {
+  let entered=expectation(description:"blocking hint")
+  var release:CheckedContinuation<Void,Never>?
+  var withdrawn:[String]=[]
+  let delivery=LibreSyncDiscoveryDelivery {change in
+   switch change {
+   case .discovered(let p):if p.identity.device_id=="block"{await withCheckedContinuation{release=$0;entered.fulfill()}}
+   case .withdrawn(let id):withdrawn.append(id)
+   case .permission:break
+   }
+   return true
+  }
+  func peer(_ id:String)->LibreSyncNearbyDevice{LibreSyncNearbyDevice(identity:LibreSyncIdentity(device_id:id,user_id:"u",app_id:"app"),addresses:[],advertisement:nil,invitation:nil)}
+  delivery.submit(.discovered(peer("victim")),deviceID:"victim");await delivery.drain()
+  delivery.submit(.discovered(peer("block")),deviceID:"block");await fulfillment(of:[entered],timeout:2)
+  delivery.submit(.withdrawn("victim"),deviceID:"victim")
+  let stop=Task{await delivery.discardAndDrain()};await Task.yield()
+  release?.resume();await stop.value
+  XCTAssertTrue(withdrawn.contains("victim"),"Stop discarded an owned withdrawal")
+ }
+}
+
+@MainActor private func deliveryPeer(_ id:String)->LibreSyncNearbyDevice{LibreSyncNearbyDevice(identity:LibreSyncIdentity(device_id:id,user_id:"u",app_id:"app"),addresses:[],advertisement:nil,invitation:nil)}
+
+extension ManagedSessionTests {
+ @MainActor func testFailedDiscoveryDoesNotOwnHintAndFailedCleanupRetriesOnLaterStop() async throws {
+  var allowCleanup=false
+  var withdrawals:[String]=[]
+  let delivery=LibreSyncDiscoveryDelivery {change in
+   switch change {
+   case .discovered(let peer):return peer.identity.device_id != "denied"
+   case .withdrawn(let id):withdrawals.append(id);return allowCleanup
+   case .permission:return true
+   }
+  }
+  delivery.submit(.discovered(deliveryPeer("denied")),deviceID:"denied");await delivery.drain()
+  XCTAssertEqual(delivery.ownedCount,0)
+  delivery.submit(.withdrawn("denied"),deviceID:"denied");await delivery.drain();XCTAssertTrue(withdrawals.isEmpty)
+  delivery.submit(.discovered(deliveryPeer("owned")),deviceID:"owned");await delivery.drain()
+  await delivery.discardAndDrain();XCTAssertEqual(delivery.ownedCount,1)
+  allowCleanup=true;await delivery.discardAndDrain()
+  XCTAssertEqual(delivery.ownedCount,0);XCTAssertEqual(withdrawals,["owned","owned"])
+ }
+}
+
+private final class CachedTXTService:NetService {
+ let cached:Data;let resolved:[Data]
+ init(service:NetService,cached:Data){self.cached=cached;self.resolved=service.addresses ?? [];super.init(domain:service.domain,type:service.type,name:service.name,port:Int32(service.port))}
+ override var addresses:[Data]?{resolved}
+ override func txtRecordData()->Data?{cached}
+}
+extension ManagedSessionTests {
+ @MainActor func testDuplicateFindKeepsTheMonitoredService() async throws {
+  let s=try await LibreSyncSession.open(.notes(stateDirectory:FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),displayName:"Duplicate find"),keys:TestKeys());_ = try await s.start()
+  let p=LibreSyncBonjour(session:s);try await p.start()
+  let browser=try XCTUnwrap(Mirror(reflecting:p).children.first(where:{$0.label=="browser"})?.value as? NetServiceBrowser)
+  let first=NetService(domain:"local.",type:"_libresync._tcp.",name:"duplicate",port:12345)
+  let duplicate=NetService(domain:"local.",type:"_libresync._tcp.",name:"duplicate",port:12345)
+  p.netServiceBrowser(browser,didFind:first,moreComing:false);p.netServiceBrowser(browser,didFind:duplicate,moreComing:false)
+  let tracked=try XCTUnwrap(Mirror(reflecting:p).children.first(where:{$0.label=="services"})?.value as? [String:NetService])
+  XCTAssertTrue(tracked["duplicate"]===first,"Duplicate find retired a live monitoring owner")
+  await p.stop();await s.close()
+ }
+ @MainActor func testResolveCacheCannotReplayAfterNewerTXTCallback() async throws {
+  let a=try await LibreSyncSession.open(.notes(stateDirectory:FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),displayName:"Cache A"),keys:TestKeys())
+  let b=try await LibreSyncSession.open(.notes(stateDirectory:FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),displayName:"Cache B"),keys:TestKeys())
+  _ = try await a.start();_ = try await b.start();let pa=LibreSyncBonjour(session:a);let pb=LibreSyncBonjour(session:b);try await pa.start();try await pb.start()
+  let id=try await b.snapshot().identity.device_id;_ = try await b.invitation(code:true);let oldAd=try await b.platformAdvertisement()
+  for _ in 0..<100{if try await a.nearby().contains(where:{$0.identity.device_id==id&&$0.invitation != nil}){break};try await Task.sleep(nanoseconds:100_000_000)}
+  let browser=try XCTUnwrap(Mirror(reflecting:pa).children.first(where:{$0.label=="browser"})?.value as? NetServiceBrowser)
+  let tracked=try XCTUnwrap(Mirror(reflecting:pa).children.first(where:{$0.label=="services"})?.value as? [String:NetService]);let original=try XCTUnwrap(tracked[id])
+  let delivery=try XCTUnwrap(Mirror(reflecting:pa).children.first(where:{$0.label=="delivery"})?.value as? LibreSyncDiscoveryDelivery)
+  let stale=NetService.data(fromTXTRecord:oldAd.txt.mapValues{Data($0.utf8)});let cached=CachedTXTService(service:original,cached:stale)
+  pa.netServiceBrowser(browser,didRemove:original,moreComing:false);pa.netServiceBrowser(browser,didFind:cached,moreComing:false);pa.netServiceDidResolveAddress(cached);await delivery.drain()
+  try await b.closePairing();let closedAd=try await b.platformAdvertisement();pa.netService(cached,didUpdateTXTRecord:NetService.data(fromTXTRecord:closedAd.txt.mapValues{Data($0.utf8)}));await delivery.drain()
+  let closed=try await a.nearby();XCTAssertTrue(closed.contains{$0.identity.device_id==id&&$0.invitation==nil})
+  pa.netServiceDidResolveAddress(cached);await delivery.drain()
+  let after=try await a.nearby();XCTAssertFalse(after.contains{$0.identity.device_id==id&&$0.invitation != nil},"Resolve cache replayed older invitation metadata")
+  await pa.stop();await pb.stop();await a.close();await b.close()
+ }
 }

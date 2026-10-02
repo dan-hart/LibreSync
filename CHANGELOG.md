@@ -12,6 +12,7 @@ narrative context live in `RELEASES.md`.
 
 ### Fixed
 
+- Swift Bonjour replaces changed invitation publications, preserves current TXT metadata across duplicate resolve callbacks, ignores retired services, and drains bounded owned discovery updates before withdrawing stopped hints.
 - Release managed Session and companion leases after runtime teardown even when child processes retain duplicated descriptors; preserve live-owner exclusion and kernel crash cleanup.
 - Keep managed registry ID allocation compatible with current stable Rust without wrapping or reusing IDs.
 - Install supported Android `platform-tools` in CI instead of the removed legacy `tools` package.
