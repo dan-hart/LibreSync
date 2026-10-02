@@ -947,7 +947,7 @@ dependencies = [
 
 [[package]]
 name = "libresync"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "base64",
  "chacha20poly1305",
@@ -975,7 +975,7 @@ dependencies = [
 
 [[package]]
 name = "libresync-alwayson-daemon"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "base64",
  "ctrlc",
@@ -990,7 +990,7 @@ dependencies = [
 
 [[package]]
 name = "libresync-cli"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "assert_cmd",
  "base64",
@@ -1010,7 +1010,7 @@ dependencies = [
 
 [[package]]
 name = "libresync-ffi"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "base64",
  "flume 0.11.1",

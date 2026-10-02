@@ -6,6 +6,8 @@ narrative context live in `RELEASES.md`.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-01
+
 - Add managed C, Swift and Android SDKs with typed sessions, secure platform storage, native QR/code discovery and consent UI, durable proof-bearing inbox acknowledgements, complete Apple slices and Android JNI/AAR packaging.
 
 ### Added
@@ -25,7 +27,7 @@ narrative context live in `RELEASES.md`.
 ### Changed
 - Migrate AlwaysOn to stable Tauri 2 and Linux WebKitGTK 4.1; use native macOS Keychain and fail closed on unavailable secure storage. Legacy config/data/trust remain recovery-only and are never automatically enrolled.
 - Update mDNS multicast rate limiting and macOS interface selection to keep concurrent discovery and enrollment responsive; retain scoped IPv6 endpoints.
-- Refresh the README with Shields.io badges, current 0.6.1 features, installation and pairing steps, SDK guidance, and platform limitations.
+- Refresh the README with Shields.io badges, managed 0.7.0 features, installation and pairing steps, SDK guidance, and platform limitations.
 - Replace the README logo with a compact crop of the updated artwork and light/dark variants that follow the GitHub theme.
 
 ## [0.6.1] - 2026-09-14

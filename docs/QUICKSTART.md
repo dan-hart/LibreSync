@@ -1,5 +1,12 @@
 # Quickstart
 
+For new app integrations, use [managed Session](MANAGED-SESSION.md) and the [native SDK installation guide](SDK.md). Run `cargo run -p libresync --example managed_two_peers` for automatic enrollment, first exchange, edits, resume and exact app processing receipts. Native notes samples include Connect/Devices/Status UI.
+
+Use matching reviewed app/schema policies on each device. QR/code pairing is authenticated and expiring; named discovery is a hint. Empty destinations import; populated destinations require Combine/Cancel consent. App saves precede Applied acknowledgement. Offline means waiting, and mobile apps resume when foreground execution is available.
+
+## Legacy CLI flow
+
+
 LibreSync lets apps sync data directly between devices on the same LAN with mandatory E2EE.
 
 ## 1) Install
@@ -9,7 +16,7 @@ brew install dan-hart/tap/libresync
 ```
 From a release tag:
 ```
-cargo install --git https://github.com/dan-hart/LibreSync --tag v0.6.1 libresync-cli
+cargo install --git https://github.com/dan-hart/LibreSync --tag v0.7.0 libresync-cli
 ```
 Or from a local checkout:
 ```

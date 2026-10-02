@@ -1,0 +1,24 @@
+# Managed release acceptance map
+
+These executable scenarios map the ten UX/DX improvements to implementation evidence. The map describes assertions; the release operator records final command results and exact source/artifact hashes separately. Passing tests do not establish two-minute human usability or physical-device privacy/camera acceptance.
+
+| Improvement | Executable acceptance | Integration guide |
+| --- | --- | --- |
+| 1. Managed lifecycle | `managed_session::two_sessions_pair_and_automatically_sync_edits_resume_and_reopen`, duplicate-open and failed-persistence cases; `managed_two_peers` example | [Session ownership](MANAGED-SESSION.md) |
+| 2. QR/code pairing | `pairing::socket_tests` covers invalid transcripts, no key before confirmation/prepared phase, expired/revoked invitation, replay and concurrent claims; managed `session_code_entry_uses_advertised_descriptor_and_rechecks_contract`; native QR roundtrip | [Pairing boundary](../SECURITY.md#managed-pairing-boundary) |
+| 3. Named compatible discovery | managed independent-process discovery; companion `nearby_hints_refuse_other_apps_schema_digest_old_protocol_and_missing_metadata`; Swift real system Bonjour registration/resolve/refresh/withdrawal | [Native discovery](../bindings/swift/README.md) |
+| 4. Permission/lifecycle guidance | managed `platform_unknown_is_preserved_and_slow_event_consumers_do_not_block_local_commits`; Android `secureStoreDistinguishesAbsentDeniedAndCorruptFilesAndActualApi37Permission` and rapid lifecycle transitions | [Apple setup](../bindings/swift/README.md), [Android setup](../bindings/kotlin/README.md) |
+| 5. Automatic resume/reconnect | managed lifecycle/reopen, `wake_syncs_promptly_even_with_long_periodic_catchup`, `local_edits_while_paused_remain_pending_and_resume_automatically`; native reconnect | [Scheduling](MANAGED-SESSION.md) |
+| 6. Truthful status | managed `remote_stored_is_distinct_from_app_applied_and_removal_preserves_data`; core captured-export concurrent edit and checkpoint proof replay tests; Swift/Android deliberate save failure then exact durable acknowledgement | [App transaction](MANAGED-SESSION.md#truthful-status-and-app-processing) |
+| 7. Safe first sync | managed populated bootstrap/stale consent, cancel/restart, encrypted premerge recovery, atomic multi-adapter validation; optimized 32/64 MiB transfer and populated-pair tests | [Bootstrap](MANAGED-SESSION.md#records-and-atomic-merge) |
+| 8. Multi-app companion | `companion::actual_momentum_stored_restart_forward_then_app_applied_and_group_isolation`, independent apps/keys restart, exact Momentum wire collision/tombstone, legacy migration, backup fault tests; Tauri Rust and dashboard Node tests | [Companion](COMPANION.md), [pinned Momentum opt-in patch](MOMENTUM-MANAGED-MIGRATION.md) |
+| 9. Repair/pause/remove | managed removal socket cancellation/fencing, certificate/repair and preserved-data cases; companion encrypted backup and pause/remove persistence | [Trust repair](MANAGED-SESSION.md#connect-devices) |
+| 10. Native SDKs and components | FFI22 ownership/ABI tests, Swift12 runtime tests, Android6 real JNI/Keystore/Flow tests; five Apple slices, generic iOS compile, both Android ABIs/16 KiB LOAD alignment, licensed core/Compose AARs/sample and freshly extracted release consumers | [SDK installation](SDK.md), [managed ABI](MANAGED-C-ABI.md) |
+
+Run the ordinary parallel workspace and all-feature core suites, plus the separate optimized giant tests, with commands in [the release checklist](RELEASING.md). Swift tests exercise actual macOS native sessions. Local Android runtime evidence uses ARM64 API37/16 KiB; CI separately requires actual x86_64 API37/16 KiB SDK/ABI/page-size assertions before its runtime suite. A failed or unavailable CI run is not runtime proof.
+
+## Compatibility and proof limits
+
+Legacy Engine/C/Swift APIs remain. Historical raw Kotlin Engine/backup functions explicitly refuse because the old wrapper never implemented JNI. Managed pairing version2 does not downgrade. Native generic policy is reviewed transactional `logical-records-v1`; arbitrary app schemas need a pure Rust policy. Session storage and app database storage are distinct; Stored means durable peer storage, Applied requires the app's coherent durable records-and-receipts save.
+
+Momentum's opt-in patch is pinned to `766064bfa340a391d6a9465b60a030e1dc0c9f95`; existing app runtime/UI is not automatically migrated. LAN operation is local-only with no cloud service requirement. iOS suspension and Android background limits remain. Current listener defaults to IPv4; no IPv6 runtime support claim. Physical iOS privacy/camera, physical Android hardware, two-minute human usability, actual Finder/Dock reopen and notarized/signed GUI acceptance require additional evidence and are unverified here.

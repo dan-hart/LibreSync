@@ -2005,7 +2005,7 @@ dependencies = [
 
 [[package]]
 name = "libresync"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "base64 0.22.1",
  "chacha20poly1305",
@@ -2014,6 +2014,7 @@ dependencies = [
  "hkdf",
  "hmac",
  "if-addrs 0.10.2",
+ "libc",
  "log",
  "mdns-sd",
  "notify",
@@ -2030,7 +2031,7 @@ dependencies = [
 
 [[package]]
 name = "libresync-always-on"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "base64 0.22.1",
  "libresync",
