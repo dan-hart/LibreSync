@@ -4,8 +4,8 @@ After=network-online.target
 
 [Service]
 Type=simple
-# Add optional flags like --auto-accept, --auto-approve, or --pairing-secret
-ExecStart=/usr/local/bin/libresync-alwayson-daemon
+# Secure OS keys are the default. Explicit --file-keys is optional for headless use.
+ExecStart=/usr/local/bin/libresync-alwayson-daemon --root %h/.local/share/libresync/managed-v1 serve
 Restart=on-failure
 RestartSec=5
 

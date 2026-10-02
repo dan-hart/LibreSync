@@ -26,22 +26,27 @@ jobs:
       - name: Cargo clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Cargo test (workspace)
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
       - name: Cargo test (core, all features)
-        run: cargo test -p libresync --all-features
+        run: cargo test -p libresync --all-features --locked
       - name: Two-device concurrent-edit and delta tests
         run: cargo test -p libresync --test two_device -- --nocapture
       - name: FFI build (static + dynamic library)
         run: cargo build -p libresync-ffi --release
       - name: FFI tests
         run: cargo test -p libresync-ffi
-      - name: Universal FFI library + Swift package (macOS)
+      - name: Optimized giant transfer and pairing acceptance
+        run: cargo test -p libresync --release --all-features --locked 'session::network::tests::' -- --ignored --test-threads=1
+      - name: Complete Apple SDK, Swift runtime and generic iOS
         if: runner.os == 'macOS'
+        env:
+          LIBRESYNC_USE_LOCAL_XCFRAMEWORK: '1'
         run: |
-          scripts/build-macos-universal.sh
-          cd bindings/swift
-          swift build
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+          scripts/build-apple-sdk.sh
           swift test
+          cd bindings/swift
+          xcodebuild -scheme LibreSync -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/libresync-ios" CODE_SIGNING_ALLOWED=NO build
 
   release-checks:
     name: release readiness, audits, coverage (ubuntu)
@@ -63,12 +68,120 @@ jobs:
       - name: Security audit
         run: ./scripts/utilities/security-audit.sh
       - name: Cargo audit
-        run: cargo audit
+        run: |
+          cargo audit --file Cargo.lock
+          cargo audit --file alwaysOn/libresync-always-on/src-tauri/Cargo.lock
       - name: Coverage gate
-        run: cargo llvm-cov --workspace --summary-only --fail-under-regions 75
+        run: cargo llvm-cov --workspace --all-features --locked --summary-only --fail-under-regions 75 -- --test-threads=1
       - name: Install AlwaysOn build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.0-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
       - name: AlwaysOn smoke build
-        run: cargo check --manifest-path alwaysOn/libresync-always-on/src-tauri/Cargo.toml
+        run: |
+          cargo build --locked --manifest-path alwaysOn/libresync-always-on/src-tauri/Cargo.toml
+          cargo test --locked --manifest-path alwaysOn/libresync-always-on/src-tauri/Cargo.toml
+          cargo clippy --locked --manifest-path alwaysOn/libresync-always-on/src-tauri/Cargo.toml --all-targets -- -D warnings
+          node --test alwaysOn/libresync-always-on/tests/*.test.*
+
+  android:
+    name: Android JNI, Compose, sample and API37 16 KiB runtime
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          cmdline-tools-version: '15859902'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - name: Install pinned Android tools and real 16 KiB system image
+        run: sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;27.2.12479018' 'system-images;android-37.0;google_apis_ps16k;x86_64' emulator
+      - name: Build both JNI ABIs, licensed AARs and Maven metadata
+        run: |
+          scripts/build-android-sdk.sh
+          bindings/kotlin/gradlew -p bindings/kotlin :sample:assembleDebug
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run actual x86_64 API37 16 KiB JNI tests
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/libresync-avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          echo no | avdmanager create avd --force --name libresync37 --package 'system-images;android-37.0;google_apis_ps16k;x86_64'
+          # avdmanager currently parses ApiLevel=37.0 as android-0; correct only the AVD target.
+          sed -i 's/^target=.*/target=android-37/' "$ANDROID_AVD_HOME/libresync37.ini"
+          emulator_bin="$ANDROID_HOME/emulator/emulator"
+          adb_bin="$ANDROID_HOME/platform-tools/adb"
+          test -x "$emulator_bin" || { echo "Missing SDK emulator executable: $emulator_bin" >&2; exit 1; }
+          test -x "$adb_bin" || { echo "Missing SDK ADB executable: $adb_bin" >&2; exit 1; }
+          export ANDROID_SERIAL=emulator-5554
+          emulator_log="$RUNNER_TEMP/emulator.log"
+          "$emulator_bin" -avd libresync37 -port 5554 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect > "$emulator_log" 2>&1 &
+          emulator_pid=$!
+          cleanup() {
+            status=$?
+            trap - EXIT
+            kill "$emulator_pid" 2>/dev/null || true
+            for attempt in $(seq 1 10); do
+              kill -0 "$emulator_pid" 2>/dev/null || break
+              sleep 1
+            done
+            kill -KILL "$emulator_pid" 2>/dev/null || true
+            wait "$emulator_pid" 2>/dev/null || true
+            if [ "$status" -ne 0 ]; then tail -n 120 "$emulator_log" >&2; fi
+            exit "$status"
+          }
+          trap cleanup EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          timeout --kill-after=1s 10s "$adb_bin" start-server
+          boot_completed=''
+          boot_deadline=$((SECONDS + 360))
+          for attempt in $(seq 1 180); do
+            remaining=$((boot_deadline - SECONDS))
+            [ "$remaining" -gt 0 ] || break
+            probe_seconds=2
+            [ "$remaining" -ge "$probe_seconds" ] || probe_seconds=$remaining
+            if ! kill -0 "$emulator_pid" 2>/dev/null; then
+              echo 'Owned emulator exited before boot completed' >&2
+              exit 1
+            fi
+            # Each ADB probe is bounded; an absent device never blocks the loop.
+            if ! boot_completed="$(timeout --kill-after=1s "${probe_seconds}s" "$adb_bin" -s "$ANDROID_SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"; then
+              boot_completed=''
+            fi
+            [ "$boot_completed" = 1 ] && break
+            remaining=$((boot_deadline - SECONDS))
+            [ "$remaining" -gt 0 ] || break
+            sleep_seconds=2
+            [ "$remaining" -ge "$sleep_seconds" ] || sleep_seconds=$remaining
+            sleep "$sleep_seconds"
+          done
+          test "$boot_completed" = 1
+          kill -0 "$emulator_pid"
+          sdk="$(timeout --kill-after=1s 10s "$adb_bin" -s "$ANDROID_SERIAL" shell getprop ro.build.version.sdk | tr -d '\r')"
+          abi="$(timeout --kill-after=1s 10s "$adb_bin" -s "$ANDROID_SERIAL" shell getprop ro.product.cpu.abi | tr -d '\r')"
+          page_size="$(timeout --kill-after=1s 10s "$adb_bin" -s "$ANDROID_SERIAL" shell getconf PAGE_SIZE | tr -d '\r')"
+          test "$sdk" = 37
+          test "$abi" = x86_64
+          test "$page_size" = 16384
+          printf 'SDK=%s\nABI=%s\nPAGE_SIZE=%s\n' "$sdk" "$abi" "$page_size"
+          bindings/kotlin/gradlew -p bindings/kotlin connectedDebugAndroidTest
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-runtime-evidence
+          path: |
+            ${{ runner.temp }}/emulator.log
+            bindings/kotlin/build/reports/androidTests

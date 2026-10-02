@@ -1,0 +1,3 @@
+-keep class libresync.ManagedNative { *; }
+-keep class libresync.LibreSyncNative { *; }
+-keep class * implements libresync.LibreSyncKeyStorage { public *; }

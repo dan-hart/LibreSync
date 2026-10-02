@@ -1,25 +1,13 @@
 {
-  "build": {
-    "beforeBuildCommand": "",
-    "beforeDevCommand": "",
-    "devPath": "../src",
-    "distDir": "../src"
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "LibreSyncAlwaysOn",
+  "version": "0.7.0",
+  "identifier": "com.codedbydan.libresync.alwayson",
+  "build": { "frontendDist": "../src" },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [{ "label": "main", "title": "LibreSync AlwaysOn", "width": 1050, "height": 780, "minWidth": 700, "minHeight": 600 }],
+    "security": { "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; script-src 'self'; style-src 'self'" }
   },
-  "package": {
-    "productName": "LibreSyncAlwaysOn",
-    "version": "0.6.1"
-  },
-  "tauri": {
-    "allowlist": {},
-    "systemTray": {
-      "iconPath": "icons/icon.png"
-    },
-    "windows": [
-      {
-        "title": "LibreSyncAlwaysOn",
-        "width": 900,
-        "height": 600
-      }
-    ]
-  }
+  "bundle": { "active": true, "icon": ["icons/icon.png"] }
 }

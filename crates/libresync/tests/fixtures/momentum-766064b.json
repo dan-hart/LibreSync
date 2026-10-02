@@ -1,0 +1,228 @@
+{
+  "adapter_id": "ops",
+  "app_id": "io.github.dan_hart.Momentum",
+  "generator": "sp-p2p::OpAdapter::load_records",
+  "records": [
+    {
+      "clock": {
+        "counter": 1,
+        "device_id": "momentum-fixture-phone"
+      },
+      "entity": "Op",
+      "field_clocks": {
+        "action": {
+          "counter": 1,
+          "device_id": "momentum-fixture-phone"
+        },
+        "op": {
+          "counter": 1,
+          "device_id": "momentum-fixture-phone"
+        },
+        "origin": {
+          "counter": 1,
+          "device_id": "momentum-fixture-phone"
+        },
+        "t": {
+          "counter": 1,
+          "device_id": "momentum-fixture-phone"
+        }
+      },
+      "fields": {
+        "action": {
+          "type": "String",
+          "value": "{\"AddTask\":{\"bottom\":true,\"task\":{\"attachments\":[],\"created\":1790894711382,\"id\":\"01a0f9a4-a256-76a0-8ee6-20757212d5c9\",\"isDone\":false,\"projectId\":\"INBOX_PROJECT\",\"subTaskIds\":[],\"tagIds\":[],\"timeEstimate\":0.0,\"timeSpent\":0.0,\"timeSpentOnDay\":{},\"title\":\"Local sync example\"}}}"
+        },
+        "op": {
+          "type": "String",
+          "value": "{\"a\":\"HA\",\"c\":\"momentum-fixture-phone\",\"d\":\"01a0f9a4-a256-76a0-8ee6-20757212d5c9\",\"e\":\"TASK\",\"id\":\"01a0f9a4-a257-7e22-a50c-bf8325ea6dad\",\"o\":\"CRT\",\"p\":{\"isAddToBacklog\":false,\"isAddToBottom\":true,\"isIgnoreShortSyntax\":true,\"task\":{\"attachments\":[],\"created\":1790894711382,\"id\":\"01a0f9a4-a256-76a0-8ee6-20757212d5c9\",\"isDone\":false,\"projectId\":\"INBOX_PROJECT\",\"subTaskIds\":[],\"tagIds\":[],\"timeEstimate\":0.0,\"timeSpent\":0.0,\"timeSpentOnDay\":{},\"title\":\"Local sync example\"},\"workContextId\":\"INBOX_PROJECT\",\"workContextType\":\"PROJECT\"},\"s\":4,\"t\":1790894711383,\"v\":{\"momentum-fixture-phone\":1}}"
+        },
+        "origin": {
+          "type": "String",
+          "value": "momentum-fixture-phone"
+        },
+        "t": {
+          "type": "I64",
+          "value": 1790894711383
+        }
+      },
+      "id": "01a0f9a4-a257-7e22-a50c-bf8325ea6dad",
+      "schema": "momentum",
+      "tombstone": false,
+      "updated_at": 1790894711383
+    },
+    {
+      "clock": {
+        "counter": 2,
+        "device_id": "momentum-fixture-phone"
+      },
+      "entity": "Op",
+      "fields": {},
+      "id": "older-operation-tombstone",
+      "schema": "momentum",
+      "tombstone": true,
+      "updated_at": 1
+    },
+    {
+      "clock": {
+        "counter": 3,
+        "device_id": "momentum-fixture-phone"
+      },
+      "entity": "Snapshot",
+      "field_clocks": {
+        "gz_b64": {
+          "counter": 3,
+          "device_id": "momentum-fixture-phone"
+        },
+        "origin": {
+          "counter": 3,
+          "device_id": "momentum-fixture-phone"
+        },
+        "t": {
+          "counter": 3,
+          "device_id": "momentum-fixture-phone"
+        }
+      },
+      "fields": {
+        "gz_b64": {
+          "type": "String",
+          "value": "H4sIAAAAAAAA/+VTXW/TMBT9K5X3AlKLkpB+vrVNgEDXTGumgRCqXMdNzRI7sp1t1eh/59ppunbbw4TgiRdLvl/n3HvPfUAaqxs0ekAsVWj0HTkudtZD7Hew1+11+j3sdAaU9jqe0+/2PddLu2SIfrQR5ZppRpVJfVWOhUCj1wW3EVTPKYTPBMF5S205adF7XJRgNM6ChgperCHGeefUpkUJrNCoc2qIeYC3AL9rI6YCwSFjjXNF26iU4iclOjK0ovkk/rq8uIw/h9PEQOAsshOBXlW1SmBKhz+RFIAhy+0PncHQ77vu+4HXRlhrTDYFYNrA3W53wDia8CnSk1GeOpuZPSO3H07EV+Lekm3YvXp/K0xucpGd9MWFpocPU2NJNuzW9LmfF1OfWJpS/kGK4pzy6sgRcrzK6aQu+mgnggNN1tDc0IKapjAhdlPobL32nYGLaj6ZFBVPowJnNMASVMmrPH/mmrFso5/74lsqc7yNS0yYhn17oIFNRccNVNdxkLVcSNCN3B6brrHkhz80XmkxFVxLrCBTy8q2GDDV9FgjJswUPmipqSqz1RvX99std9CHp9d9C0XvaoQz6roDr4dAGDi9xZzQdLrOzEjuhDSjC+9LIfWCas14ZhVBRG4XG4yTEAotkvGlkUA4D+BNovNwOZ3F0y/2k8zCxTKaT2dXQTT/uFxcTcyqDdtyYqjta1j2oWmgoIloRmmtC42lfsF+DfROzYqWWMIZGAUpW731q4WM5FO4sZg3cSc3Z08CTuvoHJI4GH97ega1sZF//XuUfSJSuOhj2ZujFLmQB9BaeHerpao4N7Ev3uz7P9AkQv9Qkf7fUGTtfhTkWc8fdsPgv1LhXmjq5pKWsPh9e6wRy5HWIPI3gjsk/AUHAAA="
+        },
+        "origin": {
+          "type": "String",
+          "value": "momentum-fixture-phone"
+        },
+        "t": {
+          "type": "I64",
+          "value": 1790894711385
+        }
+      },
+      "id": "latest",
+      "schema": "momentum",
+      "tombstone": false,
+      "updated_at": 1790894711385
+    }
+  ],
+  "snapshot_json": {
+    "project": {
+      "entities": {
+        "INBOX_PROJECT": {
+          "advancedCfg": {
+            "worklogExportSettings": {
+              "cols": [
+                "DATE",
+                "START",
+                "END",
+                "TIME_CLOCK",
+                "TITLES_INCLUDING_SUB"
+              ],
+              "groupBy": "DATE",
+              "roundEndTimeTo": null,
+              "roundStartTimeTo": null,
+              "roundWorkTimeTo": null,
+              "separateTasksBy": " | "
+            }
+          },
+          "backlogTaskIds": [],
+          "doneOn": null,
+          "icon": "inbox",
+          "id": "INBOX_PROJECT",
+          "isArchived": false,
+          "isDone": false,
+          "isEnableBacklog": false,
+          "isHiddenFromMenu": false,
+          "noteIds": [],
+          "taskIds": [
+            "01a0f9a4-a256-76a0-8ee6-20757212d5c9"
+          ],
+          "theme": {
+            "accent": "#ff4081",
+            "backgroundImageDark": null,
+            "backgroundImageLight": null,
+            "backgroundOverlayOpacity": 20,
+            "hueAccent": "500",
+            "huePrimary": "500",
+            "hueWarn": "500",
+            "isAutoContrast": true,
+            "isDisableBackgroundTint": false,
+            "primary": "rgb(144, 187, 165)",
+            "warn": "#e11826"
+          },
+          "title": "Inbox"
+        }
+      },
+      "ids": [
+        "INBOX_PROJECT"
+      ]
+    },
+    "tag": {
+      "entities": {
+        "TODAY": {
+          "advancedCfg": {
+            "worklogExportSettings": {
+              "cols": [
+                "DATE",
+                "START",
+                "END",
+                "TIME_CLOCK",
+                "TITLES_INCLUDING_SUB"
+              ],
+              "groupBy": "DATE",
+              "roundEndTimeTo": null,
+              "roundStartTimeTo": null,
+              "roundWorkTimeTo": null,
+              "separateTasksBy": " | "
+            }
+          },
+          "color": null,
+          "created": 1790894711383,
+          "icon": "wb_sunny",
+          "id": "TODAY",
+          "taskIds": [],
+          "theme": {
+            "accent": "#ff4081",
+            "backgroundImageDark": "",
+            "backgroundImageLight": null,
+            "backgroundOverlayOpacity": 20,
+            "hueAccent": "500",
+            "huePrimary": "400",
+            "hueWarn": "500",
+            "isAutoContrast": true,
+            "isDisableBackgroundTint": true,
+            "primary": "#6495ED",
+            "warn": "#e11826"
+          },
+          "title": "Today"
+        }
+      },
+      "ids": [
+        "TODAY"
+      ]
+    },
+    "task": {
+      "entities": {
+        "01a0f9a4-a256-76a0-8ee6-20757212d5c9": {
+          "attachments": [],
+          "created": 1790894711382,
+          "id": "01a0f9a4-a256-76a0-8ee6-20757212d5c9",
+          "isDone": false,
+          "projectId": "INBOX_PROJECT",
+          "subTaskIds": [],
+          "tagIds": [],
+          "timeEstimate": 0.0,
+          "timeSpent": -0.0,
+          "timeSpentOnDay": {},
+          "title": "Local sync example"
+        }
+      },
+      "ids": [
+        "01a0f9a4-a256-76a0-8ee6-20757212d5c9"
+      ]
+    },
+    "taskRepeatCfg": {
+      "entities": {},
+      "ids": []
+    }
+  },
+  "source_commit": "766064bfa340a391d6a9465b60a030e1dc0c9f95",
+  "source_repository": "https://github.com/dan-hart/momentum"
+}

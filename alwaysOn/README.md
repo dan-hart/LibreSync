@@ -1,70 +1,123 @@
-# LibreSyncAlwaysOn
+# LibreSync AlwaysOn
 
-## Purpose
-- Always-on desktop app that keeps LibreSync data updated while primary apps are closed.
-- Runs as a device on the LAN, not a central host.
-- Stores only encrypted data locally (engine-owned E2EE).
+AlwaysOn keeps durable encrypted copies of app updates on a computer that stays
+available. Apps connect directly over the local network. There are no accounts,
+cloud storage, relays, or internet services in the connection flow.
 
-## Initial scope
-- Rust + Tauri app targeting macOS, Windows, and Linux.
-- Reuses the core Engine and adapter stack.
-- Device list, last-sync status, and storage footprint UI.
-- LAN discovery + linking with explicit consent.
-- Backups are opt-in per app; restores require an explicit confirmation setting.
-- Manual refresh control and status dashboard in the UI.
-- Snapshot list with create/preview/restore controls (restore gated by allow-restore).
-- Snapshot retention defaults (count + age) with manual prune.
-- System tray menu for show/hide, manual refresh, and quit.
-- Trust panel for linking, auto-accept toggle, and fingerprint visibility.
+## Connect an app
 
-## Code layout
-- `alwaysOn/libresync-always-on` contains the current app scaffold.
+Open the dashboard and choose **Add app**. Choose a supported app or paste the
+invitation shared from that app’s Connect screen. Each app space has its own
+identity, transport key, storage key, records and trusted devices. Two spaces
+for the same app are separate trust groups.
 
-## Non-goals (initial)
-- No cloud relay or hosted sync.
-- No remote access outside the LAN.
+The built-in catalog supports **Momentum**’s declared operation-log schema and
+**Local notes sample**, a demonstration logical-record app. Momentum at commit
+`766064b` still uses the legacy LibreSync API and requires the opt-in migration
+in [the Momentum integration guide](../docs/MOMENTUM-MANAGED-MIGRATION.md).
+Adding a Momentum space does not automatically upgrade that existing client.
+The Local notes sample is independent of Apple Notes or other notes products.
 
-## Open questions
-- Default adapter set to ship with the app.
-- Storage limits and retention policy for encrypted state.
-- Background service vs. foreground tray behavior on each OS.
-- Always-on trust UX (linking prompts, fingerprint visibility, and re-link flows).
+In an app space, choose **Connect device**. Show a locally rendered QR invitation
+or six-digit code, use a nearby device’s code, or paste its invitation. Invitations
+expire after five minutes and are single use. Device discovery is an untrusted
+hint: compatible app/schema metadata and pairing versions are checked before
+code entry, then certificates and complete manifests are authenticated during
+pairing. Ordinary flows require no IP address, port, key, or technical app ID.
 
-## Daemon/service mode
-The `libresync-alwayson-daemon` binary provides headless, OS-level background behavior for LibreSyncAlwaysOn. It uses the same config/state layout as the UI and keeps a JSON adapter synced on a timer.
+Empty spaces can import compatible data automatically. A populated first join
+requires **Review merge** and explicit **Combine data** consent, or cancel and
+pause. The registered adapter defines merge behavior; there is no blind file
+replacement. A stale preview requires a new review.
 
-Auto-approve linking is opt-in and intended only for trusted private networks.
+## Understand status and recovery
 
-### Build and run
-From the repo root:
-```
-cargo run -p libresync-alwayson-daemon -- --auto-accept
-```
+**Waiting** means the device is unavailable or has pending updates. **Stored**
+means the receiving Session saved a durable copy. **Applied** means the receiving
+application confirmed its own durable transaction. AlwaysOn is a store-and-forward
+companion and never fabricates an application-applied acknowledgment. Historical
+receipts do not turn an offline device into an up-to-date device.
 
-Common options:
-- `--config <path>`: override config path.
-- `--data <path>`: JSON file to sync.
-- `--state <path>`: encrypted state file path.
-- `--listen <addr>`: override listen address.
-- `--auto-accept`: automatically accept linking requests.
-- `--auto-approve`: automatically discover and link devices on private LANs (implies auto-accept).
+Pause/resume retains local data. Device removal revokes the local connection;
+app-space removal stops and archives that space. Neither operation remotely erases
+copies. Repair requires a fresh authenticated invitation from the same device.
+Diagnostics explain network reachability, schema/pairing upgrades, merge consent,
+and secure-storage failures without guessing permission denial from no discoveries.
 
-### Install as a service
-Templates live in `alwaysOn/service/`:
-- `libresync-alwayson-daemon.service` (systemd user service)
-- `com.codedbydan.libresync.alwayson.plist` (launchd)
-- `libresync-alwayson-daemon.xml` (Windows Task Scheduler)
+**Back up** retains the latest five encrypted logical recovery exports per space.
+The Session also retains at most five encrypted pre-merge recovery copies.
+Retention prunes recovery copies, never live records or tombstones. Recovery
+export contains sensitive unencrypted data; save it privately. Export changes
+neither records nor receipts. Whole-operation-log rollback is not offered:
+Momentum requires an app-aware recovery importer.
 
-Edit the ExecStart/Command paths to the installed daemon binary and adjust arguments as needed.
+## Run the desktop app
 
-Linux systemd user setup:
-```
-mkdir -p ~/.config/systemd/user
-cp alwaysOn/service/libresync-alwayson-daemon.service ~/.config/systemd/user/
-# Edit ExecStart to the installed daemon path and add any flags.
-systemctl --user daemon-reload
-systemctl --user enable --now libresync-alwayson-daemon.service
-journalctl --user -u libresync-alwayson-daemon.service -f
+```sh
+cargo build --manifest-path alwaysOn/libresync-always-on/src-tauri/Cargo.toml
 ```
 
-Security note: only use `--auto-approve` on trusted private LANs, and prefer a `--pairing-secret` when enabling it.
+The tray uses native macOS Keychain or Linux Secret Service. Locked/unavailable
+storage is an error, never a reason to generate replacement keys or silently
+store plaintext keys. The default friendly name comes from the OS; use
+`--device-name "Kitchen computer"` to override it. Closing the dashboard hides
+it; **Open dashboard** restores it from the tray. **Quit** stops the managed
+listeners/workers gracefully.
+
+The frontend bundles its QR renderer and uses restricted CSP, with untrusted
+names rendered as text. Tauri 2 Linux builds require `libwebkit2gtk-4.1-dev`,
+`libgtk-3-dev`, `libayatana-appindicator3-dev`, and `librsvg2-dev`. The Windows
+tray currently requires a secure OS KeyStore implementation; no production
+plaintext fallback is provided.
+
+For an isolated development smoke test (debug builds only):
+
+```sh
+./alwaysOn/libresync-always-on/src-tauri/target/debug/libresync-always-on --development-root /tmp/libresync-ui-test \
+  --development-file-keys --device-name "AlwaysOn test computer"
+# From the repository root, run a compatible real peer in another terminal:
+cargo run -p libresync --example companion_app -- /tmp/libresync-notes-test --code
+```
+
+The debug flags require an explicit isolated root and show a development banner.
+The example explicitly uses private file keys. Production builds reject these
+tray flags. Human usability and physical-device support need separate validation.
+
+## Headless daemon
+
+The daemon uses the same companion manager. Default keys use the secure OS
+backend. On an unattended installation, `--file-keys` explicitly opts into
+owner-only plaintext secret files under the chosen managed root. Protect and
+back up that directory; it is not equivalent to a hardware-protected keystore.
+
+```sh
+cargo run -p libresync-alwayson-daemon -- --root /private/path/managed status
+# Paste an invitation on stdin; EOF completes enrollment. It is not a command-line secret.
+cargo run -p libresync-alwayson-daemon -- --root /private/path/managed enroll -
+cargo run -p libresync-alwayson-daemon -- --root /private/path/managed serve
+```
+
+Commands are `serve` (default), `status`, `add-momentum`, `enroll FILE|-`,
+`pause SPACE`, `resume SPACE`, `remove SPACE`, `backup SPACE`, and
+`archive-legacy CONFIG`. Run maintenance commands while this root’s service is
+stopped: an exclusive manager lease prevents competing processes. Restart
+`serve` to resume persisted enrollment and exchange automatically. Completion
+of enrollment confirms authenticated trust, not that the other app applied data.
+No automatic approval or legacy pairing-secret flags are accepted.
+
+Service templates are in `contrib/` and `alwaysOn/service/`. Set an explicit root
+in service arguments. On Linux, the default secure backend requires an unlocked
+Secret Service session. Add `--file-keys` only as an intentional operator choice.
+
+## Preserve old installations
+
+The tray has a unique new bundle identity. It checks the historical
+`com.tauri.dev/config.json` location only when the config identifies the old
+LibreSync tray and declares its state/data paths. It never adopts the parent
+folder or other Tauri applications. **Make legacy recovery copy** copies only
+that config and its declared existing data/state files to a private archive;
+original paths remain untouched. Legacy keys and trust are recovery data only,
+not managed enrollment. Follow [the companion migration guide](../docs/COMPANION.md)
+and the specific app’s migration before connecting a new space.
+
+Explicit legacy recovery archives retain the latest five complete copies. Failed copies are removed before publication. Retention never prunes original config/data/state paths or managed live records.

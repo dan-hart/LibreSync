@@ -1,16 +1,11 @@
-# Bindings
+# Native bindings
 
-This directory contains starter SDKs for Swift and Kotlin that wrap the C ABI in `libresync-ffi`.
+New applications use managed Session through [Swift async/SwiftUI](swift/README.md), [Android suspend/Flow/Compose](kotlin/README.md), or [managed C ABI v1](../docs/MANAGED-C-ABI.md). Install exact v0.7.0 release assets with the [SDK guide](../docs/SDK.md).
 
-- `include/` holds the C header used by the bindings.
-- `swift/` provides a Swift Package wrapper and sample.
-- `kotlin/` provides a JNI-style wrapper and sample.
-- Swift/Kotlin samples now include SQLite logical mapping examples for SwiftData/Room-style schemas.
+Session owns listener, discovery, authenticated QR/code pairing, retries and typed status. Platform secure storage fails closed. Apps commit their coherent inbox records and exact proof-bearing receipts durably before acknowledging Applied; a companion reports Stored until an app processes data.
 
-These bindings are intentionally minimal and intended to evolve alongside the stable API surface.
+`include/` contains the public C header; `managed-v1.schema.json` defines typed managed messages. Swift includes Keychain/system Bonjour and the notes sample. Android includes actual ARM64/x86_64 16 KiB JNI, Keystore, API37 permission handling and the notes sample. Optional components supply Connect/Devices/Status UI.
 
-## Platform notes
-- Apple platforms must declare Local Network permissions in Info.plist for discovery.
-- Android requires multicast permissions and a `MulticastLock` for mDNS.
-- Store app keys and device keys in platform secure storage (Keychain/Keystore).
-- Use the included key manager helpers to generate and persist key material on device.
+Legacy C/Swift Engine surfaces remain separate. Historical Kotlin raw Engine/backup methods had no JNI implementation and now explicitly refuse with migration guidance. Old SQLite mapping samples are low-level examples, not managed transactional policies.
+
+Apple Info.plist Bonjour/Local Network declarations and optional camera usage are required; physical privacy/camera acceptance remains unverified. Android foreground MulticastLock/runtime permission and both platforms' background restrictions still apply. See platform READMEs before integrating.

@@ -1,66 +1,44 @@
 # Releasing
 
-LibreSync releases are manual. The goal is to keep versioned files, release notes, and verification commands aligned before creating a tag.
+Keep all four Rust crates and dependencies, both Cargo locks, nested Tauri manifest/config, Android core/Compose/sample versions and root Swift release manifest aligned. Preserve historical release entries. Use the actual local release date and an immutable `vX.Y.Z` tag. crates.io publication is outside this process.
 
-## Release surface
+## Build and verify before tagging
 
-Keep these files aligned on the same version:
+Run ordinary tests in parallel. Coverage alone serializes tests because instrumented short-deadline socket fixtures may exceed their test-client deadline; retain the same source and 75% region threshold without exclusions.
 
-- `crates/libresync/Cargo.toml`
-- `crates/libresync-cli/Cargo.toml`
-- `crates/libresync-ffi/Cargo.toml`
-- `crates/libresync-alwayson-daemon/Cargo.toml`
-- `alwaysOn/libresync-always-on/src-tauri/Cargo.toml`
-- `alwaysOn/libresync-always-on/src-tauri/tauri.conf.json`
-- `RELEASES.md`
-
-## Release notes and tags
-
-- Use release headings in the form `## vX.Y.Z`.
-- Keep the current release entry as the topmost versioned heading in `RELEASES.md`.
-- Use the same `vX.Y.Z` format for the git tag.
-
-## Prerequisites
-
-- Install `cargo-llvm-cov` locally before running the coverage check.
-- Install `cargo-audit` locally before running the dependency audit.
-- Install the Rust `llvm-tools-preview` component before running `cargo llvm-cov`.
-- Install a Swift toolchain before running the Swift bindings build.
-- The AlwaysOn smoke build requires a Tauri-capable local environment. On Linux, install `libwebkit2gtk-4.0-dev`, `libgtk-3-dev`, `libayatana-appindicator3-dev`, and `librsvg2-dev`.
-
-## Release checklist
-
-Run these from the repo root:
-
-```bash
-./scripts/utilities/check-release-readiness.sh
-./scripts/utilities/security-audit.sh
-cargo audit
+```sh
+cargo build --workspace --locked
+cargo test --workspace --locked
+cargo test -p libresync --all-features --locked
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test
-cargo llvm-cov --workspace --summary-only --fail-under-regions 75
-cargo check --manifest-path alwaysOn/libresync-always-on/src-tauri/Cargo.toml
-swift build --package-path bindings/swift
-git status --short
-git tag vX.Y.Z
-git push origin main vX.Y.Z
+cargo test -p libresync --release --all-features --locked 'session::network::tests::' -- --ignored --test-threads=1
+cargo llvm-cov --workspace --all-features --locked --summary-only --fail-under-regions 75 -- --test-threads=1
+scripts/utilities/security-audit.sh
+cargo audit --file Cargo.lock
+cargo audit --file alwaysOn/libresync-always-on/src-tauri/Cargo.lock
+cargo build --locked --manifest-path alwaysOn/libresync-always-on/src-tauri/Cargo.toml
+cargo test --locked --manifest-path alwaysOn/libresync-always-on/src-tauri/Cargo.toml
+cargo clippy --locked --manifest-path alwaysOn/libresync-always-on/src-tauri/Cargo.toml --all-targets -- -D warnings
+node --test alwaysOn/libresync-always-on/tests/*.test.cjs
 ```
 
-After pushing the release tag:
+Install matched Rust cross-target standard libraries/compiler, Apple tools, SDK37.0/build-tools37.0.0, NDK27.2.12479018 and JDK17. Linux Tauri needs WebKitGTK4.1, GTK3, Ayatana and librsvg development packages. Review every dependency warning; never ignore advisories to obtain a green report. SECURITY.md qualifies the current Tauri warnings.
 
-1. Create a GitHub release from it (`gh release create vX.Y.Z --notes-file ...`
-   with the `RELEASES.md` section).
-2. Update `Formula/libresync.rb` in `dan-hart/homebrew-tap`: point `url` at
-   `https://github.com/dan-hart/LibreSync/archive/refs/tags/vX.Y.Z.tar.gz` and
-   set `sha256` to `curl -sL <url> | sha256sum`.
+## Native assets and root Swift package
 
-crates.io publishing is not part of the release process yet. The manifests are
-ready for it (`cargo publish --workspace --exclude libresync-alwayson-daemon --dry-run`
-passes); when the crates are first published, add the step above and the
-`cargo install libresync-cli` line to `README.md`.
+```sh
+scripts/package-native-sdk.sh X.Y.Z /tmp/libresync-sdk-final
+cp /tmp/libresync-sdk-final/Package.release.swift Package.swift
+LIBRESYNC_SDK_ARTIFACT_DIR=/tmp/libresync-sdk-final scripts/utilities/check-release-readiness.sh
+LIBRESYNC_USE_LOCAL_XCFRAMEWORK=1 swift test
+```
 
-## Notes
+The package script rebuilds all five Apple slices and both Android JNI ABIs, licensed core/Compose AARs and Maven metadata. It replaces generated version-specific ZIPs rather than retaining old entries. The complete Swift ZIP retains a local XCFramework manifest; the repository root defaults to the immutable GitHub release URL with the checksum of the exact ZIP bytes. Explicit `LIBRESYNC_USE_LOCAL_XCFRAMEWORK=1` enables source builds/CI before publication. Commit that root manifest **before** tagging; do not upload preview assets early or retag to work around unavailable assets.
 
-- `./scripts/utilities/check-release-readiness.sh` is metadata-only. It checks version alignment and the topmost release heading, but it does not run tests or build commands.
-- The AlwaysOn smoke build depends on the nested Tauri crate being runnable with `cargo check --manifest-path`.
-- `git status --short` should print nothing before creating the tag.
+Verify Swift tests and generic iOS compilation, Android sample/Compose compilation and all six JNI tests on an actual API37 16 KiB emulator. Record `ro.build.version.sdk`, `ro.product.cpu.abi` and `getconf PAGE_SIZE`; CI requires x86_64 and 16384, with no 4 KiB fallback. Its explicit temporary AVD target correction addresses the upstream `37.0` parsing bug. Check ELF LOAD alignment for both ABIs. Extract final Swift and Maven ZIPs into fresh directories and compile real sample consumers from those bytes. Record source inventory, compiler versions, command logs and SHA256 sums. Native binaries precede the manifest-only checksum edit; record their precise source provenance.
+
+## Publish and verify
+
+Obtain specification and separate quality/security approval on frozen source. Commit/push the branch, open a PR and wait for exact-head CI and approval. Merge, verify main, then tag/push the same immutable source and create its GitHub release with the exact final SDK assets and SHA256SUMS. Verify a fresh remote Git Swift-package consumer only after asset publication. Update the Homebrew tap to the tag archive URL and verified archive checksum, then verify remote tag/release/tap.
+
+Do not promise notarization or Developer ID signing without a real identity and successful verification. Record physical iOS privacy/camera, physical Android, human usability and actual Finder/Dock reopen limits accurately. `check-release-readiness.sh` checks metadata and optionally final asset checksum; it does not certify behavioral acceptance.

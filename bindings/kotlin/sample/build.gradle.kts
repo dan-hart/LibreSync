@@ -1,0 +1,3 @@
+plugins { id("com.android.application"); id("org.jetbrains.kotlin.plugin.compose") }
+android { namespace="io.libresync.notes.sample"; compileSdk {version=release(37){minorApiLevel=0}}; defaultConfig {applicationId="io.libresync.notes.sample";minSdk=24;targetSdk=37;versionCode=7;versionName="0.7.0"};buildFeatures {compose=true};compileOptions {sourceCompatibility=JavaVersion.VERSION_17;targetCompatibility=JavaVersion.VERSION_17} }
+dependencies {implementation(project(":"));implementation(project(":compose"));implementation("androidx.activity:activity-compose:1.11.0");implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.4")}

@@ -4,7 +4,7 @@ import PackageDescription
 // The Swift package links the Rust FFI crate as a universal (arm64 + x86_64)
 // static library wrapped in an XCFramework. Build it first from the repo root:
 //
-//     scripts/build-macos-universal.sh
+//     scripts/build-apple-sdk.sh
 //
 // which produces bindings/swift/LibreSyncFFI.xcframework. Consumers that pull
 // this package from git can point `binaryTarget` at a release zip + checksum
@@ -36,7 +36,7 @@ let package = Package(
                 // Frameworks the Rust static library depends on (FSEvents via
                 // `notify`, CoreFoundation). Static libraries do not carry
                 // their framework dependencies, so declare them here.
-                .linkedFramework("CoreServices"),
+                .linkedFramework("CoreServices", .when(platforms: [.macOS])),
                 .linkedFramework("CoreFoundation"),
                 .linkedFramework("Security"),
             ]

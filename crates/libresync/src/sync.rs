@@ -15,7 +15,9 @@ use rustls::{
 };
 
 use crate::engine::{DeviceInfo, Event, EventSink};
-use crate::protocol::{read_message, write_message, Message, PROTOCOL_VERSION};
+use crate::protocol::{
+    read_message, read_message_with_limit, write_message, Message, PROTOCOL_VERSION,
+};
 use crate::{
     decrypt_entries, encrypt_entries, AppKey, DeviceHandler, DeviceKeys, Error, Identity,
     InboundApplier, LwwApplier, PeerCursor, Result, State,
@@ -81,7 +83,7 @@ impl CancelToken {
         }
     }
 
-    fn register(&self, stream: &TcpStream) -> Result<()> {
+    pub(crate) fn register(&self, stream: &TcpStream) -> Result<()> {
         let clone = stream.try_clone()?;
         if let Ok(mut sockets) = self.inner.sockets.lock() {
             sockets.push(clone);
@@ -89,7 +91,7 @@ impl CancelToken {
         self.check()
     }
 
-    fn release(&self) {
+    pub(crate) fn release(&self) {
         if let Ok(mut sockets) = self.inner.sockets.lock() {
             sockets.clear();
         }
@@ -715,7 +717,7 @@ fn handle_connection(stream: TcpStream, shared: &ListenerShared) -> Result<()> {
     let stream = tls_server_stream(stream, &shared.device_keys)?;
     let mut reader = BufReader::new(stream);
 
-    let message = match read_message(&mut reader) {
+    let message = match read_message_with_limit(&mut reader, crate::pairing::MAX_PAIRING_BYTES) {
         Ok(message) => message,
         // A shutdown wake-up or a port scan closes the socket without a
         // handshake; that is not an error worth reporting.
@@ -725,11 +727,59 @@ fn handle_connection(stream: TcpStream, shared: &ListenerShared) -> Result<()> {
     let fingerprint = device_fingerprint(reader.get_mut().conn.peer_certificates())?;
 
     match message {
+        Message::PairHello(hello) => {
+            return crate::pairing::accept_secure(
+                &mut reader,
+                hello,
+                identity,
+                &shared.device_keys,
+                &fingerprint,
+                handler,
+                |stream| {
+                    if let Some(timeout) = crate::pairing::authenticated_budget(handler)? {
+                        stream.sock.inner.set_read_timeout(Some(timeout))?;
+                        stream.sock.inner.set_write_timeout(Some(timeout))?;
+                    }
+                    Ok(())
+                },
+            );
+        }
+        Message::PairRecover {
+            invitation_id,
+            identity: peer,
+        } => {
+            return crate::pairing::accept_recovery(
+                &mut reader,
+                &invitation_id,
+                &peer,
+                identity,
+                &fingerprint,
+                handler,
+                |stream| {
+                    if let Some(timeout) = crate::pairing::authenticated_budget(handler)? {
+                        stream.sock.inner.set_read_timeout(Some(timeout))?;
+                        stream.sock.inner.set_write_timeout(Some(timeout))?;
+                    }
+                    Ok(())
+                },
+            );
+        }
         Message::LinkRequest {
             identity: device_identity,
             app_key: remote_app_key,
             pairing_secret,
         } => {
+            if !handler.allow_legacy_link() {
+                write_message(
+                    reader.get_mut(),
+                    &Message::LinkResponse {
+                        identity: identity.clone(),
+                        accepted: false,
+                        app_key: None,
+                    },
+                )?;
+                return Ok(());
+            }
             if !device_identity.matches_app(handler.app_id()) {
                 write_message(
                     reader.get_mut(),
@@ -780,6 +830,11 @@ fn handle_connection(stream: TcpStream, shared: &ListenerShared) -> Result<()> {
             identity: device_identity,
             protocol_version,
         } => {
+            if !handler.allow_legacy_link() {
+                return Err(Error::Protocol(
+                    "legacy sync disabled on managed listener".into(),
+                ));
+            }
             if !device_identity.matches_app(handler.app_id()) {
                 return Err(Error::Protocol("app id mismatch".to_string()));
             }
@@ -981,7 +1036,7 @@ fn read_hello<R: std::io::BufRead>(reader: &mut R, identity: &Identity) -> Resul
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Default)]
-struct ByteCounters {
+pub(crate) struct ByteCounters {
     sent: Arc<AtomicU64>,
     received: Arc<AtomicU64>,
 }
@@ -996,7 +1051,7 @@ impl ByteCounters {
 /// A `TcpStream` that counts bytes crossing the socket (TLS bytes, i.e. what
 /// is on the wire).
 pub struct CountingStream {
-    inner: TcpStream,
+    pub(crate) inner: TcpStream,
     sent: Arc<AtomicU64>,
     received: Arc<AtomicU64>,
 }
@@ -1021,10 +1076,10 @@ impl Write for CountingStream {
     }
 }
 
-type ClientStream = StreamOwned<ClientConnection, CountingStream>;
-type ServerStream = StreamOwned<ServerConnection, CountingStream>;
+pub(crate) type ClientStream = StreamOwned<ClientConnection, CountingStream>;
+pub(crate) type ServerStream = StreamOwned<ServerConnection, CountingStream>;
 
-fn open_client(
+pub(crate) fn open_client(
     device: SocketAddr,
     device_keys: &DeviceKeys,
     options: &SyncOptions,
@@ -1095,7 +1150,10 @@ pub(crate) fn tls_client_stream(
     tls_client_stream_pinned(stream, device_keys, None, None)
 }
 
-fn tls_server_stream(stream: TcpStream, device_keys: &DeviceKeys) -> Result<ServerStream> {
+pub(crate) fn tls_server_stream(
+    stream: TcpStream,
+    device_keys: &DeviceKeys,
+) -> Result<ServerStream> {
     let config = server_config(device_keys)?;
     let conn = ServerConnection::new(config)?;
     let stream = CountingStream {
@@ -1126,6 +1184,10 @@ fn client_config(
     Ok(Arc::new(config))
 }
 
+pub(crate) fn validate_device_keys(keys: &DeviceKeys) -> Result<()> {
+    server_config(keys).map(|_| ())
+}
+
 fn server_config(device_keys: &DeviceKeys) -> Result<Arc<ServerConfig>> {
     let certs = vec![CertificateDer::from(device_keys.cert_der().to_vec())];
     let key = PrivateKeyDer::Pkcs8(device_keys.key_der().to_vec().into());
@@ -1137,7 +1199,7 @@ fn server_config(device_keys: &DeviceKeys) -> Result<Arc<ServerConfig>> {
     Ok(Arc::new(config))
 }
 
-fn device_fingerprint(certs: Option<&[CertificateDer<'_>]>) -> Result<String> {
+pub(crate) fn device_fingerprint(certs: Option<&[CertificateDer<'_>]>) -> Result<String> {
     let cert = certs
         .and_then(|certs| certs.first())
         .ok_or_else(|| Error::Protocol("missing device certificate".to_string()))?;

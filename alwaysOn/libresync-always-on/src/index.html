@@ -2,601 +2,66 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>LibreSyncAlwaysOn</title>
-    <style>
-      :root {
-        color-scheme: light;
-        --paper: #f6f1e7;
-        --ink: #1b1c17;
-        --accent: #1f3d2b;
-        --accent-light: #d7e4d5;
-        --muted: #6a6b64;
-        --panel: rgba(255, 255, 255, 0.92);
-        --border: #cfc6b2;
-      }
-      * {
-        box-sizing: border-box;
-      }
-      body {
-        margin: 0;
-        font-family: "IBM Plex Mono", "SFMono-Regular", ui-monospace, Menlo, Monaco, Consolas,
-          "Liberation Mono", "Courier New", monospace;
-        background: radial-gradient(circle at top, #f6f1e7 0%, #e2ead6 55%, #d2dcc1 100%);
-        color: var(--ink);
-        min-height: 100vh;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 32px 20px;
-      }
-      main {
-        width: min(960px, 100%);
-        background: var(--panel);
-        border: 1px solid var(--border);
-        box-shadow: 0 20px 50px rgba(34, 40, 28, 0.12);
-        padding: 32px;
-      }
-      header {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-      }
-      h1 {
-        margin: 0;
-        font-size: 28px;
-        letter-spacing: 0.8px;
-      }
-      p {
-        margin: 0;
-        line-height: 1.6;
-        color: var(--muted);
-      }
-      .grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-        gap: 16px;
-        margin-top: 24px;
-      }
-      .card {
-        border: 1px solid var(--border);
-        padding: 16px;
-        background: #fff;
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-      }
-      .label {
-        text-transform: uppercase;
-        font-size: 11px;
-        letter-spacing: 2px;
-        color: var(--muted);
-      }
-      .value {
-        font-size: 14px;
-        word-break: break-word;
-      }
-      .actions {
-        margin-top: 20px;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-      }
-      button {
-        border: none;
-        background: var(--accent);
-        color: #f2f5e9;
-        padding: 10px 18px;
-        font-size: 12px;
-        text-transform: uppercase;
-        letter-spacing: 2px;
-        cursor: pointer;
-      }
-      button.secondary {
-        background: #2d2f27;
-      }
-      .backup {
-        margin-top: 24px;
-        border-top: 1px solid var(--border);
-        padding-top: 20px;
-      }
-      .trust {
-        margin-top: 24px;
-        border-top: 1px solid var(--border);
-        padding-top: 20px;
-      }
-      .link-controls {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        margin-top: 12px;
-      }
-      .linked-list {
-        display: grid;
-        gap: 8px;
-        margin-top: 12px;
-      }
-      .linked-item {
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
-        gap: 12px;
-        padding: 10px 12px;
-        border: 1px solid var(--border);
-        background: #fff;
-        font-size: 12px;
-      }
-      .linked-meta {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-      }
-      .snapshots {
-        margin-top: 24px;
-        border-top: 1px solid var(--border);
-        padding-top: 20px;
-      }
-      .snapshot-list {
-        display: grid;
-        gap: 8px;
-        margin-top: 12px;
-      }
-      .snapshot-item {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 12px;
-        padding: 10px 12px;
-        border: 1px solid var(--border);
-        background: #fff;
-        font-size: 12px;
-      }
-      .snapshot-meta {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-      }
-      .snapshot-preview {
-        margin-top: 12px;
-        padding: 10px 12px;
-        border: 1px solid var(--border);
-        background: #fff7e6;
-        font-size: 12px;
-      }
-      .restore-controls {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        margin-top: 12px;
-      }
-      .restore-controls input {
-        padding: 8px 10px;
-        border: 1px solid var(--border);
-        font-family: inherit;
-        font-size: 12px;
-        min-width: 220px;
-      }
-      .toggle {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-      }
-      input[type="checkbox"] {
-        width: 18px;
-        height: 18px;
-        accent-color: var(--accent);
-      }
-      .status {
-        margin-top: 18px;
-        padding: 12px 16px;
-        background: var(--accent);
-        color: #f2f5e9;
-        font-size: 12px;
-        letter-spacing: 2px;
-        text-transform: uppercase;
-      }
-      .muted {
-        color: var(--muted);
-      }
-    </style>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>LibreSync AlwaysOn</title>
+    <link rel="stylesheet" href="style.css" />
+    <script src="model.js" defer></script>
+    <script src="dashboard.js" defer></script>
+    <script src="app.js" defer></script>
   </head>
   <body>
-    <main>
-      <header>
-        <h1>LibreSyncAlwaysOn</h1>
-        <p>Always-on device for LibreSync. LAN-only, no cloud, no surprises.</p>
-        <p class="muted">Status and manual refresh controls are active below.</p>
-      </header>
-
-      <section class="grid" id="status-grid"></section>
-
-      <div class="actions">
-        <button id="refresh">Manual refresh</button>
-        <button class="secondary" id="reload">Reload status</button>
+    <header>
+      <div class="mark" aria-hidden="true">↔</div>
+      <div>
+        <p class="eyebrow">LIBRESYNC</p>
+        <h1>AlwaysOn</h1>
       </div>
-
-      <section class="trust">
-        <div class="label">Trust</div>
-        <p class="muted" id="local-fingerprint">Local fingerprint: —</p>
-        <div class="toggle">
-          <input type="checkbox" id="auto-accept" />
-          <label for="auto-accept">Auto-accept linking</label>
+      <span class="local">Local network only</span>
+    </header>
+    <main>
+      <div id="development" class="notice" hidden>
+        Development mode · isolated test data and explicit file keys
+      </div>
+      <section class="intro">
+        <div>
+          <h2>A home for your apps’ sync.</h2>
+          <p>
+            Keep this computer on to hold updates until your other devices are
+            ready.
+          </p>
         </div>
-        <div class="toggle">
-          <input type="checkbox" id="auto-approve" />
-          <label for="auto-approve">Auto-approve linking (private LAN only)</label>
-        </div>
-        <div class="toggle">
-          <label for="auto-approve-mins">Auto-approve duration (mins)</label>
-          <input type="number" id="auto-approve-mins" min="1" value="15" />
-        </div>
-        <p class="muted" id="auto-approve-until">Auto-approve expires: —</p>
-        <div class="link-controls">
-          <input type="text" id="pairing-secret" placeholder="Pairing secret (optional)" />
-          <button class="secondary" id="save-pairing-secret">Save pairing secret</button>
-          <button class="secondary" id="clear-pairing-secret">Clear pairing secret</button>
-        </div>
-        <p class="muted" id="pairing-secret-status">Pairing secret: —</p>
-        <div class="link-controls">
-          <input type="text" id="link-address" placeholder="Device address (ip:port)" />
-          <button class="secondary" id="link-device">Link device</button>
-        </div>
-        <div class="linked-list" id="linked-list">No linked devices.</div>
+        <button id="add">Add app</button>
       </section>
-
-      <section class="backup">
-        <div class="label">Backup policy (per app)</div>
-        <p class="muted" id="backup-app">App: —</p>
-        <div class="toggle">
-          <input type="checkbox" id="backup-enabled" />
-          <label for="backup-enabled">Backups enabled</label>
-        </div>
-        <div class="toggle">
-          <input type="checkbox" id="backup-restore" />
-          <label for="backup-restore">Allow restore (requires separate confirm)</label>
-        </div>
-        <p class="muted" id="backup-retention">Retention: —</p>
+      <div id="alert" role="status" aria-live="polite" hidden></div>
+      <section id="spaces" aria-label="App spaces"></section>
+      <section id="empty" class="empty" hidden>
+        <div class="empty-icon">↔</div>
+        <h2>Start with an app</h2>
+        <p>
+          Add a supported app, or connect using the invitation shown in its
+          Connect screen. Each space has its own data and trusted devices.
+        </p>
+        <button id="first-add">Add your first app</button>
       </section>
-
-      <section class="snapshots">
-        <div class="label">Snapshots</div>
-        <div class="snapshot-list" id="snapshot-list">No snapshots loaded.</div>
-        <div class="snapshot-preview" id="snapshot-preview">Select a snapshot to preview.</div>
-        <div class="restore-controls">
-          <input type="text" id="snapshot-note" placeholder="Snapshot note (optional)" />
-          <input type="text" id="confirm-id" placeholder="Confirm snapshot id" />
-          <button class="secondary" id="create-snapshot">Create snapshot</button>
-          <button class="secondary" id="restore">Restore snapshot</button>
-          <button class="secondary" id="reload-snapshots">Reload snapshots</button>
-          <button class="secondary" id="prune-snapshots">Prune snapshots</button>
-        </div>
+      <section id="legacy" class="notice" hidden>
+        <h3>Your previous AlwaysOn data is still here</h3>
+        <p>
+          Create a recovery copy before migrating your app. Older connections
+          are not automatically approved. Your original files stay in place.
+        </p>
+        <button id="archive">Make legacy recovery copy</button>
       </section>
-
-      <div class="status" id="status-banner">Connecting to always-on device...</div>
+      <footer>
+        Updates stay on your devices. A stored update means AlwaysOn has a
+        durable copy. Applied means the receiving app confirmed its own save.
+      </footer>
     </main>
-
-    <script>
-      const statusGrid = document.getElementById("status-grid");
-      const statusBanner = document.getElementById("status-banner");
-      const localFingerprint = document.getElementById("local-fingerprint");
-      const autoAccept = document.getElementById("auto-accept");
-      const autoApprove = document.getElementById("auto-approve");
-      const autoApproveMins = document.getElementById("auto-approve-mins");
-      const autoApproveUntil = document.getElementById("auto-approve-until");
-      const pairingSecretInput = document.getElementById("pairing-secret");
-      const savePairingSecretButton = document.getElementById("save-pairing-secret");
-      const clearPairingSecretButton = document.getElementById("clear-pairing-secret");
-      const pairingSecretStatus = document.getElementById("pairing-secret-status");
-      const linkAddressInput = document.getElementById("link-address");
-      const linkDeviceButton = document.getElementById("link-device");
-      const linkedList = document.getElementById("linked-list");
-      const backupEnabled = document.getElementById("backup-enabled");
-      const backupRestore = document.getElementById("backup-restore");
-      const backupApp = document.getElementById("backup-app");
-      const backupRetention = document.getElementById("backup-retention");
-      let currentAppId = null;
-      const refreshButton = document.getElementById("refresh");
-      const reloadButton = document.getElementById("reload");
-      const snapshotList = document.getElementById("snapshot-list");
-      const snapshotPreview = document.getElementById("snapshot-preview");
-      const snapshotNoteInput = document.getElementById("snapshot-note");
-      const confirmIdInput = document.getElementById("confirm-id");
-      const createSnapshotButton = document.getElementById("create-snapshot");
-      const restoreButton = document.getElementById("restore");
-      const reloadSnapshotsButton = document.getElementById("reload-snapshots");
-      const pruneSnapshotsButton = document.getElementById("prune-snapshots");
-      let selectedSnapshotId = null;
-
-      const invoke = (command, args = {}) => {
-        if (!window.__TAURI__?.tauri?.invoke) {
-          statusBanner.textContent = "Tauri bridge not available.";
-          return Promise.reject(new Error("No Tauri bridge"));
-        }
-        return window.__TAURI__.tauri.invoke(command, args);
-      };
-
-      const formatTimestamp = (value) => {
-        if (!value) return "—";
-        const date = new Date(value * 1000);
-        return date.toLocaleString();
-      };
-
-      const renderLinkedDevices = (devices) => {
-        if (!devices || !devices.length) {
-          linkedList.textContent = "No linked devices.";
-          return;
-        }
-        linkedList.innerHTML = "";
-        devices.forEach((device) => {
-          const item = document.createElement("div");
-          item.className = "linked-item";
-          const meta = document.createElement("div");
-          meta.className = "linked-meta";
-          const lastSeen = device.last_seen_unix_secs
-            ? new Date(device.last_seen_unix_secs * 1000).toLocaleString()
-            : "—";
-          meta.innerHTML = `
-            <strong>${device.device_id}</strong>
-            <span>${device.user_id}</span>
-            <span>fingerprint: ${device.fingerprint || "—"}</span>
-            <span>last seen: ${lastSeen}</span>
-          `;
-          const action = document.createElement("button");
-          action.className = "secondary";
-          action.textContent = "Unlink";
-          action.addEventListener("click", () => {
-            statusBanner.textContent = "Unlinking...";
-            invoke("unlink_device", { device_id: device.device_id })
-              .then(renderStatus)
-              .catch((error) => {
-                statusBanner.textContent = `Unlink error: ${error}`;
-              });
-          });
-          item.append(meta, action);
-          linkedList.appendChild(item);
-        });
-      };
-
-      const renderStatus = (status) => {
-        statusGrid.innerHTML = "";
-        const items = [
-          { label: "Device ID", value: status.device_id },
-          { label: "User", value: status.user_id },
-          { label: "App", value: status.app_id },
-          { label: "Listen", value: status.listen_addr },
-          { label: "Linked devices", value: String(status.linked_count) },
-          { label: "Last sync", value: formatTimestamp(status.last_sync_unix_secs) },
-          { label: "Data path", value: status.data_path || "—" },
-          { label: "Last error", value: status.last_error || "—" },
-        ];
-
-        items.forEach((item) => {
-          const card = document.createElement("div");
-          card.className = "card";
-          const label = document.createElement("div");
-          label.className = "label";
-          label.textContent = item.label;
-          const value = document.createElement("div");
-          value.className = "value";
-          value.textContent = item.value;
-          card.append(label, value);
-          statusGrid.appendChild(card);
-        });
-
-        currentAppId = status.app_id;
-        localFingerprint.textContent = `Local fingerprint: ${status.local_fingerprint || "—"}`;
-        autoAccept.checked = Boolean(status.auto_accept_linking);
-        autoApprove.checked = Boolean(status.auto_approve_linking);
-        autoApproveUntil.textContent = status.auto_approve_until
-          ? `Auto-approve expires: ${new Date(status.auto_approve_until * 1000).toLocaleString()}`
-          : "Auto-approve expires: —";
-        pairingSecretStatus.textContent = `Pairing secret: ${
-          status.pairing_secret_set ? "set" : "not set"
-        }`;
-        renderLinkedDevices(status.linked_devices || []);
-        backupApp.textContent = `App: ${status.app_id}`;
-        const policy = status.backup?.[status.app_id] || { enabled: false, allow_restore: false };
-        backupEnabled.checked = policy.enabled;
-        backupRestore.checked = policy.allow_restore;
-        const maxSnapshots = policy.max_snapshots ?? "—";
-        const maxAge = policy.max_age_days ?? "—";
-        backupRetention.textContent = `Retention: keep ${maxSnapshots}, max age ${maxAge} days`;
-
-        statusBanner.textContent = "Always-on device ready";
-      };
-
-      const loadStatus = () => {
-        return invoke("get_status")
-          .then(renderStatus)
-          .catch((error) => {
-            statusBanner.textContent = `Status error: ${error}`;
-          });
-      };
-
-      const updateBackup = () => {
-        return invoke("set_backup_policy", {
-          app_id: currentAppId,
-          enabled: backupEnabled.checked,
-          allow_restore: backupRestore.checked,
-        })
-          .then(renderStatus)
-          .catch((error) => {
-            statusBanner.textContent = `Backup update error: ${error}`;
-          });
-      };
-
-      const renderSnapshots = (snapshots) => {
-        if (!snapshots.length) {
-          snapshotList.textContent = "No snapshots available.";
-          return;
-        }
-        snapshotList.innerHTML = "";
-        snapshots.forEach((snapshot) => {
-          const item = document.createElement("div");
-          item.className = "snapshot-item";
-          const meta = document.createElement("div");
-          meta.className = "snapshot-meta";
-          meta.innerHTML = `
-            <strong>${snapshot.id}</strong>
-            <span>${new Date(snapshot.created_at_unix_secs * 1000).toLocaleString()}</span>
-            <span>entries: ${snapshot.entry_count}</span>
-          `;
-          const action = document.createElement("button");
-          action.className = "secondary";
-          action.textContent = "Preview";
-          action.addEventListener("click", () => {
-            selectedSnapshotId = snapshot.id;
-            confirmIdInput.value = "";
-            previewSnapshot(snapshot.id);
-          });
-          item.append(meta, action);
-          snapshotList.appendChild(item);
-        });
-      };
-
-      const loadSnapshots = () => {
-        if (!currentAppId) return Promise.resolve();
-        return invoke("list_snapshots", { app_id: currentAppId })
-          .then(renderSnapshots)
-          .catch((error) => {
-            snapshotList.textContent = `Snapshot error: ${error}`;
-          });
-      };
-
-      const pruneSnapshots = () => {
-        if (!currentAppId) return Promise.resolve();
-        statusBanner.textContent = "Pruning snapshots...";
-        return invoke("prune_snapshots", { app_id: currentAppId })
-          .then((deleted) => {
-            statusBanner.textContent = `Pruned ${deleted} snapshot(s).`;
-            return loadSnapshots();
-          })
-          .catch((error) => {
-            statusBanner.textContent = `Prune error: ${error}`;
-          });
-      };
-
-      const previewSnapshot = (snapshotId) => {
-        snapshotPreview.textContent = "Loading snapshot preview...";
-        return invoke("preview_snapshot", { app_id: currentAppId, snapshot_id: snapshotId })
-          .then((summary) => {
-            snapshotPreview.textContent = `Snapshot ${snapshotId} | new ${summary.overall.new_entries} | changed ${summary.overall.changed_entries} | unchanged ${summary.overall.unchanged_entries} | missing ${summary.overall.missing_entries}`;
-          })
-          .catch((error) => {
-            snapshotPreview.textContent = `Preview error: ${error}`;
-          });
-      };
-
-      refreshButton.addEventListener("click", () => {
-        statusBanner.textContent = "Refreshing...";
-        invoke("manual_refresh")
-          .then((summary) => {
-            statusBanner.textContent = `Refresh complete: ${summary.succeeded}/${summary.attempted}`;
-            loadStatus();
-          })
-          .catch((error) => {
-            statusBanner.textContent = `Refresh error: ${error}`;
-          });
-      });
-
-      reloadButton.addEventListener("click", loadStatus);
-      autoAccept.addEventListener("change", () => {
-        statusBanner.textContent = "Updating linking policy...";
-        invoke("set_auto_accept_linking", { enabled: autoAccept.checked })
-          .then(renderStatus)
-          .catch((error) => {
-            statusBanner.textContent = `Auto-accept error: ${error}`;
-          });
-      });
-      autoApprove.addEventListener("change", () => {
-        statusBanner.textContent = "Updating auto-approve...";
-        const minutes = Math.max(Number(autoApproveMins.value) || 15, 1);
-        invoke("set_auto_approve_linking", { enabled: autoApprove.checked, duration_mins: minutes })
-          .then(renderStatus)
-          .catch((error) => {
-            statusBanner.textContent = `Auto-approve error: ${error}`;
-          });
-      });
-
-      savePairingSecretButton.addEventListener("click", () => {
-        const value = pairingSecretInput.value.trim();
-        statusBanner.textContent = "Saving pairing secret...";
-        invoke("set_pairing_secret", { secret: value.length ? value : null })
-          .then(renderStatus)
-          .catch((error) => {
-            statusBanner.textContent = `Pairing secret error: ${error}`;
-          });
-      });
-      clearPairingSecretButton.addEventListener("click", () => {
-        statusBanner.textContent = "Clearing pairing secret...";
-        invoke("set_pairing_secret", { secret: null })
-          .then(renderStatus)
-          .catch((error) => {
-            statusBanner.textContent = `Pairing secret error: ${error}`;
-          });
-      });
-      linkDeviceButton.addEventListener("click", () => {
-        const address = linkAddressInput.value.trim();
-        if (!address) {
-          statusBanner.textContent = "Enter a device address to link.";
-          return;
-        }
-        statusBanner.textContent = "Linking...";
-        invoke("link_device", { address })
-          .then((status) => {
-            linkAddressInput.value = "";
-            renderStatus(status);
-          })
-          .catch((error) => {
-            statusBanner.textContent = `Link error: ${error}`;
-          });
-      });
-      backupEnabled.addEventListener("change", updateBackup);
-      backupRestore.addEventListener("change", updateBackup);
-      createSnapshotButton.addEventListener("click", () => {
-        if (!currentAppId) {
-          statusBanner.textContent = "No app selected.";
-          return;
-        }
-        const note = snapshotNoteInput.value.trim();
-        statusBanner.textContent = "Creating snapshot...";
-        invoke("create_snapshot", {
-          app_id: currentAppId,
-          note: note.length ? note : null,
-        })
-          .then((metadata) => {
-            statusBanner.textContent = `Snapshot ${metadata.id} created.`;
-            snapshotNoteInput.value = "";
-            return loadSnapshots();
-          })
-          .catch((error) => {
-            statusBanner.textContent = `Snapshot error: ${error}`;
-          });
-      });
-      restoreButton.addEventListener("click", () => {
-        if (!selectedSnapshotId) {
-          statusBanner.textContent = "Select a snapshot first.";
-          return;
-        }
-        if (confirmIdInput.value !== selectedSnapshotId) {
-          statusBanner.textContent = "Confirm ID must match the snapshot id.";
-          return;
-        }
-        statusBanner.textContent = "Restoring snapshot...";
-        invoke("restore_snapshot", {
-          app_id: currentAppId,
-          snapshot_id: selectedSnapshotId,
-          confirm_id: confirmIdInput.value,
-        })
-          .then(renderStatus)
-          .catch((error) => {
-            statusBanner.textContent = `Restore error: ${error}`;
-          });
-      });
-      reloadSnapshotsButton.addEventListener("click", loadSnapshots);
-      pruneSnapshotsButton.addEventListener("click", pruneSnapshots);
-
-      loadStatus().then(loadSnapshots);
-    </script>
+    <dialog id="modal">
+      <div class="dialog-top">
+        <h2 id="modal-title"></h2>
+        <button id="close" class="quiet" aria-label="Close">×</button>
+      </div>
+      <div id="modal-body"></div>
+    </dialog>
   </body>
 </html>

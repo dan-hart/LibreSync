@@ -1,5 +1,6 @@
 mod adapter;
 mod backup;
+pub mod companion;
 mod crypto;
 mod device;
 mod discovery;
@@ -9,9 +10,12 @@ mod error;
 mod identity;
 mod keys;
 mod keystore;
+mod lease;
 mod logical;
+mod pairing;
 mod protocol;
 mod record;
+mod session;
 #[cfg(feature = "sqlite-logical")]
 mod sqlite_logical;
 mod state;
@@ -35,9 +39,11 @@ pub use device::DeviceHandler;
 #[cfg(all(unix, feature = "tailscale-local-api"))]
 pub use discovery::browse_tailscale_local_api;
 pub use discovery::{
-    browse_mdns, browse_private_overlays, discover_devices, register_mdns, reset_tailscale_probe,
-    tailscale_cli_state, DiscoveredDevice, DiscoverySource, MdnsAdvertiser, TailscaleCliState,
-    DEFAULT_SYNC_PORT, DEFAULT_TAILSCALE_SOCKET, SERVICE_TYPE, TAILSCALE_SOCKET_ENV,
+    browse_mdns, browse_mdns_metadata, browse_private_overlays, discover_devices, register_mdns,
+    register_mdns_metadata, register_mdns_metadata_with_invitation, reset_tailscale_probe,
+    tailscale_cli_state, DiscoveredDevice, DiscoveredPeer, DiscoverySource, MdnsAdvertiser,
+    PeerAdvertisement, TailscaleCliState, DEFAULT_SYNC_PORT, DEFAULT_TAILSCALE_SOCKET,
+    SERVICE_TYPE, TAILSCALE_SOCKET_ENV,
 };
 pub use engine::{
     event_channel, AdapterWatch, AutoRefresh, AutoRefreshConfig, BackgroundEngine, DeviceInfo,
@@ -53,11 +59,23 @@ pub use keystore::{
     SecurityCliKeyStore, APP_KEY_ITEM, DEVICE_CERT_ITEM, DEVICE_KEY_ITEM,
 };
 pub use logical::{FileLogicalAdapter, InMemoryLogicalAdapter};
+pub use pairing::{
+    link_secure, recover_secure_link, AdapterDescriptor, AppManifest, DeviceMetadata,
+    PairChallenge, PairHello, PairingDescriptor, PairingInvitation, PairingManager,
+    SecurePairingOutcome, PAIRING_VERSION,
+};
 pub use protocol::{read_message, write_message, Message, PROTOCOL_VERSION};
 pub use record::{
     entry_to_record, parse_record_key, record_entry_key, record_to_entry, FieldValue, MergePolicy,
     RecordCompactionPolicy, RecordCompactionSummary, RecordKeyParts, RecordState, RecordView,
     SyncRecord,
+};
+pub use session::{
+    AckDisposition, AdapterInspection, ApplicationInbox, BootstrapDecision, BootstrapPreview,
+    DiagnosticAction, DiagnosticEvidence, ExportBatch, ManagedAdapter, ManagedReceipt,
+    ManagedRecord, PeerSnapshot, PeerState, PermissionState, PreparedChange, RecordsAdapter,
+    RecoverySnapshot, Session, SessionConfig, SessionErrorCode, SessionEvent, SessionInvitation,
+    SessionPhase, SessionSnapshot,
 };
 #[cfg(feature = "sqlite-logical")]
 pub use sqlite_logical::{
@@ -69,3 +87,6 @@ pub use sync::{
     sync_with_device_using, CancelToken, ListenerOptions, SyncListener, SyncOptions, SyncOutcome,
     SyncStats,
 };
+
+#[cfg(target_os = "macos")]
+pub use keystore::NativeKeychainKeyStore;

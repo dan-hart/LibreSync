@@ -242,8 +242,15 @@ impl KeyStore for SecretToolKeyStore {
             .output()
             .map_err(|error| command_error("secret-tool", error))?;
         if !output.status.success() {
-            // secret-tool exits 1 when nothing matches.
-            return Ok(None);
+            // Only the unambiguous no-match outcome means absence. Locked
+            // Secret Service, denied access, and execution failures are errors.
+            if output.status.code() == Some(1)
+                && output.stdout.is_empty()
+                && output.stderr.is_empty()
+            {
+                return Ok(None);
+            }
+            check_status("secret-tool lookup", &output.status, &output.stderr)?;
         }
         decode_output(&output.stdout)
     }
@@ -331,8 +338,16 @@ impl KeyStore for SecurityCliKeyStore {
             .output()
             .map_err(|error| command_error("security", error))?;
         if !output.status.success() {
-            // 44 = errSecItemNotFound.
-            return Ok(None);
+            // 44 = errSecItemNotFound. Other statuses include locked,
+            // denied, and unavailable storage and must never regenerate keys.
+            if output.status.code() == Some(44) {
+                return Ok(None);
+            }
+            check_status(
+                "security find-generic-password",
+                &output.status,
+                &output.stderr,
+            )?;
         }
         decode_output(&output.stdout)
     }
@@ -421,7 +436,10 @@ fn decode_output(stdout: &[u8]) -> Result<Option<Vec<u8>>> {
     let text = String::from_utf8_lossy(stdout);
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        return Ok(None);
+        return Err(Error::Managed {
+            code: crate::SessionErrorCode::StorageUnavailable,
+            message: "secure store returned an empty item".into(),
+        });
     }
     decode(trimmed).map(Some)
 }
@@ -688,5 +706,78 @@ exit 2
         let file_store = FileKeyStore::new(dir.path().join("keys2")).expect("store");
         let boxed: Box<dyn KeyStore> = Box::new(file_store);
         assert!(boxed.app_key().expect("app key").is_none());
+    }
+}
+
+/// Native macOS Keychain backend. Binary values never enter process argv.
+#[cfg(target_os = "macos")]
+#[derive(Clone, Debug)]
+pub struct NativeKeychainKeyStore {
+    service: String,
+}
+#[cfg(target_os = "macos")]
+impl NativeKeychainKeyStore {
+    pub fn new(service: impl Into<String>) -> Self {
+        Self {
+            service: service.into(),
+        }
+    }
+}
+#[cfg(target_os = "macos")]
+fn native_read(result: security_framework::base::Result<Vec<u8>>) -> Result<Option<Vec<u8>>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.code() == -25300 => Ok(None), // errSecItemNotFound only
+        Err(error) => Err(Error::Managed {
+            code: crate::SessionErrorCode::StorageUnavailable,
+            message: format!("Keychain unavailable ({})", error.code()),
+        }),
+    }
+}
+#[cfg(target_os = "macos")]
+impl KeyStore for NativeKeychainKeyStore {
+    fn get(&self, name: &str) -> Result<Option<Vec<u8>>> {
+        native_read(security_framework::passwords::generic_password(
+            security_framework::passwords::PasswordOptions::new_generic_password(
+                &self.service,
+                name,
+            ),
+        ))
+    }
+    fn set(&self, name: &str, value: &[u8]) -> Result<()> {
+        security_framework::passwords::set_generic_password(&self.service, name, value).map_err(
+            |error| Error::Managed {
+                code: crate::SessionErrorCode::StorageUnavailable,
+                message: format!("Keychain write refused ({})", error.code()),
+            },
+        )
+    }
+    fn delete(&self, name: &str) -> Result<()> {
+        match security_framework::passwords::delete_generic_password(&self.service, name) {
+            Ok(()) => Ok(()),
+            Err(error) if error.code() == -25300 => Ok(()),
+            Err(error) => Err(Error::Managed {
+                code: crate::SessionErrorCode::StorageUnavailable,
+                message: format!("Keychain deletion refused ({})", error.code()),
+            }),
+        }
+    }
+}
+#[cfg(all(test, target_os = "macos"))]
+mod native_tests {
+    use super::*;
+    #[test]
+    fn native_keychain_only_item_not_found_is_absent() {
+        assert_eq!(
+            native_read(Err(security_framework::base::Error::from_code(-25300))).unwrap(),
+            None
+        );
+        for status in [-25308, -25291, -25293, -50] {
+            assert!(native_read(Err(security_framework::base::Error::from_code(status))).is_err());
+        }
+        assert_eq!(
+            native_read(Ok(b"binary-secret".to_vec())).unwrap(),
+            Some(b"binary-secret".to_vec())
+        );
     }
 }

@@ -1,6 +1,10 @@
-# API stability
+# Managed-first API
 
-LibreSync is pre-1.0, but the following surface is intended to be **stable** and backwards compatible:
+New integrations use `Session`, typed snapshots/events, authenticated invitation APIs and pure transactional `ManagedAdapter` policies. See [managed sessions](MANAGED-SESSION.md). The existing Engine surface and examples below remain compatible; they require manual lifecycle/trust orchestration. Managed pairing version 2 explicitly refuses version 1 and legacy linking; it never silently downgrades.
+
+## Legacy API stability
+
+The existing low-level API remains pre-1.0; the following surface is intended to be **stable** and backwards compatible:
 
 ## Core runtime
 - `Engine`, `SyncRequest`, `SyncStats`

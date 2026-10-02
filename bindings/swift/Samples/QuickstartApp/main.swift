@@ -1,55 +1,24 @@
-import Foundation
+import SwiftUI
 import LibreSync
 
-// Trigger the Local Network permission prompt on Apple platforms.
-LibreSyncLocalNetworkPermission().request { allowed in
-    print("Local Network permission allowed: \(allowed)")
+// Copy into a new SwiftUI app target and add the SDK package. Include Info.plist
+// from this folder. This exact notes contract pairs with the always-on catalog.
+@main
+struct NotesQuickstart:App {
+    @StateObject private var host=NotesHost()
+    @Environment(\.scenePhase) private var phase
+    var body:some Scene {WindowGroup {Group {if let model=host.model {TabView{NotesEditor(model:model).tabItem{Text("Notes")};LibreSyncConnectView(model:model).tabItem{Text("Connect")};LibreSyncDevicesView(model:model).tabItem{Text("Devices")};LibreSyncStatusView(model:model).tabItem{Text("Status")}}}else{Text(host.error ?? "Opening secure storage…")}}.task{await host.open()}.onChange(of:phase){value in if value == .active{host.model?.start()}else if value == .background{host.model?.stop()}}}}
 }
-
-let deviceId = "swift-device"
-let appId = "com.example.notes"
-let userId = "swift-user"
-let keys = try LibreSyncKeyManager.loadOrCreate(deviceId: deviceId, appId: appId, userId: userId)
-let config = LibreSyncConfig(
-    deviceId: deviceId,
-    appId: appId,
-    userId: userId,
-    listenAddr: "0.0.0.0:52345",
-    appKey: keys.appKey,
-    deviceCertDer: keys.deviceCertDer,
-    deviceKeyDer: keys.deviceKeyDer
-)
-let configJson = try config.jsonString(pretty: true)
-
-let statePath = FileManager.default.temporaryDirectory.appendingPathComponent("libresync.state").path
-
-let engine = try LibreSyncEngine(configJson: configJson, statePath: statePath)
-try engine.registerLogicalFileAdapter(id: "records", namespace: "com.example.notes", path: "./records.json")
-
-// Events are delivered on the main queue without polling.
-let pump = engine.makeEventPump { event in
-    switch event.type {
-    case "fingerprint_changed":
-        // Never re-pin silently: ask the user, then re-link if they agree.
-        print("certificate changed for \(event.device?.device_id ?? "?"): \(event.fields["fingerprint"] ?? "")")
-    case "sync_finished":
-        print("sync with \(event.device?.device_id ?? "?") ok=\(event.succeeded ?? false)")
-    case "task_finished":
-        print("task \(event.ticket ?? 0) finished ok=\(event.succeeded ?? false)")
-    default:
-        print("event: \(event.type)")
-    }
+@MainActor
+private final class NotesHost:ObservableObject {
+    @Published var model:LibreSyncSessionModel?
+    @Published var error:String?
+    func open()async {guard model==nil else{return};do{let directory=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("LibreSyncNotes");let session=try await LibreSyncSession.open(.notes(stateDirectory:directory,displayName:"My Apple device"),keys:LibreSyncKeychainStore(service:"io.libresync.Notes"));model=LibreSyncSessionModel(session:session);model?.start()}catch{self.error=error.localizedDescription}}
 }
-
-try engine.startListening()
-print("Listening. Run linking from another device.")
-
-// Non-blocking sync from the UI: completion arrives as events.
-if let peer = CommandLine.arguments.dropFirst().first {
-    let ticket = try engine.syncAsync(address: peer, adapterId: "records")
-    print("queued sync ticket \(ticket)")
-}
-
-withExtendedLifetime(pump) {
-    RunLoop.main.run()
+private struct NotesEditor:View {
+    @ObservedObject var model:LibreSyncSessionModel
+    @State var text=""
+    @State var incoming:[LibreSyncRecord]=[]
+    @State var error:String?
+    var body:some View {VStack{TextField("Local note",text:$text);Button("Save local note"){Task{do{try await model.session.set(adapter:"records",id:"sample-note",value:Data(text.utf8))}catch{self.error=error.localizedDescription}}};Text("Incoming records and receipt proofs are saved together before Applied acknowledgement.");ForEach(incoming.filter{!$0.deleted},id:\.id){record in Text("\(record.id): \(String(data:record.value,encoding:.utf8) ?? "Binary record")")};if let error{Text(error)}}.padding().task {do{while !Task.isCancelled{let inbox=try await model.session.inbox();let file=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("LibreSyncNotes/application-inbox.json");try await Task.detached{try LibreSyncInboxJournal.save(inbox,to:file)}.value;try await model.session.acknowledge(inbox);incoming=inbox.records;try await Task.sleep(nanoseconds:500_000_000)}}catch{if !Task.isCancelled{self.error=error.localizedDescription}}}}
 }

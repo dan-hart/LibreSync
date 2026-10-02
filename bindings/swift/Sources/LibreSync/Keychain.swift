@@ -51,7 +51,8 @@ public enum LibreSyncKeychain {
         if status != errSecSuccess {
             throw LibreSyncKeychainError.status(status)
         }
-        return result as? Data
+        guard let data=result as? Data else{throw LibreSyncKeychainError.status(errSecDecode)}
+        return data
     }
 
     public static func delete(account: String, service: String = "LibreSync") throws {

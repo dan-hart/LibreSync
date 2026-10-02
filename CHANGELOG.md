@@ -6,11 +6,35 @@ narrative context live in `RELEASES.md`.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-01
+
+- Add managed C, Swift and Android SDKs with typed sessions, secure platform storage, native QR/code discovery and consent UI, durable proof-bearing inbox acknowledgements, complete Apple slices and Android JNI/AAR packaging.
+
+### Fixed
+
+- Release managed Session and companion leases after runtime teardown even when child processes retain duplicated descriptors; preserve live-owner exclusion and kernel crash cleanup.
+- Keep managed registry ID allocation compatible with current stable Rust without wrapping or reusing IDs.
+- Install supported Android `platform-tools` in CI instead of the removed legacy `tools` package.
+- Launch the CI emulator from its installed SDK path and fail promptly if startup exits or bounded device-readiness checks fail.
+
 ### Added
+
+- Managed multi-app AlwaysOn dashboard and daemon with separately trusted app spaces, local expiring QR/code invitations, merge consent, repair, truthful Stored/Applied status, and encrypted bounded recovery exports.
+- Declared Momentum operation-log and Local notes sample policies, real Momentum wire fixtures and restart/store-and-forward tests, and a separately reviewable verified opt-in Momentum migration patch.
+
+- Managed `Session` lifecycle with automatic authenticated exchanges, persistent named-device discovery, QR/code invitation endpoints, typed status/evidence, exact Stored/Applied receipts, and explicit repair/removal.
+- Encrypted atomic managed journals with separate stable storage keys, pure transactional logical adapters, consent-bound populated bootstrap previews, coherent app inbox acknowledgment, and restart recovery.
+- Compact managed transport with 64 MiB record and 128 MiB authoritative batch bounds, bounded authenticated transfer budgets, and durable enrollment-bound checkpoint proofs.
+- Runnable two-peer managed demo and localhost lifecycle, concurrent-edit, cancellation, revocation, app-isolation, and storage-fault acceptance tests.
+
+- Authenticated, expiring QR and short-code pairing primitives with certificate-bound SPAKE2 confirmations, single-use invitations, bounded attempts, and recoverable enrollment hooks.
+- Friendly mDNS device/app metadata, compatibility hints, public pairing descriptors, and device-identity address deduplication.
 - LibreSync logo in the repository README.
 
 ### Changed
-- Refresh the README with Shields.io badges, current 0.6.1 features, installation and pairing steps, SDK guidance, and platform limitations.
+- Migrate AlwaysOn to stable Tauri 2 and Linux WebKitGTK 4.1; use native macOS Keychain and fail closed on unavailable secure storage. Legacy config/data/trust remain recovery-only and are never automatically enrolled.
+- Update mDNS multicast rate limiting and macOS interface selection to keep concurrent discovery and enrollment responsive; retain scoped IPv6 endpoints.
+- Refresh the README with Shields.io badges, managed 0.7.0 features, installation and pairing steps, SDK guidance, and platform limitations.
 - Replace the README logo with a compact crop of the updated artwork and light/dark variants that follow the GitHub theme.
 
 ## [0.6.1] - 2026-09-14

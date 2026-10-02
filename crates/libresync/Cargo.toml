@@ -1,6 +1,6 @@
 [package]
 name = "libresync"
-version = "0.6.1"
+version = "0.7.0"
 edition = "2021"
 license = "AGPL-3.0-only"
 description = "Local-only device-to-device sync core for LibreSync."
@@ -13,13 +13,19 @@ categories = ["network-programming", "cryptography", "database"]
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+base64 = "0.22"
+flate2 = "1.1"
+qrcode = { version = "0.14", default-features = false }
 flume = "0.11"
 log = "0.4"
 if-addrs = "0.10"
-mdns-sd = "0.10"
+mdns-sd = "0.21.4"
 rcgen = "0.14"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 sha2 = "0.10"
+spake2 = "=0.4.0"
+hkdf = "0.12"
+hmac = "0.12"
 notify = "6.1"
 chacha20poly1305 = { version = "0.10", features = ["std"] }
 rand_core = "0.6"
@@ -34,3 +40,9 @@ tailscale-local-api = []
 [dev-dependencies]
 tempfile = "3.10"
 rusqlite = { version = "0.31", features = ["bundled"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3.7"
+
+[target.'cfg(target_os = "android")'.dependencies]
+libc = "0.2"

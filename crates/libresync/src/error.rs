@@ -15,6 +15,10 @@ pub enum Error {
     },
     /// The operation was cancelled through a [`crate::CancelToken`].
     Cancelled,
+    Managed {
+        code: crate::SessionErrorCode,
+        message: String,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -35,6 +39,9 @@ impl fmt::Display for Error {
                 "fingerprint mismatch for {device_id}: pinned {expected}, presented {actual}"
             ),
             Error::Cancelled => write!(formatter, "operation cancelled"),
+            Error::Managed { code, message } => {
+                write!(formatter, "managed session {code:?}: {message}")
+            }
         }
     }
 }
@@ -48,6 +55,7 @@ impl StdError for Error {
             Error::Crypto(_) => None,
             Error::FingerprintMismatch { .. } => None,
             Error::Cancelled => None,
+            Error::Managed { .. } => None,
         }
     }
 }

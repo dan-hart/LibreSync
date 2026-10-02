@@ -1962,3 +1962,7 @@ mod tests {
         assert_eq!(types.len(), events.len());
     }
 }
+
+mod managed;
+
+mod jni_bridge;

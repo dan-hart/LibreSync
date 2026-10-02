@@ -1,6 +1,54 @@
 use crate::{AppKey, DeviceKeys, Error, Identity, Result};
 
 pub trait DeviceHandler: Send + Sync {
+    /// Low-level Engine compatibility only. Managed handlers MUST return false.
+    fn allow_legacy_link(&self) -> bool {
+        true
+    }
+    fn device_metadata(&self) -> Option<crate::DeviceMetadata> {
+        None
+    }
+    fn pairing_manager(&self) -> Option<std::sync::Arc<crate::PairingManager>> {
+        None
+    }
+    /// Idle I/O budget after authenticated PAKE readiness; initial proof remains short.
+    fn authenticated_pairing_io_timeout(&self) -> Option<std::time::Duration> {
+        None
+    }
+    /// Persist an authenticated server challenge before sending durable preparation proof.
+    /// This journal permits recovery if the server commits but acceptance is
+    /// lost. Do not activate trust or replace the group key at this step.
+    fn prepare_secure_pairing(&self, _pending: &crate::SecurePairingOutcome) -> Result<()> {
+        Err(Error::Protocol(
+            "durable pairing preparation not configured".into(),
+        ))
+    }
+    /// Atomically and durably save enrollment journal, trust and group key before
+    /// returning. Refuse group-key replacement when any other peer is enrolled.
+    /// Must check cancellation/revocation under the same enrollment lock.
+    fn commit_secure_pairing(
+        &self,
+        _invitation_id: &str,
+        _identity: &Identity,
+        _metadata: &crate::DeviceMetadata,
+        _fingerprint: &str,
+        _key: &AppKey,
+    ) -> Result<()> {
+        Err(Error::Protocol(
+            "durable managed pairing not configured".into(),
+        ))
+    }
+    /// Only return a journaled enrollment for this exact invitation, identity
+    /// AND observed certificate fingerprint. Must recheck revocation.
+    fn recover_secure_pairing(
+        &self,
+        _invitation_id: &str,
+        _identity: &Identity,
+        _fingerprint: &str,
+    ) -> Result<Option<crate::DeviceMetadata>> {
+        Ok(None)
+    }
+
     fn app_id(&self) -> &str;
     fn is_linked(&self, identity: &Identity) -> bool;
     fn approve_link(&self, identity: &Identity) -> Result<bool>;

@@ -116,3 +116,77 @@ If a secret or sensitive data is committed:
 PRs affecting discovery, authentication, encryption, or key storage should include:
 - A short security rationale.
 - Notes on compatibility with the threat model in `RESEARCH.md`.
+
+## Managed pairing boundary
+
+Managed pairing uses mutually presented TLS certificates with SPAKE2 to prove
+knowledge of an expiring QR secret or short code. Confirmations bind both TLS
+fingerprints, both identities/manifests, invitation ID/version, and both PAKE
+messages. This prevents a relay presenting different certificates from obtaining
+a valid confirmation. QR pairing additionally verifies the pinned inviter
+certificate during the TLS handshake. Only the inviter supplies the app group
+key, and only after mutual password confirmation.
+
+The selected RustCrypto `spake2` 0.4.0 implementation states that it has not had
+an independent security audit and is probably not constant-time; using it does
+not establish that LibreSync pairing has been independently audited. See the
+[dependency security documentation](https://docs.rs/spake2/0.4.0/spake2/#security).
+Short codes have limited entropy. Five challenge attempts and a five-minute
+expiry limit online guessing for one invitation; users must not disclose a
+code to an untrusted person or repeatedly create new codes for a suspicious
+peer. Invitation `Debug` formatting omits secrets. Applications must not log
+secret-bearing serialized invitations or raw protocol messages containing keys.
+
+Malformed initial requests cannot consume an invitation. A valid challenge
+counts an attempt even when its requester disconnects. A single claim is
+serialized with durable approval and revocation. Pairing transport bounds
+initial/pair messages to 16 KiB and uses socket timeouts. Discovery names,
+schema hints, and advertised pins are never authorization evidence.
+
+The protocol requires a durable authenticated-challenge journal on the client
+and durable approval/key/trust commit callbacks on both sides. Recovery accepts
+only the original journaled identity and observed TLS fingerprint with the
+original pin. Applications implementing `DeviceHandler` must serialize these
+callbacks, refuse silent existing-group key changes or identity/certificate
+overwrite, preserve errors from unavailable secure storage, and check shutdown
+and revocation in their enrollment coordinator. The low-level pairing API does
+not implement application storage or an OS secure store on their behalf.
+
+### Managed Session boundaries
+
+Managed Session listeners deny legacy `Hello` and `LinkRequest`. Authenticated invitation enrollment serializes trust, group-key adoption, and revocation under the durable coordinator. Ordinary enrollment cannot replace a known device fingerprint or an established group's key. Explicit pinned repair retains revocation until authentication succeeds. Invitation restart recovery requires the exact journaled invitation, identity, and certificate and cannot revive local removal.
+
+Session storage uses a stable local encryption key separate from the transport group key, private atomic temporary files, file fsync, rename, and parent-directory fsync. Prepared multi-adapter record transactions and pre-merge recovery models remain encrypted. Invalid or unavailable secure-store identity material fails closed rather than silently regenerating identity. Concurrent state-directory writers are refused. Owned Session and companion lease guards explicitly unlock after runtime teardown, so a normally dropped owner cannot leave fork-inherited or duplicated descriptors holding its lease. Companion drop stops even caller-retained sessions before its final root guard is released; Session keeps its guard after all runtime fields. Existing live owners still exclude independent opens. Abrupt process exit retains kernel descriptor-close cleanup; an inherited descriptor can conservatively retain a crashed owner's lock until all copies close. Lock contention is Busy; unsupported or failed lock operations are StorageUnavailable rather than mistaken contention. Failed/uncertain persistence fences further writes and receipts until close/reopen recovery.
+
+Managed adapters are pure validation and merge policies over Session-owned records; they do not promise atomicity for arbitrary external app files/databases. Applications obtain a coherent inbox, commit their own transaction, then acknowledge the exact captured receipts. Store-and-forward receipt evidence is Stored, not proof of application processing.
+
+Pause, shutdown, and removal persist generation fences and cancel/join tracked network workers. Removal preserves local records and revokes inbound/outbound identity authorization before returning. It cannot erase remote copies or a group key previously learned by an enrolled peer. Discovery labels and addresses are hints; certificate pins and authenticated full manifests establish trust. Platform permission diagnostics preserve Unknown and never infer denial from an empty discovery result.
+
+Managed record values and encrypted batch bytes use bounded base64 JSON. Each record permits up to 64 MiB, including a serialized 32 MiB compressed application snapshot. The complete authoritative export, including metadata and receipt proof, must fit 128 MiB before encryption; the existing 256 MiB outer protocol frame cap is unchanged. Local edits, inbound merges, and recovered prepared candidates that exceed this budget fail before publication and preserve data and cursors. These are whole-state bounds; applications must partition or compact larger models before committing them.
+
+Exact checkpoint receipts carry a 32-byte HMAC proof minted only at export. A purpose-separated HKDF key binds the application domain, full enrolled peer identity, certificate fingerprint, durable enrollment incarnation, source epoch, and sequence using length-prefixed encoding. Constant-time verification accepts legitimately delayed receipts across ordinary restart while removal, repair, and fresh enrollment rotate the incarnation. Invalid cursor hints trigger an authoritative full export; stale processing proofs cannot advance Applied and do not prevent recovery. No growing issued-checkpoint history is retained.
+
+Pairing protocol version 2 separates authentication from durable preparation. The joiner promptly sends `PairConfirm` after verifying the server challenge. The inviter verifies it under the short initial deadline and immediately returns `PairReady`, authenticated with its separate transcript-derived ready key, without committing enrollment or releasing the app key. The joiner verifies Ready, extends only its authenticated I/O budget, durably prepares its challenge journal, and sends `PairPrepared` authenticated with the distinct prepared key. Only after verifying Prepared may the inviter commit and send the authoritative key. Missing, reflected, wrong, and replayed preparation tags cannot enroll a peer. The inviter extends its budget only after verified client proof. Version 1 is rejected explicitly; legacy Engine exchange is unchanged.
+
+## Managed companion isolation
+
+AlwaysOn enrolls only operator-registered exact app/schema policies using authenticated expiring invitations. Every space has independent identity, keys, storage, trust and receipts. Discovery names are untrusted text; the dashboard restricts CSP and renders names with DOM text APIs. The native macOS Keychain backend keeps binary secrets out of process arguments and treats only item-not-found as absence. Linux secure-store failures do not trigger plaintext fallback. Explicit headless file-key mode uses owner-only files and requires operator choice. Missing backup keys beside existing backups are errors, never key regeneration. Recovery exports contain sensitive unencrypted app data and require explicit UI confirmation. Legacy recovery copies import no trust or automatic approval. See [the companion contract](docs/COMPANION.md) for limits and recovery semantics.
+
+### Tauri dependency audit qualification
+
+The Tauri 2 lock audit reports no vulnerability entries, but retains two warnings:
+`RUSTSEC-2024-0370` for unmaintained `proc-macro-error` 1.0.4 and
+`RUSTSEC-2024-0429` for the unsound `glib` 0.18.5 `VariantStrIter` API.
+The latter dependency belongs to the Linux GTK3 stack; its API is not called by
+LibreSync or the resolved downloaded dependency sources outside glib's own API
+definitions. The former is a compile-time dependency of GTK/glib macros.
+This source reachability assessment does not remove the advisory or establish
+that all Linux behavior is safe. GTK3 requires its matching glib version, so an
+independent glib upgrade is not compatible. No audit warning is ignored; Linux
+release qualification must include this known dependency limitation.
+
+## Managed native SDK boundary
+
+Managed handles are opaque registry IDs; closing fences new calls before cleanup and retains secure-storage callback context through acquired calls. Native callbacks must serialize secure storage and must never reenter LibreSync. Unavailable or corrupt Keychain/Keystore reads fail closed and do not regenerate identity. Android alias/file operations use a kernel lease plus process mutex.
+
+Native Bonjour supplies bounded, ephemeral endpoint hints and reviewed public metadata only. Hints cannot establish identity or schema trust; existing certificate pins, authenticated pairing and contract validation remain authoritative. Apple uses the fixed declared system Bonjour service rather than raw multicast on iOS. Application inbox receipts retain their opaque HMAC proof; Applied acknowledgement follows the app’s durable records-and-receipts transaction.

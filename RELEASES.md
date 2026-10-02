@@ -1,5 +1,15 @@
 # Releases
 
+## v0.7.0 (2026-10-01)
+
+Managed sessions now own discovery, authenticated version-2 QR/code pairing, automatic exchange/retry, truthful Pending/Stored/Applied status, bootstrap consent/recovery and device repair. AlwaysOn isolates supported app spaces and stores/forwards data with independent keys and trust. Native Swift and Android SDKs include secure platform storage, optional Connect/Devices/Status UI, complete Apple slices and 16 KiB-compatible JNI/AAR/Maven packages.
+
+Existing Engine/C/Swift APIs remain; unsupported historical Kotlin Engine functions explicitly require migration. Native generic policy support is limited to reviewed transactional `logical-records-v1`. Momentum's verified opt-in patch is pinned to `766064b` and does not automatically update the app. No cloud account, service or relay is required for LAN operation.
+
+An app must durably commit its own coherent records and exact receipt proofs before Applied acknowledgement. Mobile background execution remains OS-limited. Physical iOS Local Network/camera acceptance, physical Android hardware, two-minute human usability and Finder/Dock reopen are unverified. GUI binaries are not claimed Developer ID signed or notarized. Tauri's audited lock retains the qualified glib/proc-macro-error warnings documented in SECURITY.md.
+
+Release SDK archives include AGPL licensing and exact SHA256 sums. crates.io publication is outside this release. See [installation](docs/SDK.md), [migration](docs/MANAGED-SESSION.md) and [release verification](docs/RELEASING.md).
+
 ## v0.6.1 (2026-09-14)
 - Security: wire messages are capped at 256 MiB before the linking check; SQLite logical identifiers are quoted; rustls 0.23.45, crossbeam-epoch 0.9.21 and spin 0.9.9.
 - First public release: Homebrew formula in `dan-hart/homebrew-tap`, private vulnerability reporting, code of conduct and issue templates.

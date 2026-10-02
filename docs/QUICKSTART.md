@@ -1,5 +1,12 @@
 # Quickstart
 
+For new app integrations, use [managed Session](MANAGED-SESSION.md) and the [native SDK installation guide](SDK.md). Run `cargo run -p libresync --example managed_two_peers` for automatic enrollment, first exchange, edits, resume and exact app processing receipts. Native notes samples include Connect/Devices/Status UI.
+
+Use matching reviewed app/schema policies on each device. QR/code pairing is authenticated and expiring; named discovery is a hint. Empty destinations import; populated destinations require Combine/Cancel consent. App saves precede Applied acknowledgement. Offline means waiting, and mobile apps resume when foreground execution is available.
+
+## Legacy CLI flow
+
+
 LibreSync lets apps sync data directly between devices on the same LAN with mandatory E2EE.
 
 ## 1) Install
@@ -9,7 +16,7 @@ brew install dan-hart/tap/libresync
 ```
 From a release tag:
 ```
-cargo install --git https://github.com/dan-hart/LibreSync --tag v0.6.1 libresync-cli
+cargo install --git https://github.com/dan-hart/LibreSync --tag v0.7.0 libresync-cli
 ```
 Or from a local checkout:
 ```
@@ -77,11 +84,12 @@ libresync diagnose
 ```
 
 ## 10) AlwaysOn (optional)
-For background sync on Linux, you can run the headless daemon:
+For background managed sync, enroll a supported app using its expiring invitation, then run the headless daemon with secure OS key storage:
 ```
-cargo run -p libresync-alwayson-daemon -- --auto-accept --pairing-secret "my-shared-secret"
+cargo run -p libresync-alwayson-daemon -- enroll -
+cargo run -p libresync-alwayson-daemon -- serve
 ```
-See `alwaysOn/README.md` for systemd user service setup.
+Maintenance enrollment runs while the service is stopped. There is no ambient automatic approval. See [AlwaysOn setup](../alwaysOn/README.md) for supported app contracts, explicit headless file-key mode, and service setup.
 
 ## Notes
 - Linking is required before refresh.

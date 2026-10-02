@@ -21,3 +21,9 @@ postgres://\[\^:\]\+:\[\^@\]\+@
 mysql://\[\^:\]\+:\[\^@\]\+@
 \(\?i\)api\[_-\]\?key\\s\*[:=]\\s\*\[^\\s\]\+
 \(\?i\)password\\s\*[:=]\\s\*\[^\\s\]\+
+
+# Historical Momentum demo SQL schema: PRIMARY KEY is not private key material.
+(^|[0-9a-f]{40}:)frankly/src-tauri/src/main\.rs:.*CREATE TABLE IF NOT EXISTS todos.*PRIMARY KEY
+
+# SPAKE2 constructor receives a runtime invitation secret, not a literal credential.
+(^|[0-9a-f]{40}:)crates/libresync/src/pairing\.rs:[0-9]+: *&Password::new\((invitation|invite)\.secret\.as_bytes\(\)\),$

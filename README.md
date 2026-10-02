@@ -36,7 +36,7 @@ LibreSync is an open-source Rust sync engine for sharing application data betwee
 
 Use it for notes, tasks, preferences, local databases, and other structured app data. The repository includes the Rust library, a CLI, a C ABI with Swift/Kotlin wrappers, and an optional AlwaysOn desktop companion and daemon.
 
-**Current release: [v0.6.1](https://github.com/dan-hart/LibreSync/releases/tag/v0.6.1).** LibreSync is pre-1.0. Desktop is the current focus; mobile SDKs and complex application integrations still need validation. CI exercises Linux and macOS; Windows is a desktop target but is not currently in the CI matrix.
+**Current release: [v0.7.0](https://github.com/dan-hart/LibreSync/releases/tag/v0.7.0).** LibreSync is pre-1.0. Managed Rust, Swift and Android SDKs are available; apps must integrate their model and durable save boundary. CI exercises Linux and macOS; Windows is a desktop target but is not currently in the CI matrix.
 
 ## Why LibreSync?
 
@@ -70,7 +70,7 @@ brew install dan-hart/tap/libresync
 With a Rust toolchain, install the published Git tag:
 
 ```sh
-cargo install --git https://github.com/dan-hart/LibreSync --tag v0.6.1 libresync-cli
+cargo install --git https://github.com/dan-hart/LibreSync --tag v0.7.0 libresync-cli
 ```
 
 Or install from a checkout:
@@ -83,41 +83,19 @@ cargo install --path crates/libresync-cli --locked
 
 The crates are not yet published to crates.io. Use Homebrew, a Git tag, or a local checkout.
 
-### Sync between two devices
+### Connect an application
 
-Use two devices on the same LAN for this first run. On **both devices**, initialize the same app ID and select a demo JSON file:
-
-```sh
-libresync init --app-id com.example.notes
-libresync select --file ./libresync-demo.json
-libresync listen --foreground
-```
-
-Keep each listener terminal open so you can accept the incoming linking prompt. The default listener port is TCP `52345`; LAN discovery uses mDNS on UDP `5353`.
-
-In a **second terminal on one device**, discover and link:
+Start with the [managed Session guide](docs/MANAGED-SESSION.md), [Swift notes sample](bindings/swift/Samples/QuickstartApp), or [Android notes sample](bindings/kotlin/sample). A Session owns discovery, its listener, secure pairing and automatic retry. Supply a stable app/schema contract, a private state directory and platform secure storage. Run the working Rust example:
 
 ```sh
-libresync discover
-libresync link
+cargo run -p libresync --example managed_two_peers
 ```
 
-Approve the request in the other device's listener terminal, then confirm locally. Check the reported fingerprints against the other device through a trusted channel. Linking establishes trust; it does not transfer your application data yet.
+In an integrated app, choose Connect on the first device and scan its expiring QR invitation or enter its code on the second. Nearby devices have friendly names and compatibility hints; authenticated pairing rechecks identity and schema. An empty app imports automatically. A populated app previews Combine or Cancel and preserves an encrypted pre-merge recovery model. Changes retry automatically after reconnect or app resume.
 
-Edit `libresync-demo.json` on one device, then exchange updates:
+Status distinguishes Pending, Stored on a peer, and Applied after the destination app durably saves the captured records and receipts. An offline device is waiting. Pause, repair or remove a peer without deleting local data; removal cannot erase its existing remote copies.
 
-```sh
-libresync refresh
-libresync status
-```
-
-For ongoing updates, run this in the second terminal on each device:
-
-```sh
-libresync watch --no-listen
-```
-
-`--no-listen` reuses the listener you already started. For later sessions, `libresync listen` starts a background listener and `libresync stop` stops it. Alternatively, `libresync watch` starts its own listener when no listener is running. Stop foreground listeners and watchers with Ctrl+C.
+The existing CLI and low-level Engine retain their manual linking and file-sync flow. See the [legacy CLI quickstart](docs/QUICKSTART.md#legacy-cli-flow) for that compatible path.
 
 ### More CLI options
 
@@ -145,7 +123,7 @@ Add the core library from a release tag:
 
 ```toml
 [dependencies]
-libresync = { git = "https://github.com/dan-hart/LibreSync", tag = "v0.6.1" }
+libresync = { git = "https://github.com/dan-hart/LibreSync", tag = "v0.7.0" }
 ```
 
 Enable `features = ["sqlite-logical"]` on that dependency to use SQLite record mapping. The optional `tailscale-local-api` feature supports discovery through Tailscale's local API socket where the CLI is unavailable.
@@ -163,45 +141,36 @@ Enable `features = ["sqlite-logical"]` on that dependency to use SQLite record m
 
 Logical adapters are the recommended path for structured app data. Policies include last-writer-wins, set union, counters, list append, append-only logs, and app-defined custom merges. Keep record IDs stable and advance the record clock for every local edit. See [logical record sync](docs/LOGICAL.md) for schema and merge semantics.
 
-### Integrate the engine
+### Integrate a managed session
 
-Create an `Engine` with your identity, persisted state, and a `DeviceHandler` that manages consent, trust, and key material. Register adapters, start listening, discover and link peers, then request sync or enable auto-refresh.
+Use `Session::open` with a matching transactional adapter and secure `KeyStore`, then `start`. Publish local changes, observe typed snapshots/events and call `wake` on foreground resume. Rust operations perform IO: dispatch them off the UI thread. Native Swift async and Kotlin suspend/Flow APIs provide that dispatch.
 
-For GUI apps, use `Engine::spawn()` to obtain a `BackgroundEngine`. Subscribe to its events and submit sync work without blocking the UI. `EventStream` supports draining, wakers, and a readiness descriptor on supported platforms; cancellation lets the app stop pending sync operations. The [API guide](docs/API.md) includes integration examples and the 0.6 migration notes.
-
-A small [logical-record example](crates/libresync/examples/logical_record_sync.rs) demonstrates record creation and persistence:
-
-```sh
-cargo run -p libresync --example logical_record_sync
-```
-
-This example writes `./records.json`; it does not establish a two-device sync session.
+Session-owned records are separate from your app database. Obtain a coherent application inbox, commit records **and exact proof-bearing receipts** together to durable app storage, then acknowledge that captured inbox. See [managed sessions](docs/MANAGED-SESSION.md) and [native SDK installation](docs/SDK.md). Existing `Engine` integrations remain available in the [API compatibility guide](docs/API.md).
 
 ### Swift, Kotlin, and C
 
-The [`libresync-ffi`](crates/libresync-ffi) crate exposes C ABI version 2, including an event queue, asynchronous sync, and cancellation.
+- **Swift:** install the root Git Swift package at `v0.7.0`, or extract the complete release ZIP. Five Apple architecture slices cover macOS, iOS and Simulator. Typed async APIs, Keychain, system Bonjour and optional SwiftUI Connect/Devices/Status components are included.
+- **Android:** extract the Maven repository release ZIP and use `io.libresync:libresync:0.7.0`, optionally `libresync-compose`. Both ARM64 and x86_64 JNI libraries support 16 KiB pages. The SDK includes Flow, Keystore and API37 local-network permission guidance.
+- **C:** managed ABI v1 has typed JSON and opaque lifetime-safe session handles; legacy Engine ABI v2 remains. See the [C header](bindings/include/libresync.h) and [managed ABI guide](docs/MANAGED-C-ABI.md).
 
-- **Swift:** a Swift package, `LibreSyncEventPump`, key-storage helpers, and SQLite mapping samples. macOS CI builds the universal FFI library and runs Swift package tests.
-- **Kotlin:** an early JNI-style wrapper with key-storage helpers and Room-style SQLite mapping samples. Native packaging and app integration still need work.
-- **C and other languages:** start with the [C header](bindings/include/libresync.h) and [SDK surface](docs/SDK.md).
-
-See the [bindings overview](bindings/README.md), [macOS packaging](docs/PACKAGING-MACOS.md), and [Linux packaging](docs/PACKAGING-LINUX.md) for build steps and platform requirements.
+Native policies include exact notes/Momentum contracts and configurable transactional `logical-records-v1`. Unsupported arbitrary custom native policies fail explicitly. Apps with other domain rules implement a pure Rust `ManagedAdapter`; LibreSync cannot synchronize unrelated applications without app integration.
 
 ## AlwaysOn companion
 
-[LibreSyncAlwaysOn](alwaysOn/README.md) is an optional Rust + Tauri desktop app that acts as another sync peer. It provides a status dashboard, tray controls, a trust panel, manual refresh, and opt-in snapshots with preview, restore, and retention controls.
+[AlwaysOn](docs/COMPANION.md) enrolls supported application spaces independently, with separate keys, trust, records and backup policy. It stores and forwards data while apps are unavailable; its Stored receipt never claims the app has applied data. The dashboard exposes expiring QR/code enrollment, merge consent, device repair/removal, pause and encrypted recovery.
 
-The workspace also includes `libresync-alwayson-daemon` for headless operation. Linux systemd and macOS launchd templates live in [`contrib/`](contrib/README.md); additional service templates are in [`alwaysOn/service/`](alwaysOn/service/). An always-on peer is optional and does not become a central authority.
+Momentum integration is a separately verified **opt-in** patch pinned to source `766064b`; it does not change the existing Momentum app automatically. See [Momentum migration](docs/MOMENTUM-MANAGED-MIGRATION.md). The optional headless daemon and [service templates](contrib/README.md) need no cloud service.
 
 ## Security and current limits
 
 - Payloads, engine state files, and snapshots are encrypted. Application files managed by adapters are not automatically encrypted at rest; apps remain responsible for their local data and key storage.
 - The `KeyStore` interface includes file, Linux Secret Service, and macOS Keychain backends. Apps must choose and integrate the appropriate backend.
-- Initial linking uses trust on first use. Verify fingerprints through a trusted channel; later mismatches are rejected rather than silently trusted.
+- Managed pairing uses certificate-bound SPAKE2 and expiring single-use credentials. The SPAKE2 dependency is not independently audited; see SECURITY.md. Legacy Engine linking remains trust on first use.
 - Removing a device revokes its allowlist entry. Guided re-keying remains unfinished; use the documented key-rotation workflow when shared keys must change.
 - Devices must be reachable at the same time to exchange updates. LAN firewalls, Wi-Fi client isolation, and platform local-network permissions can prevent discovery or sync.
 - Logical records and complex relational schemas still require application-specific merge design and testing. File adapters do not provide record-level merging.
-- Mobile SDKs are early. Platform background limits and packaging require additional integration work; desktop CI coverage is not a mobile support guarantee.
+- iOS may suspend apps; call wake/resume when active and do not promise continuous background sync. Physical iOS Local Network privacy and camera behavior are unverified. Simulator cannot prove that permission. Android foreground/multicast and background limits still apply.
+- Current managed transport defaults to IPv4. No physical-device, two-minute human usability, Finder/Dock reopen, notarized or Developer ID signed GUI acceptance is claimed.
 
 Read the [security policy](SECURITY.md), [privacy policy](PRIVACY.md), and [wire protocol](docs/PROTOCOL.md). Report vulnerabilities through [GitHub private vulnerability reporting](https://github.com/dan-hart/LibreSync/security/advisories/new).
 
@@ -216,7 +185,7 @@ cargo test -p libresync --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
-CI runs Rust tests and strict Clippy on Linux and macOS, two-device sync tests, FFI builds/tests, and macOS Swift builds/tests. The Linux release checks also run repository and dependency audits, release-version checks, an AlwaysOn smoke build, and a **75% region-coverage minimum**. The CI badge reports workflow status; the coverage threshold is a configured gate, not a live coverage measurement.
+CI gates parallel Rust tests and strict Clippy, optimized large transfers, five Apple slices/Swift tests/iOS compilation, Android JNI/AAR/Compose/sample and actual API37 x86_64 16 KiB emulator tests. The Linux release checks also run repository and dependency audits, release-version checks, an AlwaysOn smoke build, and a **75% region-coverage minimum**. The CI badge reports workflow status; the coverage threshold is a configured gate, not a live coverage measurement.
 
 Before contributing, follow [CONTRIBUTING.md](CONTRIBUTING.md) for the required git-secrets and ASP hooks, and read the [code of conduct](CODE_OF_CONDUCT.md). See [TESTING.md](TESTING.md) for manual and automated validation and the [release guide](docs/RELEASING.md) for release checks.
 

@@ -8,7 +8,8 @@
     <key>ProgramArguments</key>
     <array>
       <string>/usr/local/bin/libresync-alwayson-daemon</string>
-      <!-- Optional flags, one string each: --auto-accept, --pairing-secret, SECRET -->
+      <string>serve</string>
+      <!-- Native Keychain by default. --file-keys requires explicit operator choice. -->
     </array>
     <key>RunAtLoad</key>
     <true/>

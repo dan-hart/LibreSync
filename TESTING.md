@@ -1,4 +1,19 @@
-# Testing LibreSync between two devices
+# Managed acceptance and two-device testing
+
+New integrations use the executable [managed acceptance map](docs/ACCEPTANCE.md), `cargo run -p libresync --example managed_two_peers`, Swift notes sample and Android notes sample. Ordinary workspace/all-feature tests run in parallel. Only instrumented coverage serializes short-deadline test fixtures, retaining the 75% region threshold and all source.
+
+Optimized large-state acceptance is required separately:
+
+```sh
+cargo test -p libresync --release --all-features --locked 'session::network::tests::' -- --ignored --test-threads=1
+```
+
+This runs all three giant pairing/transfer cases with real TLS and exact Stored/Applied receipts. Native SDK acceptance includes all five Apple slices, 12 Swift runtime tests, generic iOS compile, both JNI ABIs and licensed AARs, Compose/sample build, and six Android JNI tests on API37/16 KiB. Record actual SDK, runtime ABI and page size; architecture compilation is separate from runtime proof.
+
+Physical Apple Local Network privacy is not modeled by Simulator. Physical camera/privacy, physical Android hardware, human two-minute usability, Finder/Dock reopen and notarized GUI delivery require separate evidence; a compile or install cannot establish them.
+
+## Legacy CLI two-device flow
+
 
 This guide walks through manual end-to-end testing using two machines on the same LAN, each running the `libresync` CLI.
 
@@ -17,7 +32,7 @@ cargo build
 For local coverage validation:
 ```
 cargo test
-cargo llvm-cov --workspace --summary-only --fail-under-regions 75
+cargo llvm-cov --workspace --all-features --locked --summary-only --fail-under-regions 75 -- --test-threads=1
 ```
 
 Two-device scenarios (concurrent field edits, delta traffic, append-only

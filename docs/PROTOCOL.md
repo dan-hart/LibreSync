@@ -253,3 +253,102 @@ reports version 1.
 the two advertised versions. Adding message fields is backwards compatible
 (unknown fields ignored, missing fields defaulted); new message types or
 changed semantics require a version bump.
+
+## Managed authenticated pairing (version 2)
+
+Managed enrollment uses mutual TLS plus RustCrypto `spake2` 0.4.0 with
+`Ed25519Group`: the joining client is A and the inviting device is B. QR
+invitations carry a CSPRNG 256-bit password and pin the inviter's SHA-256
+certificate fingerprint. Code invitations use an unbiased six-digit random
+password, five attempts maximum, and a five-minute maximum lifetime. The code
+and QR password never appear in protocol messages or mDNS TXT properties.
+SPAKE2 exchange messages are the library's 33-byte A/B messages. Both sides
+reject invalid point encodings, small-order points, and points outside the prime
+subgroup before completing SPAKE2; initial A validation precedes claim.
+
+`PairHello`, `PairChallenge`, `PairConfirm`, `PairReady`, `PairPrepared`, `PairAccepted`, `PairCommit`, and
+`PairComplete` are additional newline-delimited JSON message variants. Initial
+and pairing messages are capped at 16 KiB, independently of the larger legacy
+sync payload allowance. Socket read/write deadlines bound idle peers. A valid
+initial request reserves one invitation claim and counts an attempt before
+sending a challenge; disconnecting after the challenge counts too. Malformed
+initial metadata, role/point encodings, or certificate assertions do not claim
+an invitation. Only one in-flight claimant is allowed.
+
+The confirmation transcript is a fixed-field serde JSON struct, preceded by
+its four-byte big-endian byte length. Its ordered fields are `domain`
+(`libresync-managed-pair-v2`), `hello`, `server_identity`, `server_metadata`, and
+`server_pake`. `hello` contains protocol version, invitation ID, client identity,
+full client metadata/manifest, both **observed** TLS certificate fingerprints,
+and client SPAKE2 bytes, in that order. The server compares fingerprint fields
+with its own certificate and the TLS client's actual certificate. The server
+identity and complete server manifest are confirmed along with both SPAKE2
+messages. Manifest compatibility requires identical app ID, schema version,
+and adapter descriptors sorted by adapter ID; friendly names can differ.
+
+HKDF-SHA256 derives six separate 32-byte keys from the SPAKE2 result, with
+SHA-256 of the length-prefixed transcript as salt and labels `client-confirm`,
+`server-confirm`, `server-ready`, `client-prepared`, `accepted-key`, and `commit`. HMAC-SHA256 authenticates the
+transcript with the matching role key. The accepted-key and commit tags append
+the 32-byte authoritative inviter app key. Tags are checked using the HMAC
+library's constant-time verification. Server confirmation precedes client
+confirmation. No app key is sent until both client confirmation and durable preparation proof succeed.
+
+The joining client durably journals the authenticated server identity,
+metadata, certificate pin, and invitation ID via `prepare_secure_pairing`
+before sending durable `PairPrepared`. This journal does not activate trust or
+change the app key. The inviter's `commit_secure_pairing` must atomically persist
+its approval journal and trust with its existing app key before `PairAccepted`.
+The invitation lock serializes this commit with revocation; expiry is rechecked
+at commit and before final acceptance. Successful durable approval consumes the
+invitation. The client durably commits its key and trust before `PairCommit`.
+Final server acceptance rechecks that the enrollment remains unrevoked.
+
+A lost acceptance or final acknowledgement is recovered with `PairRecover`
+using the prepared journal, the original client TLS key, and the pinned inviter
+certificate. `recover_secure_pairing` must match invitation ID, full identity,
+and observed certificate fingerprint in a durable, unrevoked enrollment before
+`PairRecovered` can return the existing group key. This path cannot enroll a
+new peer, reopen an invitation, or rotate the inviter key. Client commit hooks
+must be idempotent. The Session storage coordinator is responsible for atomic
+persistence, serialized group enrollment, cancellation/revocation, refusing
+silent replacement of an existing group key, and refusing a new certificate
+for an already enrolled identity without explicit repair.
+
+The legacy Engine remains opt-in compatible with `LinkRequest` and legacy
+`Hello` sync. Managed handlers set `allow_legacy_link` to false, rejecting both
+before approval, key mutation, or legacy sync; they never downgrade.
+
+## Managed discovery hints
+
+`register_mdns_metadata` preserves the legacy service type and identity TXT
+fields and adds friendly device/app names, device kind, role, schema version,
+and a SHA-256 adapter-contract digest. Individual text fields are bounded to
+128 bytes. The contract digest hashes JSON of app ID, schema version, and
+adapter descriptors sorted by ID, excluding friendly display labels.
+`register_mdns_metadata_with_invitation` may add the public invitation ID,
+expiry, and inviter fingerprint for code entry. It never accepts the secret.
+QR device identity/endpoints are supplied by the managed Session wrapper.
+
+`browse_mdns_metadata` deduplicates by stable device ID and retains distinct
+addresses. Legacy advertisements remain visible without managed metadata.
+Advertisements and their certificate pins are untrusted hints: the complete
+app manifest and identities must be revalidated by authenticated pairing.
+
+## Managed synchronization branch
+
+Managed sessions use `ManagedHello`, `ManagedDelta`, `ManagedAck`, and `ManagedPending` independently of legacy `Hello`/delta Engine exchange. Mutual TLS pins an enrolled device identity; full manifests are checked again before export. A group-authenticated encrypted batch contains an epoch, exact captured sequence, authoritative-full-snapshot flag, and logical records including tombstones.
+
+A `Stored` receipt is emitted only after the prepared and completed encrypted journal are durable. `Applied` processing claims refer to checkpoints previously issued by that authenticated sender. Preview transport is allowed before merge consent, but `ManagedPending` is not a receipt and never advances the source cursor, publishes app data, or clears pending exports. An authenticated authoritative empty full snapshot establishes the empty initial state; a nonempty local model requires validated merge consent. Retries acknowledge exact historical checkpoints without regressing the receiver's cumulative cursor. See [Managed sessions](MANAGED-SESSION.md) for application inbox acknowledgment and storage recovery contracts.
+
+Managed record values and encrypted batch bytes use bounded base64 JSON. Each record permits up to 64 MiB, including a serialized 32 MiB compressed application snapshot. The complete authoritative export, including metadata and receipt proof, must fit 128 MiB before encryption; the existing 256 MiB outer protocol frame cap is unchanged. Local edits, inbound merges, and recovered prepared candidates that exceed this budget fail before publication and preserve data and cursors. These are whole-state bounds; applications must partition or compact larger models before committing them.
+
+Exact checkpoint receipts carry a 32-byte HMAC proof minted only at export. A purpose-separated HKDF key binds the application domain, full enrolled peer identity, certificate fingerprint, durable enrollment incarnation, source epoch, and sequence using length-prefixed encoding. Constant-time verification accepts legitimately delayed receipts across ordinary restart while removal, repair, and fresh enrollment rotate the incarnation. Invalid cursor hints trigger an authoritative full export; stale processing proofs cannot advance Applied and do not prevent recovery. No growing issued-checkpoint history is retained.
+
+Pairing protocol version 2 separates authentication from durable preparation. The joiner promptly sends `PairConfirm` after verifying the server challenge. The inviter verifies it under the short initial deadline and immediately returns `PairReady`, authenticated with its separate transcript-derived ready key, without committing enrollment or releasing the app key. The joiner verifies Ready, extends only its authenticated I/O budget, durably prepares its challenge journal, and sends `PairPrepared` authenticated with the distinct prepared key. Only after verifying Prepared may the inviter commit and send the authoritative key. Missing, reflected, wrong, and replayed preparation tags cannot enroll a peer. The inviter extends its budget only after verified client proof. Version 1 is rejected explicitly; legacy Engine exchange is unchanged.
+
+Discovery advertises `pair_version` separately from the app schema/contract digest. A missing pairing version describes the older version 1 invitation, which version 2 pairing rejects; matching app schemas do not imply pairing protocol compatibility. Consumers can explain that an invitation needs a protocol upgrade when its version differs from `PAIRING_VERSION`. Authenticated recovery extends commit I/O only after the server checks its exact current journal, identity, certificate, manifest and revocation; the client checks the pinned server and exact recovered identity/schema before extending its durable commit budget. Initial recovery response contention still uses bounded retries and short first-response deadlines.
+
+## Native managed integration
+
+Managed ABI v1 transports record values and 32-byte checkpoint proofs as base64 JSON, preserving exact bytes and unsigned 64-bit counters. It does not change protocol-v2 pairing authentication. Native system Bonjour contributes bounded public TXT and ephemeral addresses to the existing pinned reconnect scheduler; advertised invitation IDs and expiry are hints, never credentials. See [managed C ABI](MANAGED-C-ABI.md) for lifetime and durable Applied contracts.

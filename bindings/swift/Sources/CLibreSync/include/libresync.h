@@ -61,6 +61,26 @@ bool libresync_backup_prune(void *handle, const char *adapter_id, size_t max_sna
 char *libresync_last_error(void);
 void libresync_string_free(char *ptr);
 
+/* Managed ABI v1. Registry IDs remain safe after concurrent/repeated close.
+ * Each JSON result owns its string; free with libresync_string_free.
+ * call op=cancel interrupts current IO; close invalidates acquisition first.
+ * All callbacks must be thread-safe and MUST NOT reenter LibreSync.
+ * Callback output remains owned by caller until release_buffer. Context is
+ * transferred to open even on failure and released after all in-flight calls.
+ * get=0,set=1,delete=2; status 0=success,1=absent(get only),-1=unavailable.
+ * No plaintext key-storage fallback. At most 1 MiB per callback result.
+ */
+typedef struct libresync_key_callbacks {
+    void *context;
+    int32_t (*call)(void *, uint32_t, const char *, const uint8_t *, size_t, const uint8_t **, size_t *);
+    void (*release_buffer)(void *, const uint8_t *, size_t);
+    void (*release_context)(void *);
+} libresync_key_callbacks;
+uint32_t libresync_managed_abi_version(void);
+char *libresync_session_open(const char *config_json, libresync_key_callbacks callbacks);
+char *libresync_session_call(uint64_t handle, const char *command_json);
+char *libresync_session_close(uint64_t handle);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif
