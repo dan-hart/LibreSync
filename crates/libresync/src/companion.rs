@@ -204,8 +204,16 @@ pub struct CompanionManager {
     sessions: BTreeMap<String, Arc<Session>>,
     catalog: Vec<AppSupport>,
     fenced: bool,
-    _lease: fs::File,
+    _lease: crate::lease::StateLease,
 }
+impl Drop for CompanionManager {
+    fn drop(&mut self) {
+        // Also stop sessions retained by callers. The final lease field drops only
+        // after shutdown and the manager's session references have been dropped.
+        let _ = self.shutdown();
+    }
+}
+
 struct SpaceKeys {
     prefix: String,
     store: Arc<dyn KeyStore>,
@@ -301,10 +309,10 @@ impl CompanionManager {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let lease = options.open(root.join("manager.lock"))?;
-        lease
-            .try_lock()
-            .map_err(|_| Error::Protocol("companion already open".into()))?;
+        let lease = crate::lease::StateLease::acquire(
+            options.open(root.join("manager.lock"))?,
+            "companion directory",
+        )?;
         let registry = match fs::read(root.join("spaces.json")) {
             Ok(bytes) => serde_json::from_slice::<Registry>(&bytes)?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Registry::default(),
@@ -827,5 +835,50 @@ impl CompanionManager {
             .into_iter()
             .find(|r| r.id == snapshot)
             .ok_or_else(|| Error::Protocol("pre-merge recovery copy absent".into()))
+    }
+}
+
+#[cfg(test)]
+mod lease_tests {
+    use super::*;
+
+    #[test]
+    fn companion_drop_stops_sessions_retained_by_callers() {
+        let root = tempfile::tempdir().unwrap();
+        let keys = Arc::new(MemoryKeyStore::new());
+        let mut manager = CompanionManager::open(root.path(), "Lease test", keys, false).unwrap();
+        let id = manager.add_app(notes_manifest()).unwrap();
+        let retained = manager.session(&id).unwrap();
+        assert_eq!(retained.snapshot().unwrap().phase, SessionPhase::Running);
+        drop(manager);
+        assert_eq!(retained.snapshot().unwrap().phase, SessionPhase::Stopped);
+    }
+
+    #[test]
+    fn companion_owner_drop_releases_lease_with_retained_descriptor() {
+        let root = tempfile::tempdir().unwrap();
+        let keys = Arc::new(MemoryKeyStore::new());
+        let mut manager =
+            CompanionManager::open(root.path(), "Lease test", keys.clone(), false).unwrap();
+        manager.add_app(notes_manifest()).unwrap();
+        let inherited = manager._lease.try_clone().unwrap();
+        assert!(CompanionManager::open(root.path(), "Lease test", keys.clone(), false).is_err());
+        drop(manager);
+        let reopened =
+            CompanionManager::open(root.path(), "Lease test", keys.clone(), false).unwrap();
+        assert!(CompanionManager::open(root.path(), "Lease test", keys.clone(), false).is_err());
+        drop(reopened);
+        // A persisted space unsupported by the caller catalog must release its lease.
+        assert!(CompanionManager::open_with_catalog(
+            root.path(),
+            "Lease test",
+            keys.clone(),
+            false,
+            vec![]
+        )
+        .is_err());
+        let recovered = CompanionManager::open(root.path(), "Lease test", keys, false).unwrap();
+        drop(recovered);
+        drop(inherited);
     }
 }

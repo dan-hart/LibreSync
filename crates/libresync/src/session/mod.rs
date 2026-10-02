@@ -108,7 +108,6 @@ pub struct Session {
 struct Inner {
     storage_uncertain: std::sync::atomic::AtomicBool,
     wake: (flume::Sender<()>, flume::Receiver<()>),
-    _lease: std::fs::File,
     config: SessionConfig,
     keys: DeviceKeys,
     storage_key: AppKey,
@@ -122,6 +121,8 @@ struct Inner {
     discovered: Mutex<BTreeMap<String, crate::DiscoveredPeer>>,
     invitation: Mutex<Option<crate::PairingDescriptor>>,
     active_pairings: Mutex<std::collections::BTreeSet<String>>,
+    // Drop only after runtime state and worker references have been torn down.
+    _lease: crate::lease::StateLease,
 }
 impl Session {
     pub fn open(mut config: SessionConfig, keystore: Arc<dyn KeyStore>) -> Result<Self> {

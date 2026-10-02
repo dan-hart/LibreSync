@@ -10,6 +10,7 @@ mod error;
 mod identity;
 mod keys;
 mod keystore;
+mod lease;
 mod logical;
 mod pairing;
 mod protocol;

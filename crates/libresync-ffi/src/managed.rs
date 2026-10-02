@@ -23,6 +23,21 @@ struct Handle {
 }
 static HANDLES: OnceLock<Mutex<HashMap<u64, Arc<Handle>>>> = OnceLock::new();
 static NEXT: AtomicU64 = AtomicU64::new(1);
+// IDs reserve zero and never wrap or reuse an exhausted counter. Relaxed ordering
+// suffices: the registry mutex publishes handle/subscription contents separately.
+fn next_id(counter: &AtomicU64) -> Option<u64> {
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        if current == 0 {
+            return None;
+        }
+        let next = current.checked_add(1)?;
+        match counter.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return Some(current),
+            Err(observed) => current = observed,
+        }
+    }
+}
 fn handles() -> &'static Mutex<HashMap<u64, Arc<Handle>>> {
     HANDLES.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -149,15 +164,10 @@ pub(super) fn open(input: Value, keys: Arc<dyn KeyStore>) -> Value {
                 Ok(v) => v,
                 Err(e) => return convert(e),
             };
-            let id = match NEXT
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-            {
-                Ok(id) => id,
-                Err(_) => return error("Busy", "managed handle space exhausted"),
+            let id = match next_id(&NEXT) {
+                Some(id) => id,
+                None => return error("Busy", "managed handle space exhausted"),
             };
-            if id == 0 || id == u64::MAX {
-                return error("Busy", "managed handle space exhausted");
-            }
             match handles().lock() {
                 Ok(mut map) => {
                     map.insert(
@@ -460,9 +470,7 @@ pub(super) fn dispatch(id: u64, input: Value) -> Value {
                         message: "subscription capacity reached".into(),
                     });
                 }
-                let id = NEXT
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
-                    .map_err(|_| invalid("subscription ID exhausted"))?;
+                let id = next_id(&NEXT).ok_or_else(|| invalid("subscription ID exhausted"))?;
                 subscriptions.insert(id, s.subscribe()?);
                 json!(id)
             }
@@ -654,6 +662,42 @@ pub extern "C" fn libresync_session_close(id: u64) -> *mut c_char {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn monotonic_ids_refuse_reserved_zero_and_exhaustion_without_wraparound() {
+        let invalid = AtomicU64::new(0);
+        assert_eq!(next_id(&invalid), None);
+        assert_eq!(invalid.load(Ordering::Relaxed), 0);
+        let counter = AtomicU64::new(u64::MAX - 2);
+        assert_eq!(next_id(&counter), Some(u64::MAX - 2));
+        assert_eq!(next_id(&counter), Some(u64::MAX - 1));
+        for _ in 0..4 {
+            assert_eq!(next_id(&counter), None);
+            assert_eq!(counter.load(Ordering::Relaxed), u64::MAX);
+        }
+    }
+
+    #[test]
+    fn monotonic_ids_are_unique_under_concurrent_allocation() {
+        let counter = Arc::new(AtomicU64::new(1));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let counter = Arc::clone(&counter);
+                std::thread::spawn(move || {
+                    (0..256)
+                        .map(|_| next_id(&counter).unwrap())
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let mut ids: Vec<_> = threads
+            .into_iter()
+            .flat_map(|t| t.join().unwrap())
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids, (1..=2048).collect::<Vec<_>>());
+        assert_eq!(next_id(&counter), Some(2049));
+    }
+
     use super::*;
     use serde_json::json;
     struct CallbackContext {

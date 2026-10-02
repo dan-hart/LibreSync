@@ -116,7 +116,7 @@ pub(super) fn save(config: &SessionConfig, key: &AppKey, envelope: &Envelope) ->
     result
 }
 
-pub(super) fn lease(config: &SessionConfig) -> Result<fs::File> {
+pub(super) fn lease(config: &SessionConfig) -> Result<crate::lease::StateLease> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -129,38 +129,10 @@ pub(super) fn lease(config: &SessionConfig) -> Result<fs::File> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let file = options.open(config.state_dir.join("session.lock"))?;
-    // Rust 1.91 std::File::try_lock deliberately reports Unsupported on Android.
-    // Bionic provides flock; the kernel lease still excludes independent sessions
-    // and is released by closing this exact file descriptor (including crashes).
-    #[cfg(target_os = "android")]
-    {
-        use std::os::fd::AsRawFd;
-        // SAFETY: file owns a live descriptor, flags have no pointer arguments.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            let error = std::io::Error::last_os_error();
-            return Err(crate::Error::Managed {
-                code: if error.kind() == std::io::ErrorKind::WouldBlock {
-                    super::SessionErrorCode::Busy
-                } else {
-                    super::SessionErrorCode::StorageUnavailable
-                },
-                message: format!("managed state lease failed: {error}"),
-            });
-        }
-    }
-    #[cfg(not(target_os = "android"))]
-    file.try_lock().map_err(|error| match error {
-        std::fs::TryLockError::WouldBlock => crate::Error::Managed {
-            code: super::SessionErrorCode::Busy,
-            message: "managed state directory is already open".into(),
-        },
-        std::fs::TryLockError::Error(error) => crate::Error::Managed {
-            code: super::SessionErrorCode::StorageUnavailable,
-            message: format!("managed state lease failed: {error}"),
-        },
-    })?;
-    Ok(file)
+    crate::lease::StateLease::acquire(
+        options.open(config.state_dir.join("session.lock"))?,
+        "managed state directory",
+    )
 }
 
 #[cfg(not(test))]
@@ -214,6 +186,30 @@ mod tests {
             },
         )
     }
+    #[test]
+    fn session_owner_drop_releases_lease_with_retained_descriptor() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = Arc::new(MemoryKeyStore::new());
+        let session = Session::open(config(dir.path()), keys.clone()).unwrap();
+        let inherited = session.inner._lease.try_clone().unwrap();
+        assert!(matches!(
+            Session::open(config(dir.path()), keys.clone()),
+            Err(crate::Error::Managed {
+                code: super::super::SessionErrorCode::Busy,
+                ..
+            })
+        ));
+        drop(session);
+        let reopened = Session::open(config(dir.path()), keys.clone()).unwrap();
+        assert!(Session::open(config(dir.path()), keys.clone()).is_err());
+        drop(reopened);
+        // Failed identity recovery must also release the newly acquired lease.
+        assert!(Session::open(config(dir.path()), Arc::new(MemoryKeyStore::new())).is_err());
+        let recovered = Session::open(config(dir.path()), keys).unwrap();
+        drop(recovered);
+        drop(inherited);
+    }
+
     #[test]
     fn queued_mutation_cannot_write_after_storage_commit_becomes_uncertain() {
         let dir = tempfile::tempdir().unwrap();

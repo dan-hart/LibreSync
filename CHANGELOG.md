@@ -10,6 +10,12 @@ narrative context live in `RELEASES.md`.
 
 - Add managed C, Swift and Android SDKs with typed sessions, secure platform storage, native QR/code discovery and consent UI, durable proof-bearing inbox acknowledgements, complete Apple slices and Android JNI/AAR packaging.
 
+### Fixed
+
+- Release managed Session and companion leases after runtime teardown even when child processes retain duplicated descriptors; preserve live-owner exclusion and kernel crash cleanup.
+- Keep managed registry ID allocation compatible with current stable Rust without wrapping or reusing IDs.
+- Install supported Android `platform-tools` in CI instead of the removed legacy `tools` package.
+
 ### Added
 
 - Managed multi-app AlwaysOn dashboard and daemon with separately trusted app spaces, local expiring QR/code invitations, merge consent, repair, truthful Stored/Applied status, and encrypted bounded recovery exports.
