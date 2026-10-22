@@ -6,19 +6,36 @@ Build all Apple slices with `scripts/build-apple-sdk.sh`, then `swift test --pac
 
 ```swift
 let session = try await LibreSyncSession.open(
-    .notes(stateDirectory: directory, displayName: "My device"),
+    .notes(stateDirectory: directory),
     keys: LibreSyncKeychainStore(service: "io.libresync.Notes"))
 let model = await LibreSyncSessionModel(session: session)
-await model.start()
+await model.startAndWait()
 ```
+
+## Native Nearby Sync
+
+Use `LibreSyncNearbySyncView(model: model)` for a guided native flow: a stable friendly device name, Your devices, explicit Add Device, expiring six-digit codes or QR invitations, and connection help. It works with one shared `LibreSyncSessionModel`. The host starts the model and remains responsible for durable application inbox processing; displaying the view never acknowledges records.
+
+Omitting `displayName` (or passing an empty string) generates a name such as “Bright Avocado” once in the shared Rust session. Reopening the same private state directory with the same secure-store identity preserves it. Explicit names remain supported. Names are display labels, may collide, and grant no trust. Renaming can be implemented by awaiting model shutdown and closing the session, then reopening the same state/keys with a validated explicit name; the view accepts an optional `onRename` host callback.
+
+```swift
+LibreSyncNearbySyncView(model: model)
+// Before the host closes or replaces its session:
+await model.stopAndWait()
+await session.close()
+```
+
+Discovery runs while the model is started; invitations open only after an explicit user action. Compatibility is separate from whether a device is currently offering a valid pairing code. Dismissing Add Device closes the local invitation and cancels outstanding pairing work. The UI distinguishes remote storage from the other app applying changes, and shows technical evidence under Details.
+
+Try the [macOS notes demo](../../demos/NearbySyncMac/README.md) for a complete app with isolated profiles and durable receipt acknowledgement. From the repository root, run `scripts/run-nearby-sync-demo.sh --two` to build and launch two demo instances.
 
 The notes convenience uses exactly the companion's public `notes_manifest`. A custom application chooses `policy: .records` and its own stable `LibreSyncManifest` app ID, namespace and `logical-records-v1` descriptors. This explicitly selects the reviewed pure logical LWW/tombstone policy. `momentum` selects the exact verified immutable Momentum policy. Other custom schemas are refused with `InvalidAdapter`; register their pure `ManagedAdapter` in Rust instead. Session owns storage; policies must not write an external database.
 
-Use `LibreSyncConnectView`, `LibreSyncDevicesView`, and `LibreSyncStatusView` with one shared model. They include offline QR display/optional camera scanning, actual nearby friendly devices and six-digit codes, explicit Combine/Cancel, pause/resume, repair and data-preserving removal. `Samples/QuickstartApp` contains a SwiftUI application source and Info.plist. Copy it into an app target and add the extracted SDK package. The UI does not establish trust from Bonjour hints; core authentication checks pinned certificates, pairing version and the complete manifest.
+The existing `LibreSyncConnectView`, `LibreSyncDevicesView`, and `LibreSyncStatusView` remain available with one shared model. They include offline QR display/optional camera scanning, actual nearby friendly devices and six-digit codes, explicit Combine/Cancel, pause/resume, repair and data-preserving removal. `Samples/QuickstartApp` contains a SwiftUI application source and Info.plist. Copy it into an app target and add the extracted SDK package. The UI does not establish trust from Bonjour hints; core authentication checks pinned certificates, pairing version and the complete manifest.
 
 For ordinary iOS discovery, declare `NSLocalNetworkUsageDescription` and `NSBonjourServices = ["_libresync._tcp"]`. Optional QR scanning also needs `NSCameraUsageDescription`. The SDK defaults to system `NetService` Bonjour on the actual Rust listener, with raw core multicast disabled. It needs no restricted multicast entitlement for that fixed declared service. Default listeners use IPv4; resolved AAAA hints are retained only for an explicitly configured IPv6 listener. Scoped IPv6 values use numeric scope IDs. IPv6 reachability is not claimed from the IPv4 native test. Raw BSD multicast is an advanced core opt-in requiring the restricted entitlement on physical iOS.
 
-A permission timeout or an empty nearby list means `Unknown`; only actual platform policy evidence means `Denied`. Simulator tests cannot verify physical iOS Local Network privacy. Pause when backgrounded and resume/wake on foreground; iOS suspension limits background work. Stop the model and await `session.close()` when the host is finished.
+A permission timeout or an empty nearby list means `Unknown`; only actual platform policy evidence means `Denied`. Simulator tests cannot verify physical iOS Local Network privacy. Pause when backgrounded and resume/wake on foreground; iOS suspension limits background work. Await `model.stopAndWait()` and then `session.close()` when the host is finished.
 
 ```swift
 let inbox = try await session.inbox()

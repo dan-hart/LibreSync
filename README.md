@@ -85,6 +85,8 @@ The crates are not yet published to crates.io. Use Homebrew, a Git tag, or a loc
 
 ### Connect an application
 
+For the current source UI, try the [native macOS Nearby Sync demo](demos/NearbySyncMac/README.md): `scripts/run-nearby-sync-demo.sh --two` builds a signed app and opens two isolated profiles. It uses the shared Rust engine, persistent friendly names, and the reusable SwiftUI pairing screen.
+
 Start with the [managed Session guide](docs/MANAGED-SESSION.md), [Swift notes sample](bindings/swift/Samples/QuickstartApp), or [Android notes sample](bindings/kotlin/sample). A Session owns discovery, its listener, secure pairing and automatic retry. Supply a stable app/schema contract, a private state directory and platform secure storage. Run the working Rust example:
 
 ```sh

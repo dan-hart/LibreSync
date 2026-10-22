@@ -6,6 +6,12 @@ narrative context live in `RELEASES.md`.
 
 ## [Unreleased]
 
+### Added
+
+- Persistent friendly device names for managed sessions: omit the local display name to generate an installation-specific alias without changing device identity or trust.
+- Native Apple Nearby Sync components with guided code/QR pairing, readable device status, and explicit pairing cleanup.
+- A runnable macOS Nearby Sync notes demo with isolated profiles for testing discovery, pairing, and durable application acknowledgements on one Mac.
+
 ## [0.7.0] - 2026-10-01
 
 - Add managed C, Swift and Android SDKs with typed sessions, secure platform storage, native QR/code discovery and consent UI, durable proof-bearing inbox acknowledgements, complete Apple slices and Android JNI/AAR packaging.

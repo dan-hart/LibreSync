@@ -2,42 +2,6 @@ import SwiftUI
 import CoreImage
 import CoreImage.CIFilterBuiltins
 
-@MainActor
-public final class LibreSyncSessionModel:ObservableObject {
-    public let session:LibreSyncSession
-    @Published public private(set) var snapshot:LibreSyncSessionSnapshot?
-    @Published public private(set) var nearby:[LibreSyncNearbyDevice]=[]
-    @Published public private(set) var invitation:LibreSyncInvitation?
-    @Published public private(set) var bootstrap:LibreSyncBootstrapPreview?
-    @Published public private(set) var error:String?
-    @Published public private(set) var permission:LibreSyncPermissionState = .unknown
-    @Published public private(set) var compatibleContract:String?
-    private var observer:Task<Void,Never>?
-    private var lifecycle:Task<Void,Never>?
-    private let bonjour:LibreSyncBonjour
-    private let permissionRequest=LibreSyncLocalNetworkPermission()
-    public init(session:LibreSyncSession){self.session=session;bonjour=LibreSyncBonjour(session:session)}
-    public func start(){sequence {[self] in do{_ = try await self.session.resume();try await self.bonjour.start();try await self.refresh();self.observer?.cancel();self.observer=Task{[weak self,session=self.session] in do{for try await _ in session.events(){guard let owner=self else{break};try await owner.refresh()}}catch{if !Task.isCancelled{self?.error=error.localizedDescription}}}}catch{self.error=error.localizedDescription}}}
-    public func stop(){observer?.cancel();observer=nil;sequence{await self.bonjour.stop();do{try await self.session.pause()}catch{self.error=error.localizedDescription}}}
-    public func refresh()async throws {snapshot=try await session.snapshot();nearby=try await session.nearby();compatibleContract=try await session.platformAdvertisement().txt["contract"]}
-    public func compatible(_ peer:LibreSyncNearbyDevice)->Bool {peer.advertisement?.contract_digest==compatibleContract && peer.invitation?.version==2}
-    public func offerCode(){run{self.invitation=try await self.session.invitation(code:true)}}
-    public func offerQR(){run{self.invitation=try await self.session.invitation()}}
-    public func connect(_ encoded:String){run{_ = try await self.session.connect(encoded);try await self.refresh()}}
-    public func connect(_ peer:LibreSyncNearbyDevice,code:String){run{_ = try await self.session.connect(peer,code:code);try await self.refresh()}}
-    public func review(_ peer:LibreSyncPeer){run{self.bootstrap=try await self.session.bootstrap(peer:peer.identity.device_id)}}
-    public func resolve(_ decision:LibreSyncBootstrapDecision){guard let preview=bootstrap else{return};run{try await self.session.resolve(preview,decision:decision);self.bootstrap=nil;try await self.refresh()}}
-    public func resume(_ peer:LibreSyncPeer){run{try await self.session.resume(peer:peer.identity.device_id);try await self.refresh()}}
-    public func pause(_ peer:LibreSyncPeer){run{try await self.session.pause(peer:peer.identity.device_id);try await self.refresh()}}
-    public func remove(_ peer:LibreSyncPeer){run{try await self.session.remove(peer:peer.identity.device_id);try await self.refresh()}}
-    public func repair(_ peer:LibreSyncPeer,invitation:String){run{_ = try await self.session.repair(peer:peer.identity.device_id,invitation:invitation);try await self.refresh()}}
-    public func wake(){start()}
-    public func requestPermission(){permissionRequest.requestState{[weak self] state in self?.setPermission(state)}}
-    public func setPermission(_ state:LibreSyncPermissionState){permission=state;run{try await self.session.reportPermission(state)}}
-    private func sequence(_ action:@escaping @MainActor ()async->Void){let previous=lifecycle;lifecycle=Task{await previous?.value;await action()}}
-    private func run(_ action:@escaping @MainActor ()async throws->Void){Task{do{try await action();error=nil}catch{self.error=error.localizedDescription}}}
-    deinit{observer?.cancel()}
-}
 public enum LibreSyncQR {
     public static func image(_ invitation:String)->CGImage? {
         guard invitation.utf8.count<=16*1024 else{return nil}
@@ -84,11 +48,12 @@ public struct LibreSyncConnectView:View {
             Section("Nearby devices") {
                 if model.nearby.isEmpty{Text("No compatible device found yet. Check Wi-Fi and Local Network access. An empty list does not establish permission denial.")}
                 ForEach(model.nearby,id:\.identity.device_id){peer in
-                    VStack(alignment:.leading){Text(peer.advertisement?.display_name ?? "Nearby device");if model.compatible(peer){Button("Enter this device’s code"){selected=peer;confirmCode=true}}else{Text(peer.invitation?.version != 2 ? "Update both devices or open pairing on that device." : "This app’s schema differs. Update both apps.").font(.caption)}}
+                    VStack(alignment:.leading){Text(peer.advertisement?.display_name ?? "Nearby device");if model.canPair(peer){Button("Enter this device’s code"){selected=peer;confirmCode=true}}else{Text(peer.invitation?.version != 2 ? "Update both devices or open pairing on that device." : "This app’s schema differs. Update both apps.").font(.caption)}}
                 }
             }
             if let error=model.error {Section("Needs attention"){Text(error)}}
         }
+        .onDisappear { model.endPairing() }
         .alert("Connect this app’s sync group?",isPresented:$confirmQR){Button("Cancel",role:.cancel){};Button("Connect"){model.connect(encoded)}}message:{Text(invitationName(encoded))}
         .sheet(isPresented:$confirmCode){VStack(spacing:16){Text(selected?.advertisement?.display_name ?? "Nearby device").font(.headline);Text("Enter the six-digit code shown on this device to grant access to this app’s sync group.");TextField("Six-digit code",text:$code);Button("Connect"){if let selected{model.connect(selected,code:code)};confirmCode=false};Button("Cancel"){confirmCode=false}}.padding()}
     }
@@ -102,8 +67,14 @@ public struct LibreSyncDevicesView:View {
     public init(model:LibreSyncSessionModel){self.model=model}
     public var body:some View {
         List {ForEach(model.snapshot?.peers ?? [],id:\.identity.device_id){peer in
-            VStack(alignment:.leading){Text(peer.metadata.display_name).font(.headline);Text(peer.revoked ? "Removed — stored data retained" : String(describing:peer.state));Text("Pending records: \(peer.pending)").font(.caption)
-                HStack{if peer.state == .needsMerge{Button("Review combine"){model.review(peer)}};if !peer.revoked{if peer.state == .paused{Button("Resume"){model.resume(peer)}}else{Button("Pause"){model.pause(peer)}}};Button("Repair"){repairing=peer};Button("Remove",role:.destructive){removing=peer}}
+            VStack(alignment:.leading){Text(peer.metadata.display_name).font(.headline);Text(peer.revoked ? "Removed — stored data retained" : LibreSyncSessionModel.status(for:peer.state));DisclosureGroup("Device details") {
+                    Text("Changes awaiting confirmation: \(peer.pending)").font(.caption)
+                    Text("Verified device fingerprint: \(peer.fingerprint)").font(.caption).textSelection(.enabled)
+                }
+                HStack{if peer.state == .needsMerge{Button("Review shared data"){model.review(peer)}};if !peer.revoked{if peer.state == .paused{Button("Resume"){model.resume(peer)}}else{Button("Pause"){model.pause(peer)}}};Menu("Manage device") {
+                    Button("Reconnect with invitation"){repairing=peer}
+                    Button("Remove device",role:.destructive){removing=peer}
+                }}
             }
         }}
         .alert("Remove device trust?",isPresented:Binding(get:{removing != nil},set:{if !$0{removing=nil}})){Button("Cancel",role:.cancel){removing=nil};Button("Remove",role:.destructive){if let peer=removing{model.remove(peer)};removing=nil}}message:{Text("Existing local data stays on this device. Reconnecting requires a fresh invitation and explicit repair.")}
@@ -114,6 +85,6 @@ public struct LibreSyncDevicesView:View {
 public struct LibreSyncStatusView:View {
     @ObservedObject private var model:LibreSyncSessionModel
     public init(model:LibreSyncSessionModel){self.model=model}
-    public var body:some View {VStack(alignment:.leading,spacing:10){Text("Sync: \(model.snapshot?.phase.rawValue ?? "Stopped")");Text("Local Network: \(model.permission.rawValue)");Button("Retry / reconnect"){model.wake()};if let error=model.error{Text(error)};ForEach(Array((model.snapshot?.diagnostics ?? []).enumerated()),id:\.offset){_,event in if case .diagnostic(let d)=event{Text(d.message);Text(guidance(d.action)).font(.caption)}}}}
-    private func guidance(_ action:LibreSyncDiagnosticAction)->String {switch action{case .grantPermission,.checkPermissions:return "Allow Local Network in system Settings, check Wi-Fi, then retry.";case .repairPeer:return "Get a fresh invitation from the device and repair trust in Devices.";case .reviewMerge:return "Review Combine or Cancel in Devices.";case .checkSecureStorage:return "Unlock secure storage and retry. Do not regenerate the identity.";case .reviewRecords:return "Check record size and app schema; retained records remain available.";case .reviewCompatibility:return "Update both devices to compatible app and pairing versions.";default:return action.rawValue}}
+    public var body:some View {VStack(alignment:.leading,spacing:10){Text(model.phaseDescription);Text("Local Network: \(model.permission.rawValue)");Button("Retry / reconnect"){model.wake()};if let error=model.error{Text(error)};ForEach(Array((model.snapshot?.diagnostics ?? []).enumerated()),id:\.offset){_,event in if case .diagnostic(let d)=event{Text(d.message);Text(guidance(d.action)).font(.caption)}}}}
+    private func guidance(_ action:LibreSyncDiagnosticAction)->String {switch action{case .grantPermission,.checkPermissions:return "Allow Local Network in system Settings, check Wi-Fi, then retry.";case .repairPeer:return "Get a fresh invitation from the device and repair trust in Devices.";case .reviewMerge:return "Review shared data in Devices.";case .checkSecureStorage:return "Unlock secure storage and retry. Do not regenerate the identity.";case .reviewRecords:return "Check record size and app schema; retained records remain available.";case .reviewCompatibility:return "Update both devices to compatible app and pairing versions.";default:return action.rawValue}}
 }

@@ -19,6 +19,7 @@ use std::{
 #[derive(Clone)]
 pub struct SessionConfig {
     pub state_dir: PathBuf,
+    /// An empty display name selects a generated name, persisted with the installation.
     pub metadata: DeviceMetadata,
     pub listen: std::net::SocketAddr,
     pub advertise: bool,
@@ -58,6 +59,32 @@ impl SessionConfig {
         }
     }
 }
+// Power-of-two vocabulary sizes avoid biased selection without additional entropy calls.
+fn friendly_name() -> Result<String> {
+    use rand_core::{OsRng, RngCore};
+    const ADJECTIVES: [&str; 32] = [
+        "Bright", "Calm", "Clever", "Cozy", "Curious", "Daring", "Gentle", "Golden", "Happy",
+        "Jolly", "Kind", "Lively", "Lucky", "Mellow", "Merry", "Nimble", "Patient", "Playful",
+        "Quiet", "Radiant", "Rosy", "Silver", "Snug", "Solar", "Spry", "Steady", "Sunny", "Swift",
+        "Tender", "Vivid", "Warm", "Wise",
+    ];
+    const NOUNS: [&str; 32] = [
+        "Acorn", "Apricot", "Avocado", "Badger", "Birch", "Blossom", "Cedar", "Cherry", "Clover",
+        "Coral", "Dolphin", "Falcon", "Fern", "Finch", "Fox", "Heron", "Juniper", "Kiwi", "Lark",
+        "Maple", "Meadow", "Otter", "Panda", "Peach", "Pebble", "Pine", "Robin", "Sparrow",
+        "Spruce", "Tulip", "Willow", "Wren",
+    ];
+    let mut bytes = [0; 2];
+    OsRng
+        .try_fill_bytes(&mut bytes)
+        .map_err(|error| Error::Crypto(format!("friendly name entropy unavailable: {error}")))?;
+    Ok(format!(
+        "{} {}",
+        ADJECTIVES[usize::from(bytes[0] & 31)],
+        NOUNS[usize::from(bytes[1] & 31)]
+    ))
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ManagedRecord {
     pub adapter: String,
@@ -126,7 +153,13 @@ struct Inner {
 }
 impl Session {
     pub fn open(mut config: SessionConfig, keystore: Arc<dyn KeyStore>) -> Result<Self> {
-        config.metadata.validate()?;
+        let automatic_name = config.metadata.display_name.is_empty();
+        let mut validated_metadata = config.metadata.clone();
+        if automatic_name {
+            // Only the local configuration accepts this shorthand. Wire validation stays strict.
+            validated_metadata.display_name = "Managed device".into();
+        }
+        validated_metadata.validate()?;
         if config.adapters.len() != config.metadata.manifest.adapters.len()
             || config.metadata.manifest.adapters.iter().any(|d| {
                 config
@@ -177,30 +210,43 @@ impl Session {
                 }
                 e
             }
-            None => Envelope {
-                version: 1,
-                prepared: None,
-                recovery: Vec::new(),
-                identity,
-                metadata: config.metadata.clone(),
-                group_key: AppKey::generate()?.as_bytes().to_vec(),
-                epoch: random_id(),
-                revision: 0,
-                local_revision: 0,
-                sequences: BTreeMap::new(),
-                origins: BTreeMap::new(),
-                peers: BTreeMap::new(),
-                enrollments: BTreeMap::new(),
-                preparations: BTreeMap::new(),
-                phase: SessionPhase::Stopped,
-                generation: 0,
-                records: BTreeMap::new(),
-            },
+            None => {
+                if automatic_name {
+                    config.metadata.display_name = friendly_name()?;
+                }
+                Envelope {
+                    version: 1,
+                    prepared: None,
+                    recovery: Vec::new(),
+                    identity,
+                    metadata: config.metadata.clone(),
+                    group_key: AppKey::generate()?.as_bytes().to_vec(),
+                    epoch: random_id(),
+                    revision: 0,
+                    local_revision: 0,
+                    sequences: BTreeMap::new(),
+                    origins: BTreeMap::new(),
+                    peers: BTreeMap::new(),
+                    enrollments: BTreeMap::new(),
+                    preparations: BTreeMap::new(),
+                    phase: SessionPhase::Stopped,
+                    generation: 0,
+                    records: BTreeMap::new(),
+                }
+            }
         };
         if let Some(prepared) = envelope.prepared.clone() {
             recover_transaction(&config, &envelope, &prepared)?;
             envelope = *prepared.target;
         }
+        // Recovery may replace the envelope, so resolve its authoritative name afterward.
+        if automatic_name {
+            config.metadata.display_name = envelope.metadata.display_name.clone();
+        } else {
+            envelope.metadata.display_name = config.metadata.display_name.clone();
+        }
+        config.metadata.validate()?;
+        envelope.metadata.validate()?;
         limits::state(&envelope)?;
         envelope.phase = SessionPhase::Stopped;
         envelope.generation = envelope
