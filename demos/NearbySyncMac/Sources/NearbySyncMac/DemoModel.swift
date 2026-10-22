@@ -1,4 +1,6 @@
+#if os(macOS)
 import AppKit
+#endif
 import SwiftUI
 import LibreSync
 
@@ -10,8 +12,12 @@ final class DemoModel: ObservableObject {
     @Published var busy = false
     let profile: DemoProfile?
     private var poller: Task<Void, Never>?
-    private var operation: Task<Void, Never>?
-    private var startup: Task<Void, Never>?
+    private var lifecycle: Task<Void, Never>?
+    private var active = true
+    private var busyCount = 0
+
+    private func beginWork() { busyCount += 1; busy = true }
+    private func endWork() { busyCount -= 1; busy = busyCount > 0 }
     private let stateDirectory: (DemoProfile) throws -> URL
     private let openSession: (LibreSyncSessionConfiguration, any LibreSyncSecureStore) async throws -> LibreSyncSession
     private var lastInbox: Data?
@@ -26,20 +32,62 @@ final class DemoModel: ObservableObject {
         catch { profile = nil; self.error = error.localizedDescription }
     }
 
+    // All lifecycle work shares one queue. Desired activity changes immediately,
+    // so an in-flight open/rename cannot start discovery after backgrounding.
+    private func enqueue(_ work: @escaping @MainActor () async -> Void) -> Task<Void, Never> {
+        let previous = lifecycle
+        let task = Task { await previous?.value; await work() }
+        lifecycle = task
+        return task
+    }
+
     func start() async {
-        guard sync == nil, !busy, !closing, let profile else { return }
-        busy = true
-        let task = Task { await performStart(profile) }
-        startup = task
+        guard !closing else { return }
+        let task = enqueue { [self] in
+            guard sync == nil, !closing, let profile else { return }
+            beginWork()
+            await performStart(profile)
+        }
         await task.value
     }
 
+    func setActive(_ value: Bool) async {
+        guard !closing else { return }
+        active = value
+        let task = enqueue { [self] in
+            guard !closing else { return }
+            await reconcileActivity()
+        }
+        await task.value
+    }
+
+    private func reconcileActivity() async {
+        poller?.cancel(); await poller?.value; poller = nil
+        guard let sync else { return }
+        if active && !closing {
+            await sync.startAndWait()
+            guard active && !closing else { await sync.stopAndWait(); return }
+            if let failure = sync.error { error = failure }
+            beginPolling(sync.session)
+        } else {
+            await sync.stopAndWait()
+        }
+    }
+
     private func performStart(_ profile: DemoProfile) async {
-        defer { busy = false }
+        defer { endWork() }
         do {
             let directory = try stateDirectory(profile)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+            #if os(iOS)
+            var protectedDirectory = directory
+            var resourceValues = URLResourceValues()
+            resourceValues.isExcludedFromBackup = true
+            try protectedDirectory.setResourceValues(resourceValues)
+            // Newly created journals inherit protection before they contain data.
+            try FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: directory.path)
+            #endif
             let journal = directory.appendingPathComponent("notes-inbox.json")
             if FileManager.default.fileExists(atPath: journal.path) {
                 notes = try DemoInbox.notes(in: JSONDecoder().decode(LibreSyncInbox.self, from: Data(contentsOf: journal)))
@@ -52,23 +100,29 @@ final class DemoModel: ObservableObject {
         guard let profile else { return }
         let manifest = LibreSyncManifest(appID: "io.libresync.NearbySyncDemo", displayName: "Nearby Notes",
             adapters: [.init(id: "notes", namespace: "notes", schema: "logical-records-v1")])
+        #if os(iOS)
+        let deviceKind = "mobile"
+        #else
+        let deviceKind = "desktop"
+        #endif
         let config = try LibreSyncSessionConfiguration(policy: .records, manifest: manifest,
-            stateDirectory: stateDirectory(profile).appendingPathComponent("session"), displayName: name)
+            stateDirectory: stateDirectory(profile).appendingPathComponent("session"), displayName: name, deviceKind: deviceKind)
         let session = try await openSession(config, LibreSyncKeychainStore(service: profile.keychainService))
         guard !closing else { await session.close(); return }
         let model = LibreSyncSessionModel(session: session)
         sync = model
-        await model.startAndWait()
-        guard !closing else { return }
-        if let failure = model.error { error = failure }
+        await reconcileActivity()
+    }
+
+    private func beginPolling(_ session: LibreSyncSession) {
         poller = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                if !self.busy && !self.closing {
-                    self.busy = true
+                if self.active && !self.busy && !self.closing {
+                    self.beginWork()
                     do { try await self.applyInbox(session) }
                     catch { if !Task.isCancelled { self.error = error.localizedDescription } }
-                    self.busy = false
+                    self.endWork()
                 }
                 do { try await Task.sleep(nanoseconds: 500_000_000) } catch { return }
             }
@@ -89,10 +143,10 @@ final class DemoModel: ObservableObject {
     }
 
     func save(id: String?, title: String, body: String) {
-        guard !busy, !closing, let session = sync?.session else { return }
-        busy = true
-        operation = Task {
-            defer { busy = false }
+        guard active, !busy, !closing, let session = sync?.session else { return }
+        beginWork()
+        _ = enqueue { [self] in
+            defer { endWork() }
             do {
                 let note = DemoNote(id: id ?? UUID().uuidString, title: title.trimmingCharacters(in: .whitespacesAndNewlines), body: body, updatedAt: Date())
                 try await session.set(adapter: "notes", id: note.id, value: JSONEncoder().encode(note))
@@ -104,15 +158,15 @@ final class DemoModel: ObservableObject {
 
     func rename(_ value: String) {
         let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !busy, !closing else { return }
+        guard active, !busy, !closing else { return }
         guard !value.isEmpty, value.utf8.count <= 128,
               value.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
             error = "Use a device name of 1–128 UTF-8 bytes without control characters."
             return
         }
-        busy = true
-        operation = Task {
-            defer { busy = false }
+        beginWork()
+        _ = enqueue { [self] in
+            defer { endWork() }
             poller?.cancel(); await poller?.value; poller = nil
             if let sync { await sync.stopAndWait(); await sync.session.close() }
             sync = nil; lastInbox = nil
@@ -123,15 +177,17 @@ final class DemoModel: ObservableObject {
 
     func stop() async {
         closing = true
-        // Startup never calls stop; awaiting it here cannot wait on this task.
-        await startup?.value
-        await operation?.value
-        poller?.cancel(); await poller?.value; poller = nil
-        if let sync { await sync.stopAndWait(); await sync.session.close() }
-        sync = nil
+        active = false
+        let task = enqueue { [self] in
+            poller?.cancel(); await poller?.value; poller = nil
+            if let sync { await sync.stopAndWait(); await sync.session.close() }
+            sync = nil
+        }
+        await task.value
     }
 }
 
+#if os(macOS)
 @MainActor
 final class DemoAppDelegate: NSObject, NSApplicationDelegate {
     weak var model: DemoModel?
@@ -147,3 +203,5 @@ final class DemoAppDelegate: NSObject, NSApplicationDelegate {
         return .terminateLater
     }
 }
+
+#endif

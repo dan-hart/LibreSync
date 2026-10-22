@@ -50,6 +50,10 @@ enum DemoInbox {
         try await Task.detached {
             try LibreSyncInboxJournal.save(inbox, to: destination)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+            #if os(iOS)
+            // Establish plaintext protection before acknowledging this durable inbox.
+            try FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: destination.path)
+            #endif
         }.value
         try await acknowledge()
         return notes

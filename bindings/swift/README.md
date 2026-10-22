@@ -27,6 +27,8 @@ await session.close()
 
 Discovery runs while the model is started; invitations open only after an explicit user action. Compatibility is separate from whether a device is currently offering a valid pairing code. Dismissing Add Device closes the local invitation and cancels outstanding pairing work. The UI distinguishes remote storage from the other app applying changes, and shows technical evidence under Details.
 
+For physical iPhone–Mac testing, the [iOS demo](../../demos/NearbySyncIOS/README.md) uses the same shared host, data contract and pairing UI, including foreground/background lifecycle and protected local storage.
+
 Try the [macOS notes demo](../../demos/NearbySyncMac/README.md) for a complete app with isolated profiles and durable receipt acknowledgement. From the repository root, run `scripts/run-nearby-sync-demo.sh --two` to build and launch two demo instances.
 
 The notes convenience uses exactly the companion's public `notes_manifest`. A custom application chooses `policy: .records` and its own stable `LibreSyncManifest` app ID, namespace and `logical-records-v1` descriptors. This explicitly selects the reviewed pure logical LWW/tombstone policy. `momentum` selects the exact verified immutable Momentum policy. Other custom schemas are refused with `InvalidAdapter`; register their pure `ManagedAdapter` in Rust instead. Session owns storage; policies must not write an external database.

@@ -8,6 +8,8 @@ narrative context live in `RELEASES.md`.
 
 ### Added
 
+- Add a native iOS Nearby Notes demo using the Mac demo’s note contract, shared host model, and Nearby Sync components, with secure local storage and foreground/background lifecycle handling.
+
 - Persistent friendly device names for managed sessions: omit the local display name to generate an installation-specific alias without changing device identity or trust.
 - Native Apple Nearby Sync components with guided code/QR pairing, readable device status, and explicit pairing cleanup.
 - A runnable macOS Nearby Sync notes demo with isolated profiles for testing discovery, pairing, and durable application acknowledgements on one Mac.

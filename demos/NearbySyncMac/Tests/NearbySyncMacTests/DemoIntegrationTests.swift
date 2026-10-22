@@ -114,6 +114,14 @@ final class DemoIntegrationTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(durableReceipt.sequence, receipt.sequence)
             XCTAssertTrue(try DemoInbox.notes(in: appliedJournal).contains { $0.id == noteID })
             XCTAssertNil(source.error); XCTAssertNil(receiver.error)
+            await source.setActive(false)
+            let backgroundSnapshot = try await sourceSync.session.snapshot()
+            XCTAssertEqual(backgroundSnapshot.phase, .paused)
+            await source.setActive(true)
+            let foregroundSnapshot = try await sourceSync.session.snapshot()
+            XCTAssertEqual(foregroundSnapshot.identity.device_id, sourceID)
+            XCTAssertTrue(foregroundSnapshot.peers.contains { $0.identity.device_id == receiverID && !$0.revoked })
+            XCTAssertTrue(source.notes.contains { $0.id == noteID })
             try await waitFor("source host ready to rename") { !source.busy }
             source.rename("Renamed Integration Mac")
             try await waitFor("source finishes stop/close/reopen rename") {
@@ -139,6 +147,8 @@ final class DemoIntegrationTests: XCTestCase {
             let persistedSource = try XCTUnwrap(sourceAgain.sync)
             let persistedID = try await persistedSource.session.snapshot().identity.device_id
             XCTAssertEqual(persistedID, sourceID)
+            let persistedSnapshot = try await persistedSource.session.snapshot()
+            XCTAssertTrue(persistedSnapshot.peers.contains { $0.identity.device_id == receiverID && !$0.revoked })
             XCTAssertEqual(persistedSource.localDisplayName, "Renamed Integration Mac")
             XCTAssertTrue(sourceAgain.notes.contains { $0.id == noteID })
             XCTAssertTrue(receiverAgain.notes.contains { $0.id == noteID })

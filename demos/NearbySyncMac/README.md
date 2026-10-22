@@ -2,6 +2,8 @@
 
 A native SwiftUI app that uses the public LibreSync Swift package and real Rust sessions. Write notes in **Notes**, then open **Nearby Sync** to connect another installation. The app uses macOS sidebar, window, sheet, and keyboard conventions; Command-S saves the current note.
 
+An [iOS companion demo](../NearbySyncIOS/README.md) uses the same note contract and can be installed on a physical iPhone for Mac–phone pairing.
+
 ## Build and run
 
 From the repository root on a Mac with Xcode command-line tools, Rust (through rustup), and the native Apple Rust target installed:

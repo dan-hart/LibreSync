@@ -57,4 +57,93 @@ final class DemoLifecycleTests: XCTestCase {
             XCTAssertEqual(error.code, .closed)
         }
     }
+    @MainActor
+    func testBackgroundPausesSessionAndForegroundReusesIt() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let keys = EphemeralKeys()
+        var opens = 0
+        let model = DemoModel(arguments: [], stateDirectory: { _ in directory }, openSession: { config, _ in
+            opens += 1
+            return try await LibreSyncSession.open(config, keys: keys)
+        })
+        await model.start()
+        let session = try XCTUnwrap(model.sync?.session)
+        await model.setActive(false)
+        let paused = try await session.snapshot()
+        XCTAssertEqual(paused.phase, .paused)
+        await model.setActive(true)
+        let resumed = try await session.snapshot()
+        XCTAssertEqual(resumed.phase, .running)
+        XCTAssertEqual(opens, 1, "Foreground must preserve the open session and identity")
+        await model.stop()
+    }
+
+    @MainActor
+    func testBackgroundDuringStartupLeavesNewSessionPaused() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let opening = expectation(description: "Opening suspended")
+        let backgrounding = expectation(description: "Background requested")
+        let gate = OpenGate()
+        let keys = EphemeralKeys()
+        let model = DemoModel(arguments: [], stateDirectory: { _ in directory }, openSession: { config, _ in
+            opening.fulfill()
+            await gate.wait()
+            return try await LibreSyncSession.open(config, keys: keys)
+        })
+        let startup = Task { await model.start() }
+        await fulfillment(of: [opening], timeout: 3)
+        let background = Task { backgrounding.fulfill(); await model.setActive(false) }
+        await fulfillment(of: [backgrounding], timeout: 3)
+        gate.release()
+        await startup.value
+        await background.value
+        let snapshot = try await XCTUnwrap(model.sync?.session).snapshot()
+        XCTAssertEqual(snapshot.phase, .paused)
+        XCTAssertFalse(model.busy)
+        await model.stop()
+    }
+
+    @MainActor
+    func testBackgroundDuringRenamePausesReplacementAndAllowsResume() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let reopening = expectation(description: "Rename open suspended")
+        let backgrounding = expectation(description: "Background requested")
+        let gate = OpenGate()
+        let keys = EphemeralKeys()
+        var opens = 0
+        let model = DemoModel(arguments: [], stateDirectory: { _ in directory }, openSession: { config, _ in
+            opens += 1
+            if opens == 2 { reopening.fulfill(); await gate.wait() }
+            return try await LibreSyncSession.open(config, keys: keys)
+        })
+        await model.start()
+        let original = try XCTUnwrap(model.sync?.session)
+        let identity = try await original.snapshot().identity.device_id
+        for _ in 0..<100 where model.busy {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertFalse(model.busy)
+        model.rename("Renamed phone")
+        await fulfillment(of: [reopening], timeout: 3)
+        let background = Task { backgrounding.fulfill(); await model.setActive(false) }
+        await fulfillment(of: [backgrounding], timeout: 3)
+        gate.release()
+        await background.value
+        let replacement = try XCTUnwrap(model.sync?.session)
+        let paused = try await replacement.snapshot()
+        XCTAssertEqual(paused.phase, .paused)
+        XCTAssertEqual(paused.identity.device_id, identity)
+        XCTAssertFalse(model.busy)
+        await model.setActive(true)
+        let resumed = try await replacement.snapshot()
+        XCTAssertEqual(resumed.phase, .running)
+        XCTAssertEqual(model.sync?.localDisplayName, "Renamed phone")
+        do { _ = try await original.snapshot(); XCTFail("Replaced session remains open") }
+        catch let error as LibreSyncSessionError { XCTAssertEqual(error.code, .closed) }
+        await model.stop()
+    }
+
 }
