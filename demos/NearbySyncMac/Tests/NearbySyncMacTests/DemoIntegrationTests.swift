@@ -105,6 +105,51 @@ final class DemoIntegrationTests: XCTestCase {
                 let receiverPeer = receiverSnapshot.peers.first { $0.identity.device_id == sourceID }
                 let sourceInbox = try await sourceSync.session.inbox()
                 let receiverInbox = try await receiverSync.session.inbox()
+                // Emit only numeric ports and allowlisted diagnostic categories.
+                // Raw messages/evidence can contain addresses or application data.
+                func ports(_ peers: [LibreSyncNearbyDevice], deviceID: String) -> [UInt16] {
+                    Array(Set(peers.filter { $0.identity.device_id == deviceID }.flatMap { peer in
+                        peer.addresses.compactMap { address in
+                            address.split(separator: ":").last.flatMap { UInt16($0) }
+                        }
+                    })).sorted()
+                }
+                func diagnostics(_ snapshot: LibreSyncSessionSnapshot, peerID: String) -> [String] {
+                    snapshot.diagnostics.compactMap { event -> String? in
+                        guard case .diagnostic(let diagnostic) = event,
+                              diagnostic.peer == nil || diagnostic.peer == peerID else { return nil }
+                        let evidence: String
+                        switch diagnostic.evidence {
+                        case .string(let value) where ["Unknown", "StorageCommitUncertain", "NetworkError", "CertificateMismatch", "BootstrapRequired"].contains(value):
+                            evidence = value
+                        case .object(let value) where value["Platform"] != nil:
+                            evidence = "Platform"
+                        case .object(let value):
+                            if case .object(let failure)? = value["ManagedFailure"],
+                               case .string(let rawCode)? = failure["code"],
+                               let code = LibreSyncSessionErrorCode(rawValue: rawCode) {
+                                evidence = "ManagedFailure(\(code.rawValue))"
+                            } else { evidence = "Unrecognized" }
+                        default: evidence = "Unrecognized"
+                        }
+                        let message = diagnostic.message.lowercased()
+                        let category: String
+                        if message.contains("connection refused") { category = "ConnectionRefused" }
+                        else if message.contains("timed out") || message.contains("timeout") { category = "Timeout" }
+                        else if message.contains("peer destination not yet known") { category = "MissingDestination" }
+                        else if message.contains("peer is revoked, paused or changed") || message.contains("cancelled") { category = "CancelledOrChanged" }
+                        else if message.contains("tls") || message.contains("certificate") { category = "TLSOrCertificate" }
+                        else if message.contains("expected authenticated managed hello") { category = "UnexpectedManagedHello" }
+                        else if message.contains("expected managed delta") { category = "UnexpectedManagedDelta" }
+                        else if message.contains("expected exact managed receipt") { category = "UnexpectedManagedReceipt" }
+                        else { category = "Other" }
+                        return "\(diagnostic.action.rawValue)/\(evidence)/\(category)"
+                    }.suffix(8).map { $0 }
+                }
+                let sourcePort = try await sourceSync.session.platformAdvertisement().port
+                let receiverPort = try await receiverSync.session.platformAdvertisement().port
+                let sourceNearbyPorts = ports(try await sourceSync.session.nearby(), deviceID: receiverID)
+                let receiverNearbyPorts = ports(try await receiverSync.session.nearby(), deviceID: sourceID)
                 let status = [
                     "sourceHasNote=\(source.notes.contains { $0.id == noteID })",
                     "sourceCoreHasNote=\(sourceInbox.records.contains { $0.id == noteID })",
@@ -119,6 +164,14 @@ final class DemoIntegrationTests: XCTestCase {
                     "receiverPhase=\(receiverSnapshot.phase.rawValue)",
                     "receiverState=\(receiverPeer?.state.rawValue ?? "missing")",
                     "receiverReceived=\(receiverPeer?.received.sequence ?? 0)",
+                    "sourceListenerPort=\(sourcePort)",
+                    "receiverListenerPort=\(receiverPort)",
+                    "sourceNearbyPeerPorts=\(sourceNearbyPorts)",
+                    "receiverNearbyPeerPorts=\(receiverNearbyPorts)",
+                    "sourceNearbyMatchesReceiverListener=\(sourceNearbyPorts.contains(receiverPort))",
+                    "receiverNearbyMatchesSourceListener=\(receiverNearbyPorts.contains(sourcePort))",
+                    "sourceDiagnostics=\(diagnostics(sourceSnapshot, peerID: receiverID))",
+                    "receiverDiagnostics=\(diagnostics(receiverSnapshot, peerID: sourceID))",
                     "sourceError=\(source.error != nil)",
                     "receiverError=\(receiver.error != nil)"
                 ].joined(separator: ", ")
