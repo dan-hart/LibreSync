@@ -9,8 +9,8 @@ Use the extracted Maven repository (or publish that directory to your own artifa
 ```kotlin
 repositories { maven { url = uri("/path/to/repository") }; google(); mavenCentral() }
 dependencies {
-    implementation("io.libresync:libresync:0.7.0")
-    implementation("io.libresync:libresync-compose:0.7.0") // optional
+    implementation("io.libresync:libresync:0.8.0")
+    implementation("io.libresync:libresync-compose:0.8.0") // optional
 }
 ```
 
@@ -42,6 +42,6 @@ The historical Kotlin Engine wrapper declared C names as JNI functions without i
 
 Native tests run with `ANDROID_SERIAL=<owned-device> ./gradlew connectedDebugAndroidTest`. API-37/16-KiB instrumented tests cover actual JNI, duplicate lease rejection, typed pairing/bootstrap, proof-bearing durable inbox acknowledgements, Flow cancellation, close/reopen and parallel Keystore instances. This does not establish physical camera accuracy or a human usability result.
 
-Build distributable Maven metadata and both AARs with `scripts/build-android-sdk.sh`. Package all native SDK assets with `scripts/package-native-sdk.sh 0.7.0`. Extract `LibreSyncAndroid-0.7.0-maven.zip` and add its directory as a Gradle Maven repository, then depend on `io.libresync:libresync:0.7.0` and optionally `io.libresync:libresync-compose:0.7.0`; metadata supplies public coroutine, serialization, lifecycle and Compose dependencies. Normal AndroidX/Kotlin dependencies must already be cached for a fully offline build.
+Build distributable Maven metadata and both AARs with `scripts/build-android-sdk.sh`. Package all native SDK assets with `scripts/package-native-sdk.sh 0.8.0`. Extract `LibreSyncAndroid-0.8.0-maven.zip` and add its directory as a Gradle Maven repository, then depend on `io.libresync:libresync:0.8.0` and optionally `io.libresync:libresync-compose:0.8.0`; metadata supplies public coroutine, serialization, lifecycle and Compose dependencies. Normal AndroidX/Kotlin dependencies must already be cached for a fully offline build.
 
 After durably saving the complete coherent inbox, acknowledgement sends only its captured revision and exact source receipt map; record bytes stay in the saved app transaction and are not retransmitted in the acknowledgement request. This keeps a near-limit valid record aggregate acknowledgeable even with multiple proof-bearing source receipts. The C command accepts an optional legacy `records` field but does not use it. Cancellation before a queued Swift call starts prevents native work; cancellation after start interrupts current IO on a best-effort basis and is not transaction rollback.

@@ -23,9 +23,9 @@ Legacy Engine/C/Swift APIs remain. Historical raw Kotlin Engine/backup functions
 
 Momentum's opt-in patch is pinned to `766064bfa340a391d6a9465b60a030e1dc0c9f95`; existing app runtime/UI is not automatically migrated. LAN operation is local-only with no cloud service requirement. iOS suspension and Android background limits remain. Current listener defaults to IPv4; no IPv6 runtime support claim. Physical iOS privacy/camera, physical Android hardware, two-minute human usability, actual Finder/Dock reopen and notarized/signed GUI acceptance require additional evidence and are unverified here.
 
-## Native Nearby Sync source demo
+## Native Nearby Sync demos
 
-The source-only Apple experience adds persistent generated names, a guided `LibreSyncNearbySyncView`, and [Nearby Notes for macOS](../demos/NearbySyncMac/README.md). `scripts/run-nearby-sync-demo.sh --two` builds the local Rust library and opens two isolated application profiles. Immutable v0.7.0 SDK assets do not include this source work.
+The v0.8.0 Swift SDK includes the reusable `LibreSyncNearbySyncView` and persistent generated device naming. The [macOS](../demos/NearbySyncMac/README.md) and [iOS](../demos/NearbySyncIOS/README.md) Nearby Notes demos are repository examples available at the exact `v0.8.0` tag; they are not bundled in the Swift SDK package. From that checkout, `scripts/run-nearby-sync-demo.sh --two` builds the local Rust library and opens two isolated macOS application profiles. The historical v0.7.0 assets remain unchanged.
 
 `NearbySyncModelTests` covers compatibility without an invitation, live code pairing, invalid/wrong codes, expiry, duplicate offers, blocked-handshake cancellation, invitation cleanup, queued lifecycle stop, retry recovery, permission evidence and inviter success. `DemoIntegrationTests.testTwoDemoHostsDiscoverPairApplyRenameAndReopen` uses real Bonjour and authenticated code pairing, explicit merge consent, production note persistence before Applied acknowledgement, authenticated rename propagation, and durable restart. Temporary state and ephemeral test secure stores isolate those tests; they do not prove platform Keychain privacy behavior. Separate demo storage tests cover failed persistence blocking acknowledgement and coherent records/receipt readback.
 

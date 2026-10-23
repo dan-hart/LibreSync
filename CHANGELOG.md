@@ -6,6 +6,8 @@ narrative context live in `RELEASES.md`.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-23
+
 ### Added
 
 - Add a native iOS Nearby Notes demo using the Mac demo’s note contract, shared host model, and Nearby Sync components, with secure local storage and foreground/background lifecycle handling.
@@ -16,6 +18,7 @@ narrative context live in `RELEASES.md`.
 
 ### Fixed
 
+- Refresh Bonjour endpoints and retry failed service resolution so native Apple peers recover after listener ports change during pause/resume.
 - Keep the iOS demo project format compatible with Xcode 15 and newer.
 - Refresh untouched Mac demo note editors after remote changes and warn before saving a locally edited draft over a newer received note.
 - Update rustls and rustls-webpki in both lockfiles to address current TLS security advisories.

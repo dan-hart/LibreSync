@@ -64,6 +64,7 @@ public final class LibreSyncBonjour: NSObject, NetServiceDelegate, NetServiceBro
     private var ids:[String:String]=[:]
     private var latestTXT:[String:Data]=[:]
     private var resolved:Set<String>=[]
+    private var resolveAfter:[String:TimeInterval]=[:]
     private var refresh:Task<Void,Never>?
     private var last:LibreSyncPlatformAdvertisement?
     private var active=false
@@ -87,13 +88,20 @@ public final class LibreSyncBonjour: NSObject, NetServiceDelegate, NetServiceBro
         active=false;generation=UUID();refresh?.cancel();refresh=nil
         browser.stop();browser.delegate=nil;published?.stop();published=nil;last=nil
         for service in services.values{service.stopMonitoring();service.stop()}
-        services.removeAll();ids.removeAll();latestTXT.removeAll();resolved.removeAll()
+        services.removeAll();ids.removeAll();latestTXT.removeAll();resolved.removeAll();resolveAfter.removeAll()
         let task=Task {await delivery.discardAndDrain()}
         let stopID=UUID();stopping=(stopID,task);await task.value
         if stopping?.id==stopID{stopping=nil}
     }
     private func update()async throws {
         let token=generation;let ad=try await session.platformAdvertisement();guard active,token==generation else{return}
+        // TXT monitoring does not monitor endpoint changes. A service may
+        // survive a quick listener restart, or its first resolution may fail.
+        // Keep the live monitor and latest TXT while refreshing its addresses.
+        let now=ProcessInfo.processInfo.systemUptime
+        for service in services.values where now >= resolveAfter[service.name,default:0] {
+            resolve(service,at:now)
+        }
         guard last?.port != ad.port || last?.txt != ad.txt else{return}
         // A changed descriptor replaces the publication. Retiring its delegate
         // also fences delayed callbacks from the previous published instance.
@@ -112,9 +120,15 @@ public final class LibreSyncBonjour: NSObject, NetServiceDelegate, NetServiceBro
             if previous !== service{service.stopMonitoring();service.delegate=nil;service.stop()}
             return // Duplicate browse notifications must retain the live monitor.
         }
-        services[service.name]=service;service.delegate=self;service.schedule(in:.main,forMode:.common);service.resolve(withTimeout:3)
+        services[service.name]=service;service.delegate=self;service.schedule(in:.main,forMode:.common);resolve(service,at:ProcessInfo.processInfo.systemUptime)
     }
-    public func netServiceBrowser(_ browser:NetServiceBrowser,didRemove service:NetService,moreComing:Bool){guard active,browser===self.browser else{return};let current=services.removeValue(forKey:service.name);current?.stopMonitoring();current?.stop();latestTXT.removeValue(forKey:service.name);resolved.remove(service.name);if let id=ids.removeValue(forKey:service.name){delivery.submit(.withdrawn(id),deviceID:id)}}
+    public func netServiceBrowser(_ browser:NetServiceBrowser,didRemove service:NetService,moreComing:Bool){guard active,browser===self.browser else{return};let current=services.removeValue(forKey:service.name);current?.stopMonitoring();current?.stop();latestTXT.removeValue(forKey:service.name);resolved.remove(service.name);resolveAfter.removeValue(forKey:service.name);if let id=ids.removeValue(forKey:service.name){delivery.submit(.withdrawn(id),deviceID:id)}}
+    private func resolve(_ service:NetService,at now:TimeInterval) {
+        // A bounded retry interval longer than the finite resolution window
+        // prevents overlapping requests. The active service cap also applies.
+        resolveAfter[service.name]=now+5
+        service.resolve(withTimeout:3)
+    }
     public func netServiceDidResolveAddress(_ service:NetService){
         guard active,services[service.name]===service else{return}
         if resolved.insert(service.name).inserted{

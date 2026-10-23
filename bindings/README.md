@@ -1,6 +1,6 @@
 # Native bindings
 
-New applications use managed Session through [Swift async/SwiftUI](swift/README.md), [Android suspend/Flow/Compose](kotlin/README.md), or [managed C ABI v1](../docs/MANAGED-C-ABI.md). Install exact v0.7.0 release assets with the [SDK guide](../docs/SDK.md).
+New applications use managed Session through [Swift async/SwiftUI](swift/README.md), [Android suspend/Flow/Compose](kotlin/README.md), or [managed C ABI v1](../docs/MANAGED-C-ABI.md). Install exact v0.8.0 release assets with the [SDK guide](../docs/SDK.md).
 
 Session owns listener, discovery, authenticated QR/code pairing, retries and typed status. Platform secure storage fails closed. Apps commit their coherent inbox records and exact proof-bearing receipts durably before acknowledging Applied; a companion reports Stored until an app processes data.
 

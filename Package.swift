@@ -5,7 +5,7 @@ import Foundation
 // Git consumers use exact immutable release bytes; source/CI opts into a built local framework.
 let nativeBinary: Target = ProcessInfo.processInfo.environment["LIBRESYNC_USE_LOCAL_XCFRAMEWORK"] == "1"
     ? .binaryTarget(name: "LibreSyncFFI", path: "bindings/swift/LibreSyncFFI.xcframework")
-    : .binaryTarget(name: "LibreSyncFFI", url: "https://github.com/dan-hart/LibreSync/releases/download/v0.7.0/LibreSyncFFI-0.7.0.xcframework.zip", checksum: "8aff87c12416e9cb21bad37c4c4aec0520bd2fb7dff5c8050f8ae846af96d34d")
+    : .binaryTarget(name: "LibreSyncFFI", url: "https://github.com/dan-hart/LibreSync/releases/download/v0.8.0/LibreSyncFFI-0.8.0.xcframework.zip", checksum: "bd0f9cc1806e927a3eb15525f52e6d8109c930109c5e251ba960025e37fe584d")
 
 let package = Package(
     name: "LibreSync",

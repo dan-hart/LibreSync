@@ -335,6 +335,8 @@ addresses. Legacy advertisements remain visible without managed metadata.
 Advertisements and their certificate pins are untrusted hints: the complete
 app manifest and identities must be revalidated by authenticated pairing.
 
+Native Apple Bonjour re-resolves retained services every five seconds with a three-second resolution window. This refreshes addresses after listener changes and retries transient resolution failures while retaining the current TXT monitor. Stopping discovery removes this refresh state. Address updates remain untrusted hints and do not change pairing, certificate pinning or the wire format.
+
 ## Managed synchronization branch
 
 Managed sessions use `ManagedHello`, `ManagedDelta`, `ManagedAck`, and `ManagedPending` independently of legacy `Hello`/delta Engine exchange. Mutual TLS pins an enrolled device identity; full manifests are checked again before export. A group-authenticated encrypted batch contains an epoch, exact captured sequence, authoritative-full-snapshot flag, and logical records including tombstones.
