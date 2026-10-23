@@ -5,7 +5,7 @@ import LibreSync
 final class DemoIntegrationTests: XCTestCase {
     @MainActor
     private func waitFor(_ label: String, timeout: TimeInterval = 20,
-                         _ predicate: () async throws -> Bool) async throws {
+                         _ predicate: @MainActor () async throws -> Bool) async throws {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if try await predicate() { return }
@@ -41,9 +41,14 @@ final class DemoIntegrationTests: XCTestCase {
             XCTAssertNotEqual(initialName, "This device")
             let sourceSeedID = UUID().uuidString
             let receiverSeedID = UUID().uuidString
-            try await waitFor("both hosts ready for initial notes") { !source.busy && !receiver.busy }
-            source.save(id: sourceSeedID, title: "Source seed", body: "Temporary merge fixture")
-            receiver.save(id: receiverSeedID, title: "Receiver seed", body: "Temporary merge fixture")
+            // Checking readiness and submitting must share one MainActor turn:
+            // the inbox poller may become busy across any awaited continuation.
+            try await waitFor("both hosts submit initial notes") {
+                guard !source.busy && !receiver.busy else { return false }
+                source.save(id: sourceSeedID, title: "Source seed", body: "Temporary merge fixture")
+                receiver.save(id: receiverSeedID, title: "Receiver seed", body: "Temporary merge fixture")
+                return true
+            }
             try await waitFor("each host durably saves its initial note") {
                 source.notes.contains { $0.id == sourceSeedID } && receiver.notes.contains { $0.id == receiverSeedID }
             }
@@ -81,10 +86,43 @@ final class DemoIntegrationTests: XCTestCase {
             }
 
             let noteID = UUID().uuidString
-            try await waitFor("source host ready to save") { !source.busy }
-            source.save(id: noteID, title: "Integration note", body: "Temporary end-to-end fixture")
-            try await waitFor("receiver app model applies the saved note") {
-                receiver.notes.contains { $0.id == noteID && $0.title == "Integration note" }
+            try await waitFor("source host submits the integration note") {
+                guard !source.busy else { return false }
+                source.save(id: noteID, title: "Integration note", body: "Temporary end-to-end fixture")
+                return true
+            }
+            do {
+                try await waitFor("source app model applies its own saved note") {
+                    source.notes.contains { $0.id == noteID && $0.title == "Integration note" }
+                }
+                try await waitFor("receiver app model applies the saved note") {
+                    receiver.notes.contains { $0.id == noteID && $0.title == "Integration note" }
+                }
+            } catch {
+                let sourceSnapshot = try await sourceSync.session.snapshot()
+                let receiverSnapshot = try await receiverSync.session.snapshot()
+                let sourcePeer = sourceSnapshot.peers.first { $0.identity.device_id == receiverID }
+                let receiverPeer = receiverSnapshot.peers.first { $0.identity.device_id == sourceID }
+                let sourceInbox = try await sourceSync.session.inbox()
+                let receiverInbox = try await receiverSync.session.inbox()
+                let status = [
+                    "sourceHasNote=\(source.notes.contains { $0.id == noteID })",
+                    "sourceCoreHasNote=\(sourceInbox.records.contains { $0.id == noteID })",
+                    "sourceBusy=\(source.busy)",
+                    "sourcePhase=\(sourceSnapshot.phase.rawValue)",
+                    "sourceState=\(sourcePeer?.state.rawValue ?? "missing")",
+                    "sourcePending=\(sourcePeer?.pending ?? 0)",
+                    "sourceTransmitted=\(sourcePeer?.transmitted.sequence ?? 0)",
+                    "receiverHasNote=\(receiver.notes.contains { $0.id == noteID })",
+                    "receiverCoreHasNote=\(receiverInbox.records.contains { $0.id == noteID })",
+                    "receiverBusy=\(receiver.busy)",
+                    "receiverPhase=\(receiverSnapshot.phase.rawValue)",
+                    "receiverState=\(receiverPeer?.state.rawValue ?? "missing")",
+                    "receiverReceived=\(receiverPeer?.received.sequence ?? 0)",
+                    "sourceError=\(source.error != nil)",
+                    "receiverError=\(receiver.error != nil)"
+                ].joined(separator: ", ")
+                throw DemoError.message("Note delivery failed: \(status); \(error.localizedDescription)")
             }
             let destination = receiverDirectory.appendingPathComponent("notes-inbox.json")
             let journal = try JSONDecoder().decode(LibreSyncInbox.self, from: Data(contentsOf: destination))
@@ -122,8 +160,11 @@ final class DemoIntegrationTests: XCTestCase {
             XCTAssertEqual(foregroundSnapshot.identity.device_id, sourceID)
             XCTAssertTrue(foregroundSnapshot.peers.contains { $0.identity.device_id == receiverID && !$0.revoked })
             XCTAssertTrue(source.notes.contains { $0.id == noteID })
-            try await waitFor("source host ready to rename") { !source.busy }
-            source.rename("Renamed Integration Mac")
+            try await waitFor("source host submits its rename") {
+                guard !source.busy else { return false }
+                source.rename("Renamed Integration Mac")
+                return true
+            }
             try await waitFor("source finishes stop/close/reopen rename") {
                 !source.busy && source.sync?.localDisplayName == "Renamed Integration Mac"
             }
