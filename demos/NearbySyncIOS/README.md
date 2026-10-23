@@ -21,8 +21,11 @@ xcodegen generate --spec demos/NearbySyncIOS/project.yml --project demos/NearbyS
 scripts/build-apple-sdk.sh --debug
 asc xcode build --project demos/NearbySyncIOS/NearbyNotesIOS.xcodeproj \
   --scheme NearbyNotesIOS --destination 'generic/platform=iOS Simulator' \
-  --no-code-signing --output json
+  --derived-data-path target/nearby-sync-ios/SimulatorDerivedData \
+  --xcodebuild-flag=DEVELOPMENT_TEAM=YOURTEAMID --output json
 ```
+
+For simulator runtime testing, keep signing enabled so Xcode embeds the simulated application identifier used by Keychain. An unsigned build can compile successfully but fail at startup with Keychain error `-34018`; `--no-code-signing` is suitable only for compilation checks. Install the built simulator app with `xcrun simctl install SIMULATOR_UDID APP_PATH` and launch `io.libresync.NearbySyncDemo`.
 
 The target supports iOS 17 or newer. Device builds require automatic signing and a development certificate/provisioning profile that includes the selected phone. No App Store Connect app record, TestFlight upload, cloud service, iCloud entitlement or restricted multicast entitlement is needed.
 
@@ -42,3 +45,5 @@ An empty discovery list is not evidence of denied permission. Check that both ap
 The iPhone has its own sandbox and Keychain identity even when its demo profile has the same name as a Mac profile. The app validates and durably saves one coherent notes-and-receipts inbox before acknowledging Applied. Its iOS state root is excluded from device backups; plaintext note files use complete file protection. The Rust session journal is encrypted, and keys use Keychain with no plaintext fallback. Device names are public discovery labels and never establish trust.
 
 The shared host tests cover backgrounding during open and rename, same-session pause/resume, real two-host Bonjour/code pairing, durable application acknowledgement, and persisted notes/identity/trust after reopen. Simulator compilation and these host tests do not establish physical Local Network privacy or successful phone–Mac pairing. Build, signed install, launch, discovery, pairing and bidirectional saved-note delivery are separate acceptance checks.
+
+Runtime acceptance on an isolated iPhone 17 simulator (iOS 27.2) verified secure startup, friendly identity, discovery, six-digit pairing, note delivery in both directions with application-confirmed receipts, and notes/identity/trust after process relaunch. The Mac peer used the production demo model in a temporary XCTest host because Mac pairing-sheet UI automation was unavailable. This verifies the simulator UI and real transport, not physical iPhone networking or the complete Mac GUI flow.
