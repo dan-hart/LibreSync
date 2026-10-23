@@ -187,6 +187,141 @@ mod tests {
         )
     }
     #[test]
+    fn empty_name_is_generated_once_and_survives_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = Arc::new(MemoryKeyStore::new());
+        let mut c = config(dir.path());
+        c.metadata.display_name.clear();
+        c.advertise = false;
+        c.listen = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
+        // The empty-name shorthand belongs to SessionConfig, never wire metadata.
+        assert!(c.metadata.validate().is_err());
+        let session = Session::open(c.clone(), keys.clone()).unwrap();
+        let name = session.inner.config.metadata.display_name.clone();
+        session.inner.config.metadata.validate().unwrap();
+        assert_eq!(name.split_whitespace().count(), 2);
+        assert_eq!(
+            session.inner.envelope.lock().unwrap().metadata.display_name,
+            name
+        );
+        let identity = session.snapshot().unwrap().identity;
+        session.set("records", "saved", b"value".to_vec()).unwrap();
+        drop(session);
+        let reopened = Session::open(c, keys).unwrap();
+        assert_eq!(reopened.inner.config.metadata.display_name, name);
+        assert_eq!(reopened.snapshot().unwrap().identity, identity);
+        reopened.start().unwrap();
+        assert_eq!(reopened.platform_advertisement().unwrap().txt["name"], name);
+        let invitation = reopened
+            .create_invitation(std::time::Duration::from_secs(30))
+            .unwrap();
+        assert_eq!(invitation.invitation.metadata.display_name, name);
+        reopened.shutdown().unwrap();
+        assert_eq!(
+            reopened.get("records", "saved").unwrap(),
+            Some(b"value".to_vec())
+        );
+        let bytes = std::fs::read(dir.path().join("session.enc")).unwrap();
+        assert!(!bytes.windows(name.len()).any(|w| w == name.as_bytes()));
+    }
+
+    #[test]
+    fn independent_installations_have_independent_identities() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let keys = Arc::new(MemoryKeyStore::new());
+        let mut ac = config(a.path());
+        let mut bc = config(b.path());
+        ac.metadata.display_name.clear();
+        bc.metadata.display_name.clear();
+        let a = Session::open(ac, keys.clone()).unwrap();
+        let b = Session::open(bc, keys).unwrap();
+        assert_ne!(
+            a.snapshot().unwrap().identity,
+            b.snapshot().unwrap().identity
+        );
+        a.inner.config.metadata.validate().unwrap();
+        b.inner.config.metadata.validate().unwrap();
+    }
+
+    #[test]
+    fn explicit_name_remains_authoritative_and_is_persisted() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = Arc::new(MemoryKeyStore::new());
+        let c = config(dir.path());
+        drop(Session::open(c.clone(), keys.clone()).unwrap());
+        let mut renamed = c.clone();
+        renamed.metadata.display_name = "Caller supplied".into();
+        let session = Session::open(renamed, keys.clone()).unwrap();
+        assert_eq!(
+            session.inner.config.metadata.display_name,
+            "Caller supplied"
+        );
+        assert_eq!(
+            session.inner.envelope.lock().unwrap().metadata.display_name,
+            "Caller supplied"
+        );
+        drop(session);
+        let mut automatic = c;
+        automatic.metadata.display_name.clear();
+        let reopened = Session::open(automatic, keys).unwrap();
+        assert_eq!(
+            reopened.inner.config.metadata.display_name,
+            "Caller supplied"
+        );
+    }
+
+    #[test]
+    fn empty_name_does_not_bypass_other_metadata_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["invalid\nname".to_string(), "x".repeat(129)] {
+            let mut c = config(dir.path());
+            c.metadata.display_name = name;
+            assert!(Session::open(c, Arc::new(MemoryKeyStore::new())).is_err());
+        }
+        let mut c = config(dir.path());
+        c.metadata.display_name.clear();
+        c.metadata.device_kind.clear();
+        assert!(Session::open(c, Arc::new(MemoryKeyStore::new())).is_err());
+        assert!(!dir.path().join("session.enc").exists());
+    }
+
+    #[test]
+    fn generated_name_follows_recovered_prepared_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = Arc::new(MemoryKeyStore::new());
+        let mut c = config(dir.path());
+        c.metadata.display_name.clear();
+        let session = Session::open(c.clone(), keys.clone()).unwrap();
+        // Simulate an interrupted transaction with a valid authoritative target.
+        let mut journal = session.inner.envelope.lock().unwrap().clone();
+        let mut target = journal.clone();
+        target.metadata.display_name = "Recovered Avocado".into();
+        journal.prepared = Some(super::super::PreparedTransaction {
+            id: "recover-name".into(),
+            changes: Vec::new(),
+            target: Box::new(target),
+        });
+        save(&session.inner.config, &session.inner.storage_key, &journal).unwrap();
+        drop(session);
+        let reopened = Session::open(c, keys).unwrap();
+        assert_eq!(
+            reopened.inner.config.metadata.display_name,
+            "Recovered Avocado"
+        );
+        assert_eq!(
+            reopened
+                .inner
+                .envelope
+                .lock()
+                .unwrap()
+                .metadata
+                .display_name,
+            "Recovered Avocado"
+        );
+    }
+
+    #[test]
     fn session_owner_drop_releases_lease_with_retained_descriptor() {
         let dir = tempfile::tempdir().unwrap();
         let keys = Arc::new(MemoryKeyStore::new());

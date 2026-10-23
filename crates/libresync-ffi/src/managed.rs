@@ -789,6 +789,41 @@ mod tests {
         );
     }
     #[test]
+    fn exported_open_accepts_empty_local_name_and_advertises_resolved_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let context = Box::into_raw(Box::new(CallbackContext {
+            values: Mutex::new(HashMap::new()),
+            drops: drops.clone(),
+            releases: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }));
+        let config = CString::new(json!({"policy":"notes","state_dir":dir.path(),"display_name":"","device_kind":"desktop","advertise":false}).to_string()).unwrap();
+        let response = unsafe {
+            libresync_session_open(
+                config.as_ptr(),
+                KeyCallbacks {
+                    context: context.cast(),
+                    call: Some(test_key_call),
+                    release_buffer: Some(test_release_buffer),
+                    release_context: Some(test_release_context),
+                },
+            )
+        };
+        let opened: Value =
+            serde_json::from_str(unsafe { CStr::from_ptr(response) }.to_str().unwrap()).unwrap();
+        super::super::libresync_string_free(response);
+        assert_eq!(opened["ok"], true, "{opened}");
+        let id = opened["value"].as_u64().unwrap();
+        assert_eq!(dispatch(id, json!({"op":"start"}))["ok"], true);
+        let ad = dispatch(id, json!({"op":"platform_advertisement"}));
+        let name = ad["value"]["txt"]["name"].as_str().unwrap();
+        assert_eq!(name.split_whitespace().count(), 2);
+        assert!(name.len() <= 128 && !name.chars().any(char::is_control));
+        assert_eq!(close(id)["ok"], true);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn exported_failed_open_releases_callback_context_exactly_once() {
         let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let context = Box::into_raw(Box::new(CallbackContext {

@@ -47,6 +47,11 @@ jobs:
           swift test
           cd bindings/swift
           xcodebuild -scheme LibreSync -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/libresync-ios" CODE_SIGNING_ALLOWED=NO build
+      - name: Nearby Notes macOS tests and iOS demo build
+        if: runner.os == 'macOS'
+        run: |
+          swift test --package-path demos/NearbySyncMac
+          xcodebuild -project demos/NearbySyncIOS/NearbyNotesIOS.xcodeproj -scheme NearbyNotesIOS -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/nearby-notes-ios" CODE_SIGNING_ALLOWED=NO build
 
   release-checks:
     name: release readiness, audits, coverage (ubuntu)

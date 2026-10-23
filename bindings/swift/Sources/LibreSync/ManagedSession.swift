@@ -55,11 +55,11 @@ public struct LibreSyncSessionConfiguration: Codable, Sendable {
     public let listen: String?
     public let advertise: Bool
     public let authenticated_io_timeout_ms: UInt64
-    public init(policy:Policy,manifest:LibreSyncManifest?=nil,stateDirectory:URL,displayName:String,deviceKind:String="desktop",role:String="device",listen:String?=nil,authenticatedIOTimeout:TimeInterval=60) throws {
+    public init(policy:Policy,manifest:LibreSyncManifest?=nil,stateDirectory:URL,displayName:String="",deviceKind:String="desktop",role:String="device",listen:String?=nil,authenticatedIOTimeout:TimeInterval=60) throws {
         guard authenticatedIOTimeout>0,authenticatedIOTimeout<=300 else{throw LibreSyncSessionError(code:.invalidConfiguration,message:"Authenticated IO timeout must be greater than zero and at most five minutes")}
         self.policy=policy;self.manifest=manifest;state_dir=stateDirectory.path;display_name=displayName;device_kind=deviceKind;self.role=role;self.listen=listen;advertise=false;authenticated_io_timeout_ms=UInt64(authenticatedIOTimeout*1000)
     }
-    public static func notes(stateDirectory:URL,displayName:String)throws->Self{try .init(policy:.notes,stateDirectory:stateDirectory,displayName:displayName)}
+    public static func notes(stateDirectory:URL,displayName:String="")throws->Self{try .init(policy:.notes,stateDirectory:stateDirectory,displayName:displayName)}
 }
 public struct LibreSyncIdentity: Codable,Sendable,Equatable {public let device_id:String,user_id:String,app_id:String}
 public struct LibreSyncMetadata: Codable,Sendable {public let display_name:String,device_kind:String,role:String;public let manifest:LibreSyncManifest}

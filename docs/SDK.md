@@ -40,3 +40,9 @@ Historical Kotlin raw Engine/backup declarations never had JNI implementations. 
 ## Build and distribute
 
 `scripts/package-native-sdk.sh 0.7.0` builds five Apple slices and both Android ABIs, then emits complete Swift/XCFramework ZIPs, core/Compose AARs, a Maven repository ZIP, C header/schema and SHA256SUMS. Every public archive/AAR includes AGPL licensing. Native source/compiler provenance and fresh extracted consumer checks belong in release evidence. Follow [the release checklist](RELEASING.md); root Git-SPM remote resolution is verified after exact release assets are published.
+
+## Native Nearby Sync source integration
+
+The source SDK provides `LibreSyncNearbySyncView` for guided native Apple pairing and device management. Use `LibreSyncSessionModel.startAndWait()` and await `stopAndWait()` before closing the session. An omitted/empty Swift `displayName` opts into a generated name persisted by Rust in the encrypted installation journal. This source feature is not part of the immutable v0.7.0 release assets described above.
+
+The [macOS demo](../demos/NearbySyncMac/README.md) builds the current local Rust library and Swift components into a signed `.app`; `scripts/run-nearby-sync-demo.sh --two` launches separate profiles for local testing. No Momentum or As Needed integration is changed by running it. The application still owns coherent inbox persistence before acknowledging Applied. Android and Linux may use the shared Rust friendly-name behavior; this first UI slice adds Apple components and the macOS demo.

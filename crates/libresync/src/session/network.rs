@@ -508,6 +508,7 @@ fn authenticate(
             }
             inner.mutate(|e| {
                 check(e, handler, &identity, fp)?;
+                metadata.validate()?;
                 let current = e.peers.get(&identity.device_id).ok_or(Error::Cancelled)?;
                 // Unproven cursor hints can never suppress authoritative data.
                 let cursor = if cursor == ManagedReceipt::default()
@@ -544,6 +545,11 @@ fn authenticate(
                     .get_mut(&identity.device_id)
                     .ok_or(Error::Cancelled)?;
                 p.addresses = addresses;
+                // Refresh presentation only after checking the enrolled identity and pin.
+                // The enrolled manifest and all trust material remain authoritative.
+                p.metadata.display_name = metadata.display_name;
+                p.metadata.device_kind = metadata.device_kind;
+                p.metadata.role = metadata.role;
                 Ok((p.clone(), cursor))
             })
         }
@@ -1765,6 +1771,104 @@ mod tests {
         )
         .unwrap();
     }
+    #[test]
+    fn authenticated_reopened_peer_rename_is_refreshed_and_persisted() {
+        let ad = tempfile::tempdir().unwrap();
+        let bd = tempfile::tempdir().unwrap();
+        let ak = Arc::new(MemoryKeyStore::new());
+        let bk = Arc::new(MemoryKeyStore::new());
+        let a = Session::open(config(ad.path()), ak.clone()).unwrap();
+        let b = Session::open(config(bd.path()), bk.clone()).unwrap();
+        pair(&a, &b);
+        let bid = b.snapshot().unwrap().identity;
+        b.shutdown().unwrap();
+        drop(b);
+        let mut renamed = config(bd.path());
+        renamed.metadata.display_name = "Bright Avocado".into();
+        renamed.metadata.device_kind = "tablet".into();
+        renamed.metadata.role = "renamed-application".into();
+        renamed.metadata.manifest.display_name = "New app presentation".into();
+        let b = Session::open(renamed, bk).unwrap();
+        assert_eq!(b.snapshot().unwrap().identity, bid);
+        let handler = context(&a.inner).unwrap();
+        let before = lock(&a.inner.envelope).unwrap().clone();
+        let peer = &before.peers[&bid.device_id];
+        let aid = a.snapshot().unwrap().identity.device_id;
+        let destination = lock(&b.inner.envelope).unwrap().peers[&aid].clone();
+        let message = hello(&b.inner, &destination, a.address().unwrap()).unwrap();
+        authenticate(&a.inner, &handler, message, &peer.fingerprint).unwrap();
+        let after = lock(&a.inner.envelope).unwrap().clone();
+        let updated = &after.peers[&bid.device_id];
+        assert_eq!(updated.metadata.display_name, "Bright Avocado");
+        assert_eq!(updated.metadata.device_kind, "tablet");
+        assert_eq!(updated.metadata.role, "renamed-application");
+        assert_eq!(updated.identity, peer.identity);
+        assert_eq!(updated.fingerprint, peer.fingerprint);
+        assert_eq!(updated.revoked, peer.revoked);
+        assert_eq!(updated.metadata.manifest, peer.metadata.manifest);
+        assert_eq!(after.group_key, before.group_key);
+        a.shutdown().unwrap();
+        drop(handler);
+        drop(a);
+        let a = Session::open(config(ad.path()), ak).unwrap();
+        assert_eq!(
+            a.snapshot().unwrap().peers[0].metadata.display_name,
+            "Bright Avocado"
+        );
+    }
+
+    #[test]
+    fn invalid_or_unauthenticated_hello_cannot_change_saved_peer_metadata() {
+        let ad = tempfile::tempdir().unwrap();
+        let bd = tempfile::tempdir().unwrap();
+        let a = Session::open(config(ad.path()), Arc::new(MemoryKeyStore::new())).unwrap();
+        let b = Session::open(config(bd.path()), Arc::new(MemoryKeyStore::new())).unwrap();
+        pair(&a, &b);
+        let handler = context(&a.inner).unwrap();
+        let bid = b.snapshot().unwrap().identity.device_id;
+        let peer = lock(&a.inner.envelope).unwrap().peers[&bid].clone();
+        let mut cases = Vec::new();
+        for name in ["invalid\nname".to_string(), "x".repeat(129)] {
+            let mut metadata = peer.metadata.clone();
+            metadata.display_name = name;
+            cases.push((metadata, peer.fingerprint.clone()));
+        }
+        let mut invalid_kind = peer.metadata.clone();
+        invalid_kind.display_name = "Valid rename".into();
+        invalid_kind.device_kind.clear();
+        cases.push((invalid_kind, peer.fingerprint.clone()));
+        let mut invalid_manifest = peer.metadata.clone();
+        invalid_manifest.manifest.display_name = "invalid\napp".into();
+        cases.push((invalid_manifest, peer.fingerprint.clone()));
+        let mut valid = peer.metadata.clone();
+        valid.display_name = "Forged rename".into();
+        cases.push((valid, "unauthenticated-fingerprint".into()));
+        for (metadata, fingerprint) in cases {
+            let before = std::fs::read(ad.path().join("session.enc")).unwrap();
+            assert!(authenticate(
+                &a.inner,
+                &handler,
+                Message::ManagedHello {
+                    identity: peer.identity.clone(),
+                    metadata,
+                    cursor: ManagedReceipt::default(),
+                    processed: ManagedReceipt::default(),
+                    addresses: Vec::new(),
+                },
+                &fingerprint
+            )
+            .is_err());
+            assert_eq!(
+                lock(&a.inner.envelope).unwrap().peers[&bid].metadata,
+                peer.metadata
+            );
+            assert_eq!(
+                std::fs::read(ad.path().join("session.enc")).unwrap(),
+                before
+            );
+        }
+    }
+
     #[test]
     fn captured_socket_export_receipt_does_not_clear_a_concurrent_local_edit() {
         let ad = tempfile::tempdir().unwrap();
