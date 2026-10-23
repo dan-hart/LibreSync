@@ -14,6 +14,11 @@ narrative context live in `RELEASES.md`.
 - Native Apple Nearby Sync components with guided code/QR pairing, readable device status, and explicit pairing cleanup.
 - A runnable macOS Nearby Sync notes demo with isolated profiles for testing discovery, pairing, and durable application acknowledgements on one Mac.
 
+### Fixed
+
+- Refresh untouched Mac demo note editors after remote changes and warn before saving a locally edited draft over a newer received note.
+- Update rustls and rustls-webpki in both lockfiles to address current TLS security advisories.
+
 ## [0.7.0] - 2026-10-01
 
 - Add managed C, Swift and Android SDKs with typed sessions, secure platform storage, native QR/code discovery and consent UI, durable proof-bearing inbox acknowledgements, complete Apple slices and Android JNI/AAR packaging.

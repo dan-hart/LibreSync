@@ -22,9 +22,7 @@ private struct DemoShell: View {
     @ObservedObject var model: DemoModel
     @State private var destination: Destination? = .notes
     @State private var selectedNote: String?
-    @State private var draftID = UUID().uuidString
-    @State private var title = ""
-    @State private var bodyText = ""
+    @State private var draft = DemoNoteDraft()
     @State private var renaming = false
     @State private var newName = ""
 
@@ -65,6 +63,9 @@ private struct DemoShell: View {
         }
         .frame(minWidth: 860, minHeight: 600)
         .navigationTitle("Nearby Notes — \(model.profile?.name ?? "Invalid profile")")
+        .onChange(of: model.notes) { notes in
+            draft.receive(notes.first { $0.id == draft.id })
+        }
         .sheet(isPresented: $renaming) {
             VStack(alignment: .leading, spacing: 18) {
                 Text("Rename this device").font(.title2.bold())
@@ -121,13 +122,21 @@ private struct DemoShell: View {
                     Text(selectedNote == nil ? "New note" : "Edit note").font(.subheadline).foregroundColor(.secondary)
                     Spacer()
                     if model.busy { ProgressView().controlSize(.small) }
-                    Button("Save Note") { model.save(id: selectedNote ?? draftID, title: title, body: bodyText) }
+                    Button("Save Note") { model.save(id: draft.id, title: draft.title, body: draft.body) }
                         .keyboardShortcut("s", modifiers: .command)
-                        .disabled(model.sync == nil || model.busy || (title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && bodyText.isEmpty))
+                        .disabled(model.sync == nil || model.busy || (draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.body.isEmpty))
                 }
-                TextField("Title", text: $title).textFieldStyle(.plain).font(.title.bold())
+                if draft.sourceChanged {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("This note changed on another device. Saving will publish your current draft.")
+                        Button("Load latest version") {
+                            draft.load(model.notes.first { $0.id == draft.id })
+                        }
+                    }.font(.callout).padding(12).background(Color.orange.opacity(0.1))
+                }
+                TextField("Title", text: $draft.title).textFieldStyle(.plain).font(.title.bold())
                 Divider()
-                TextEditor(text: $bodyText).font(.body).accessibilityLabel("Note text")
+                TextEditor(text: $draft.body).font(.body).accessibilityLabel("Note text")
                 HStack(spacing: 5) {
                     Image(systemName: "lock.shield")
                     Text("Notes stay on your devices. Save to share with connected devices.")
@@ -135,9 +144,9 @@ private struct DemoShell: View {
             }.padding(24).frame(minWidth: 360)
         }
     }
-    private func select(_ id: String?) { draftID = UUID().uuidString; selectedNote = id; load(id) }
+    private func select(_ id: String?) { selectedNote = id; load(id) }
     private func load(_ id: String?) {
         let note = model.notes.first { $0.id == id }
-        title = note?.title ?? ""; bodyText = note?.body ?? ""
+        draft.load(note)
     }
 }

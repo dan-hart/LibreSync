@@ -45,6 +45,8 @@ jobs:
           rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
           scripts/build-apple-sdk.sh
           swift test
+          swift test --package-path demos/NearbySyncMac
+          xcodebuild -project demos/NearbySyncIOS/NearbyNotesIOS.xcodeproj -scheme NearbyNotesIOS -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/nearby-notes-ios" CODE_SIGNING_ALLOWED=NO build
           cd bindings/swift
           xcodebuild -scheme LibreSync -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/libresync-ios" CODE_SIGNING_ALLOWED=NO build
 
