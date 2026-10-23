@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 77;
+	objectVersion = 60;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -115,6 +115,7 @@
 				};
 			};
 			buildConfigurationList = F1D7F6C633DDAFDF00047CF0 /* Build configuration list for PBXProject "NearbyNotesIOS" */;
+			compatibilityVersion = "Xcode 15.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -126,7 +127,6 @@
 			packageReferences = (
 				0E953149371C7D8595FB7C39 /* XCLocalSwiftPackageReference "../../bindings/swift" */,
 			);
-			preferredProjectObjectVersion = 77;
 			productRefGroup = 49CA5174DC5FE758EA3D5536 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";

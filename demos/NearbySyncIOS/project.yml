@@ -1,5 +1,6 @@
 name: NearbyNotesIOS
 options:
+  projectFormat: xcode15_0
   bundleIdPrefix: io.libresync
   deploymentTarget:
     iOS: '17.0'
