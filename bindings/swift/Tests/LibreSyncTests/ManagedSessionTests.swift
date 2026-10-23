@@ -1,6 +1,23 @@
 import XCTest
 @testable import LibreSync
 final class ManagedSessionTests:XCTestCase {
+    func testRelocatedStatePreservesIdentityAndNotes() async throws {
+        let root=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer{try? FileManager.default.removeItem(at:root)}
+        let original=root.appendingPathComponent("original"), moved=root.appendingPathComponent("moved")
+        let keys=TestKeys()
+        let session=try await LibreSyncSession.open(.notes(stateDirectory:original),keys:keys)
+        try await session.set(adapter:"records",id:"note",value:Data("preserved".utf8))
+        let before=try await session.snapshot()
+        await session.close()
+        try FileManager.default.moveItem(at:original,to:moved)
+        let reopened=try await LibreSyncSession.open(.notes(stateDirectory:moved),keys:keys)
+        let after=try await reopened.snapshot()
+        let records=try await reopened.records(adapter:"records")
+        XCTAssertEqual(before.identity,after.identity)
+        XCTAssertEqual(records.first?.value,Data("preserved".utf8))
+        await reopened.close()
+    }
     func testAlreadyCancelledSetAndConnectCannotStartNativeWork() async throws {
         let a=try await LibreSyncSession.open(.notes(stateDirectory:FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),displayName:"Cancel source"),keys:TestKeys())
         let b=try await LibreSyncSession.open(.notes(stateDirectory:FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),displayName:"Cancel target"),keys:TestKeys())
@@ -357,6 +374,9 @@ private final class CachedTXTService:NetService {
  init(service:NetService,cached:Data){self.cached=cached;self.resolved=service.addresses ?? [];super.init(domain:service.domain,type:service.type,name:service.name,port:Int32(service.port))}
  override var addresses:[Data]?{resolved}
  override func txtRecordData()->Data?{cached}
+ // The test drives resolve/TXT callbacks explicitly; real DNS must not race them.
+ override func resolve(withTimeout timeout:TimeInterval){}
+ override func startMonitoring(){}
 }
 extension ManagedSessionTests {
  @MainActor func testDuplicateFindKeepsTheMonitoredService() async throws {
@@ -378,10 +398,18 @@ extension ManagedSessionTests {
   for _ in 0..<100{if try await a.nearby().contains(where:{$0.identity.device_id==id&&$0.invitation != nil}){break};try await Task.sleep(nanoseconds:100_000_000)}
   let browser=try XCTUnwrap(Mirror(reflecting:pa).children.first(where:{$0.label=="browser"})?.value as? NetServiceBrowser)
   let tracked=try XCTUnwrap(Mirror(reflecting:pa).children.first(where:{$0.label=="services"})?.value as? [String:NetService]);let original=try XCTUnwrap(tracked[id])
+  // Real Bonjour establishes an address, then this sequence owns all callbacks.
+  // A live didRemove/didFind for the same name could otherwise retire the fake.
+  browser.delegate=nil;browser.stop()
   let delivery=try XCTUnwrap(Mirror(reflecting:pa).children.first(where:{$0.label=="delivery"})?.value as? LibreSyncDiscoveryDelivery)
   let stale=NetService.data(fromTXTRecord:oldAd.txt.mapValues{Data($0.utf8)});let cached=CachedTXTService(service:original,cached:stale)
   pa.netServiceBrowser(browser,didRemove:original,moreComing:false);pa.netServiceBrowser(browser,didFind:cached,moreComing:false);pa.netServiceDidResolveAddress(cached);await delivery.drain()
   try await b.closePairing();let closedAd=try await b.platformAdvertisement();pa.netService(cached,didUpdateTXTRecord:NetService.data(fromTXTRecord:closedAd.txt.mapValues{Data($0.utf8)}));await delivery.drain()
+  let currentOwners=try XCTUnwrap(Mirror(reflecting:pa).children.first(where:{$0.label=="services"})?.value as? [String:NetService])
+  let currentTXT=try XCTUnwrap(Mirror(reflecting:pa).children.first(where:{$0.label=="latestTXT"})?.value as? [String:Data])
+  let closedTXT=NetService.data(fromTXTRecord:closedAd.txt.mapValues{Data($0.utf8)})
+  XCTAssertTrue(currentOwners[cached.name]===cached,"Live discovery replaced the manually injected service fixture")
+  XCTAssertTrue(currentTXT[cached.name]==closedTXT,"Live TXT monitoring overwrote the manually supplied closed descriptor")
   let closed=try await a.nearby();XCTAssertTrue(closed.contains{$0.identity.device_id==id&&$0.invitation==nil})
   pa.netServiceDidResolveAddress(cached);await delivery.drain()
   let after=try await a.nearby();XCTAssertFalse(after.contains{$0.identity.device_id==id&&$0.invitation != nil},"Resolve cache replayed older invitation metadata")

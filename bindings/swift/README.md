@@ -28,7 +28,19 @@ The SDK is AGPL-3.0-only; review [the license](../../LICENSE) when distributing 
 
 ## Native Nearby Sync
 
-Use `LibreSyncNearbySyncView(model: model)` for a guided native flow: a stable friendly device name, Your devices, explicit Add Device, expiring six-digit codes or QR invitations, and connection help. It works with one shared `LibreSyncSessionModel`. The host starts the model and remains responsible for durable application inbox processing; displaying the view never acknowledges records.
+### Customize the accent
+
+The SDK inherits the host SwiftUI tint; it does not impose the demo app’s orange accent. Set a tint on the screen or an ancestor to style its buttons and accent icons, including pairing sheets:
+
+```swift
+LibreSyncNearbySyncView(model: model)
+    .tint(.purple) // Or Color("BrandAccent") from the host app.
+```
+
+The standalone Connect, Devices and Status components inherit the same host styling. Success, error and destructive controls retain their semantic system colors; QR codes retain black/white contrast for scanning.
+
+
+Use `LibreSyncNearbySyncView(model: model)` for a guided native flow: a stable friendly device name, Your devices, explicit Add Device, expiring six-digit codes or QR invitations, and connection help. It works with one shared `LibreSyncSessionModel`. The screen owns its scrolling: embed it directly in the host navigation content, without another ScrollView or List. Give the host page its Nearby Sync navigation title. `LibreSyncDevicesView` contains non-scrolling rows for embedding in a Form section, List or ScrollView. The host starts the model and remains responsible for durable application inbox processing; displaying the view never acknowledges records.
 
 Omitting `displayName` (or passing an empty string) generates a name such as “Bright Avocado” once in the shared Rust session. Reopening the same private state directory with the same secure-store identity preserves it. Explicit names remain supported. Names are display labels, may collide, and grant no trust. Renaming can be implemented by awaiting model shutdown and closing the session, then reopening the same state/keys with a validated explicit name; the view accepts an optional `onRename` host callback.
 
@@ -62,6 +74,12 @@ try await session.acknowledge(inbox) // only after successful durable app save
 ```
 
 All blocking native work runs off the main thread. `events()` is a cancellable AsyncSequence; stopping observation does not cancel shared networking. Cancelling a connect/repair asks core to cancel current network operations. Explicit `cancel()` is session-wide for currently registered operations, and the scheduler may retry later; use pause for sustained suspension and close to fence new work. Concurrent close callers await the same cleanup. Events are snapshot-change notifications, with a 256-event newest buffer rather than a durable transaction log. Each observation gets an independent bounded native queue; stopping one subscriber preserves the others.
+
+Managed state retains its secure-store account in the nonsecret `identity-ref.json` file beside `session.enc`. Keep both files with the app’s private state. Moving an iOS app container during an update preserves the reference, identity, peer trust and encrypted records; the host must also preserve its own durable note/database files and the same Keychain service/access group.
+
+When upgrading a legacy installation that has no reference, `LibreSyncSession.open` first tries its old lookup. If the container already moved, a concrete `LibreSyncKeychainStore` can automatically recover by examining a bounded set of managed account names in that exact service. It accepts a candidate only after Rust authenticates the existing encrypted journal and validates its identity and app manifest, then writes a reference to that same account. No key is copied or regenerated, and locked/corrupt storage stops migration. Custom `LibreSyncSecureStore` implementations are not enumerated; upgrade once at the old path or provide an app-reviewed recovery strategy before relocating legacy state.
+
+A complete state copy preserves device identity and must not be run alongside the original as an independent device. Downgrading a newly created portable installation or a relocated installation to an older SDK is unsupported. Uninstall/reinstall with lost app data or unavailable Keychain credentials is distinct from a state-preserving app update.
 
 Keychain `not found` is distinct from locked, unavailable or corrupt storage. There is no plaintext fallback or silent identity regeneration. Errors use `LibreSyncSessionErrorCode`, with separate oversized/invalid record, incompatible version, revoked peer, group conflict and storage errors. Record bytes and proofs use exact base64 Codable `Data`; UInt64 counters retain their full precision.
 

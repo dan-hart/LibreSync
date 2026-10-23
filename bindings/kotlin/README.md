@@ -45,3 +45,19 @@ Native tests run with `ANDROID_SERIAL=<owned-device> ./gradlew connectedDebugAnd
 Build distributable Maven metadata and both AARs with `scripts/build-android-sdk.sh`. Package all native SDK assets with `scripts/package-native-sdk.sh 0.8.0`. Extract `LibreSyncAndroid-0.8.0-maven.zip` and add its directory as a Gradle Maven repository, then depend on `io.libresync:libresync:0.8.0` and optionally `io.libresync:libresync-compose:0.8.0`; metadata supplies public coroutine, serialization, lifecycle and Compose dependencies. Normal AndroidX/Kotlin dependencies must already be cached for a fully offline build.
 
 After durably saving the complete coherent inbox, acknowledgement sends only its captured revision and exact source receipt map; record bytes stay in the saved app transaction and are not retransmitted in the acknowledgement request. This keeps a near-limit valid record aggregate acknowledgeable even with multiple proof-bearing source receipts. The C command accepts an optional legacy `records` field but does not use it. Cancellation before a queued Swift call starts prevents native work; cancellation after start interrupts current IO on a best-effort basis and is not transaction rollback.
+
+## Embed the native views
+
+`Connect`, `Devices` and `Status` inherit `MaterialTheme` and own their vertical scrolling. Give each page a bounded viewport, for example `Modifier.fillMaxSize()` inside a weighted Scaffold content area. Do not place a page inside another vertical scroll container. The sample demonstrates a top app bar, native tabs and system light/dark colors.
+
+### Customize the accent
+
+SDK composables inherit the nearest `MaterialTheme`; no LibreSync brand color is hard-coded. Supply the client’s light/dark color schemes around the views, using `primary` and `onPrimary` for the main accent and its contrasting content:
+
+```kotlin
+MaterialTheme(colorScheme = appColorScheme) {
+    Connect(session, Modifier.fillMaxSize())
+}
+```
+
+Use the same theme for `Devices` and `Status`. Error/destructive surfaces keep the theme’s semantic error colors, and QR codes retain black/white contrast for scanning.

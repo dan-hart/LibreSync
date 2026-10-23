@@ -1,6 +1,6 @@
 plugins { id("com.android.library"); id("maven-publish"); id("org.jetbrains.kotlin.plugin.compose") }
 group="io.libresync"
-version="0.8.0"
+version="0.8.1"
 android { publishing {singleVariant("release"){withSourcesJar()}}; namespace="io.libresync.compose"; compileSdk {version=release(37){minorApiLevel=0}}; defaultConfig {minSdk=24}; buildFeatures {compose=true}; compileOptions {sourceCompatibility=JavaVersion.VERSION_17;targetCompatibility=JavaVersion.VERSION_17} }
 dependencies {api(project(":")); api(platform("androidx.compose:compose-bom:2025.10.00"));api("androidx.compose.material3:material3");implementation("androidx.activity:activity-compose:1.11.0");implementation("com.google.zxing:core:3.5.3")}
 

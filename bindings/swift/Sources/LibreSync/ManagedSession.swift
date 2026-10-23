@@ -14,6 +14,7 @@ public struct LibreSyncKeychainStore: LibreSyncSecureStore {
     public func delete(_ name: String) throws { try LibreSyncKeychain.delete(account: name, service: service) }
 }
 public enum LibreSyncSessionErrorCode: String, Codable, Sendable {
+    case identityMigrationRequired = "IdentityMigrationRequired", identityCandidateMismatch = "IdentityCandidateMismatch"
     case closed = "Closed", cancelled = "Cancelled", invalidOperation = "InvalidOperation"
     case invalidConfiguration = "InvalidConfiguration", invalidAdapter = "InvalidAdapter", invalidRecord = "InvalidRecord"
     case incompatibleSchema = "IncompatibleSchema", staleBootstrap = "StaleBootstrap", groupConflict = "GroupConflict", peerRevoked = "PeerRevoked"
@@ -23,6 +24,33 @@ public struct LibreSyncSessionError: Error, Codable, Sendable, LocalizedError {
     public let code: LibreSyncSessionErrorCode
     public let message: String
     public var errorDescription: String? { message }
+}
+// Retry authorization is a typed native result, never inferred from error text.
+let managedIdentityCandidateLimit = 64
+func strictManagedIdentityAccount(_ account:String)->Bool {
+    let prefix="managed-", suffix="-identity-v1"
+    guard account.hasPrefix(prefix),account.hasSuffix(suffix),account.utf8.count==prefix.utf8.count+64+suffix.utf8.count else{return false}
+    return account.dropFirst(prefix.count).dropLast(suffix.count).utf8.allSatisfy{(48...57).contains($0)||(97...102).contains($0)}
+}
+func boundedManagedIdentityAccounts(_ accounts:[String])throws->[String] {
+    let candidates=Set(accounts.filter(strictManagedIdentityAccount))
+    guard candidates.count<=managedIdentityCandidateLimit else{throw LibreSyncSessionError(code:.storageUnavailable,message:"Too many legacy identity accounts")}
+    return candidates.sorted()
+}
+func openWithIdentityMigration<T>(enumerate:(()async throws->[String])?,open:(String?)async throws->T)async throws->T {
+    do{return try await open(nil)}catch let initial as LibreSyncSessionError {
+        guard initial.code == .identityMigrationRequired,let enumerate else{throw initial}
+        try Task.checkCancellation()
+        let candidates=try boundedManagedIdentityAccounts(await enumerate())
+        try Task.checkCancellation()
+        for candidate in candidates {
+            try Task.checkCancellation()
+            do{return try await open(candidate)}catch let error as LibreSyncSessionError {
+                guard error.code == .identityCandidateMismatch else{throw error}
+            }
+        }
+        throw initial
+    }
 }
 public enum LibreSyncPermissionState: String, Codable, Sendable { case allowed = "Allowed", denied = "Denied", unknown = "Unknown" }
 public enum LibreSyncJSON: Codable, Sendable, Equatable {
@@ -146,9 +174,20 @@ public final class LibreSyncSession: @unchecked Sendable {
         return value
     }
     public static func open(_ config:LibreSyncSessionConfiguration,keys:any LibreSyncSecureStore)async throws->LibreSyncSession {
+        let enumerate:(()async throws->[String])?
+        if let concrete=keys as? LibreSyncKeychainStore {
+            enumerate={try await Task.detached {try LibreSyncKeychain.managedIdentityAccounts(service:concrete.service)}.value}
+        }else{enumerate=nil}
+        return try await openWithIdentityMigration(enumerate:enumerate){candidate in
+            guard var fields=try JSONSerialization.jsonObject(with:JSONEncoder().encode(config)) as? [String:Any] else{throw LibreSyncSessionError(code:.invalidConfiguration,message:"Invalid managed configuration")}
+            if let candidate{fields["legacy_identity_key"]=candidate}
+            let encoded=String(decoding:try JSONSerialization.data(withJSONObject:fields),as:UTF8.self)
+            return try await openNative(encoded,keys:keys)
+        }
+    }
+    private static func openNative(_ encoded:String,keys:any LibreSyncSecureStore)async throws->LibreSyncSession {
         try Task.checkCancellation()
         let gate=NativeCallGate()
-        let encoded=String(decoding:try JSONEncoder().encode(config),as:UTF8.self)
         let session=try await withTaskCancellationHandler(operation:{try Task.checkCancellation();return try await Task.detached {
             guard gate.begin() else{throw CancellationError()}
             let ctx=Unmanaged.passRetained(KeyContext(keys)).toOpaque()

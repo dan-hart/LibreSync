@@ -389,6 +389,10 @@
         "manifest": {
           "$ref": "#/$defs/manifest"
         },
+        "legacy_identity_key": {
+          "type": "string",
+          "pattern": "^managed-[0-9a-f]{64}-identity-v1$"
+        },
         "state_dir": {
           "type": "string"
         },
@@ -1114,6 +1118,8 @@
             "PeerRevoked",
             "StorageUnavailable",
             "StorageCommitUncertain",
+            "IdentityMigrationRequired",
+            "IdentityCandidateMismatch",
             "Busy",
             "OperationFailed"
           ]

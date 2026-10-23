@@ -55,6 +55,29 @@ public enum LibreSyncKeychain {
         return data
     }
 
+    /// Return account metadata only. Never request secret values during discovery.
+    static func managedIdentityAccounts(service:String)throws->[String] {
+        // Asking for one extra result makes truncation detectable without an unbounded query.
+        let query:[String:Any]=[
+            kSecClass as String:kSecClassGenericPassword,
+            kSecAttrService as String:service,
+            kSecReturnAttributes as String:true,
+            kSecMatchLimit as String:managedIdentityCandidateLimit+1,
+        ]
+        var result:AnyObject?
+        let status=SecItemCopyMatching(query as CFDictionary,&result)
+        if status==errSecItemNotFound{return []}
+        guard status==errSecSuccess else{throw LibreSyncSessionError(code:.storageUnavailable,message:"Legacy identity account metadata unavailable")}
+        guard let items=result as? [[String:Any]],items.count<=managedIdentityCandidateLimit else{throw LibreSyncSessionError(code:.storageUnavailable,message:"Legacy identity account enumeration exceeded its bound")}
+        var accounts:[String]=[]
+        for item in items {
+            guard let account=item[kSecAttrAccount as String] as? String,
+                  let itemService=item[kSecAttrService as String] as? String,itemService==service else{throw LibreSyncSessionError(code:.storageUnavailable,message:"Invalid legacy identity account metadata")}
+            accounts.append(account)
+        }
+        return try boundedManagedIdentityAccounts(accounts)
+    }
+
     public static func delete(account: String, service: String = "LibreSync") throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

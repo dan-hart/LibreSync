@@ -67,13 +67,13 @@ private struct PhoneNotesView: View {
                             Button { draft = NoteDraft(note) } label: {
                                 VStack(alignment: .leading, spacing: 5) {
                                     Text(note.title.isEmpty ? "Untitled note" : note.title)
-                                        .font(.headline).foregroundStyle(.primary).lineLimit(1)
+                                        .font(.headline).foregroundColor(.primary).lineLimit(2)
                                     Text(note.body.isEmpty ? "No additional text" : note.body)
-                                        .foregroundStyle(.secondary).lineLimit(2)
-                                    Text(note.updatedAt, style: .date).font(.caption).foregroundStyle(.secondary)
-                                }.padding(.vertical, 4).frame(maxWidth: .infinity, alignment: .leading)
-                            }.disabled(model.busy)
-                        }
+                                        .foregroundColor(.secondary).lineLimit(2)
+                                    Text(note.updatedAt, style: .date).font(.caption).foregroundColor(.secondary)
+                                }.padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading)
+                            }.buttonStyle(.plain).disabled(model.busy)
+                        }.listStyle(.insetGrouped)
                     }
                 }
                 .navigationTitle("Notes")
@@ -87,12 +87,9 @@ private struct PhoneNotesView: View {
             NavigationStack {
                 Group {
                     if let sync = model.sync {
-                        ScrollView {
-                            LibreSyncNearbySyncView(model: sync, onRename: {
-                                deviceName = sync.localDisplayName; renaming = true
-                            }).padding()
-                        }
-                        .disabled(model.busy)
+                        LibreSyncNearbySyncView(model: sync, onRename: {
+                            deviceName = sync.localDisplayName; renaming = true
+                        }).disabled(model.busy)
                     } else { unavailable }
                 }.navigationTitle("Nearby Sync")
             }.tabItem { Label("Nearby Sync", systemImage: "personalhotspot") }
@@ -111,9 +108,13 @@ private struct PhoneNotesView: View {
         .sheet(isPresented: $renaming) {
             NavigationStack {
                 Form {
-                    Section("Choose a name you will recognize on your other devices.") {
+                    Section {
                         TextField("Device name", text: $deviceName).textInputAutocapitalization(.words)
                             .submitLabel(.done).onSubmit(saveName)
+                    } header: {
+                        Text("Device name")
+                    } footer: {
+                        Text("Choose a name you will recognize on your other devices.")
                     }
                 }.navigationTitle("Rename this device").navigationBarTitleDisplayMode(.inline)
                     .toolbar {
@@ -168,10 +169,14 @@ private struct NoteEditor: View {
                     }
                 }
                 Section {
-                    TextField("Title", text: $draft.title).font(.headline).submitLabel(.next)
-                    TextEditor(text: $draft.body).frame(minHeight: 240).accessibilityLabel("Note text")
+                    TextField("Title", text: $draft.title).font(.title2.bold()).submitLabel(.next)
+                        .accessibilityLabel("Note title")
+                    TextEditor(text: $draft.body).frame(minHeight: 280).accessibilityLabel("Note text")
+                        .lineSpacing(4)
                 }
-                Section { Label("Save to share with connected devices.", systemImage: "lock.shield").font(.footnote) }
+                Section {} footer: {
+                    Label("Save to share with connected devices.", systemImage: "lock.shield")
+                }
             }.navigationTitle(original == nil ? "New note" : "Edit note").navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(saving) }

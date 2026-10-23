@@ -18,7 +18,7 @@ object BytesAsBase64:KSerializer<ByteArray> {
  override fun serialize(encoder:Encoder,value:ByteArray)=encoder.encodeString(Base64.encodeToString(value,Base64.NO_WRAP))
  override fun deserialize(decoder:Decoder)=Base64.decode(decoder.decodeString(),Base64.NO_WRAP)
 }
-@Serializable enum class SessionErrorCode { Closed,Cancelled,InvalidOperation,InvalidConfiguration,InvalidAdapter,InvalidRecord,IncompatibleSchema,StaleBootstrap,GroupConflict,PeerRevoked,StorageUnavailable,StorageCommitUncertain,Busy,OperationFailed }
+@Serializable enum class SessionErrorCode { Closed,Cancelled,InvalidOperation,InvalidConfiguration,InvalidAdapter,InvalidRecord,IncompatibleSchema,StaleBootstrap,GroupConflict,PeerRevoked,StorageUnavailable,StorageCommitUncertain,IdentityMigrationRequired,IdentityCandidateMismatch,Busy,OperationFailed }
 @Serializable data class SessionFailure(val code:SessionErrorCode,val message:String)
 class SessionException(val failure:SessionFailure):Exception(failure.message)
 @Serializable enum class PermissionState {Allowed,Denied,Unknown}

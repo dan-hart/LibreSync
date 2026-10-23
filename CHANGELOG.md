@@ -6,6 +6,16 @@ narrative context live in `RELEASES.md`.
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve managed device identity, pairing and notes when iOS app updates relocate the data container, using portable secure-store references and authenticated legacy migration.
+
+### Changed
+
+- Refine native Nearby Sync and Nearby Notes screens with platform-specific grouping, clearer device status and pairing actions, adaptive layouts and accessible semantic styling.
+- Inherit client-provided SwiftUI tint and Material themes for native component accents, with integration examples.
+- Prepare package version 0.8.1.
+
 ## [0.8.0] - 2026-10-23
 
 ### Added

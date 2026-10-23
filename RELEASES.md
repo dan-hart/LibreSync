@@ -1,5 +1,11 @@
 # Releases
 
+## v0.8.1 (in development)
+
+This patch preserves managed identity and pairing across iOS data-container moves using portable secure-store references and authenticated legacy Keychain migration. It also refines the native Nearby Sync components and Apple Nearby Notes demos with clearer hierarchy, device status and pairing controls. SDK views continue to inherit the host app theme. Pairing consent, local-only transport and durable save requirements remain unchanged.
+
+Version 0.8.1 is prepared in source; the latest published release remains v0.8.0 until the release checklist and publication are completed.
+
 ## v0.8.0 (2026-10-23)
 
 Native Apple apps can embed the guided Nearby Sync screen through `LibreSyncSessionModel` and `LibreSyncNearbySyncView`. The Swift SDK includes explicit code/QR pairing, readable device status, invitation cleanup and persistent generated friendly names. The same Rust naming behavior is available to managed Android and Linux integrations; the new guided screen is Apple-specific. Native Apple discovery refreshes endpoints and retries transient resolution failures so peers recover when listener ports change after pause/resume.

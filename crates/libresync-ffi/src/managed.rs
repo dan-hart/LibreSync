@@ -68,6 +68,8 @@ struct Config {
     #[serde(default)]
     manifest: Option<libresync::AppManifest>,
     state_dir: String,
+    #[serde(default)]
+    legacy_identity_key: Option<String>,
     display_name: String,
     device_kind: String,
     #[serde(default = "role")]
@@ -145,6 +147,7 @@ pub(super) fn open(input: Value, keys: Arc<dyn KeyStore>) -> Value {
                 manifest: support.manifest,
             },
         );
+        c.legacy_identity_key = config.legacy_identity_key;
         c.advertise = config.advertise;
         c.authenticated_io_timeout = Duration::from_millis(config.authenticated_io_timeout_ms);
         if let Some(addr) = config.listen {

@@ -29,7 +29,7 @@ private struct DemoShell: View {
     var body: some View {
         NavigationView {
             List(selection: $destination) {
-                Section("LIBRESYNC") {
+                Section("Nearby Notes") {
                     Label("Notes", systemImage: "note.text").tag(Destination.notes)
                     Label("Nearby Sync", systemImage: "personalhotspot").tag(Destination.nearby)
                 }
@@ -54,15 +54,26 @@ private struct DemoShell: View {
                 }
                 if destination == .nearby {
                     if let sync = model.sync {
-                        ScrollView { LibreSyncNearbySyncView(model: sync, onRename: {
+                        LibreSyncNearbySyncView(model: sync, onRename: {
                             newName = sync.localDisplayName; renaming = true
-                        }).padding(28).frame(maxWidth: 800) }
+                        })
                     } else { unavailable }
                 } else { notesWorkspace }
             }.frame(minWidth: 620, minHeight: 520)
         }
         .frame(minWidth: 860, minHeight: 600)
-        .navigationTitle("Nearby Notes — \(model.profile?.name ?? "Invalid profile")")
+        .navigationTitle(destination?.rawValue ?? "Notes")
+        .toolbar {
+            ToolbarItem {
+                Button {
+                    newName = model.sync?.localDisplayName ?? ""
+                    renaming = true
+                } label: {
+                    Label("Rename Device", systemImage: "pencil")
+                }.disabled(model.sync == nil || model.busy)
+                .help("Rename this device")
+            }
+        }
         .onChange(of: model.notes) { notes in
             draft.receive(notes.first { $0.id == draft.id })
         }
@@ -70,16 +81,28 @@ private struct DemoShell: View {
             VStack(alignment: .leading, spacing: 18) {
                 Text("Rename this device").font(.title2.bold())
                 Text("Choose a name you will recognize on your other devices.").foregroundColor(.secondary)
-                TextField("Device name", text: $newName)
+                TextField("Device name", text: $newName).textFieldStyle(.roundedBorder)
+                    .onSubmit(saveName)
                 HStack {
                     Spacer()
                     Button("Cancel") { renaming = false }.keyboardShortcut(.cancelAction)
-                    Button("Save Name") { model.rename(newName); renaming = false }
+                    Button("Save Name", action: saveName)
                         .keyboardShortcut(.defaultAction)
-                        .disabled(newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || newName.utf8.count > 128)
+                        .disabled(!validName || model.busy)
                 }
             }.padding(28).frame(width: 420)
         }
+    }
+
+    private var validName: Bool {
+        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !name.isEmpty && name.utf8.count <= 128 &&
+            name.unicodeScalars.allSatisfy { !CharacterSet.controlCharacters.contains($0) }
+    }
+
+    private func saveName() {
+        guard validName, !model.busy else { return }
+        model.rename(newName); renaming = false
     }
 
     private var unavailable: some View {
@@ -108,7 +131,7 @@ private struct DemoShell: View {
                     List(selection: $selectedNote) {
                         ForEach(model.notes) { note in
                             VStack(alignment: .leading, spacing: 5) {
-                                Text(note.title.isEmpty ? "Untitled note" : note.title).font(.headline).lineLimit(1)
+                                Text(note.title.isEmpty ? "Untitled note" : note.title).font(.headline).lineLimit(2)
                                 Text(note.body.isEmpty ? "No additional text" : note.body).foregroundColor(.secondary).lineLimit(2)
                                 Text(note.updatedAt, style: .date).font(.caption2).foregroundColor(.secondary)
                             }.padding(.vertical, 6).tag(note.id)
@@ -135,8 +158,10 @@ private struct DemoShell: View {
                     }.font(.callout).padding(12).background(Color.orange.opacity(0.1))
                 }
                 TextField("Title", text: $draft.title).textFieldStyle(.plain).font(.title.bold())
+                    .accessibilityLabel("Note title")
                 Divider()
                 TextEditor(text: $draft.body).font(.body).accessibilityLabel("Note text")
+                    .lineSpacing(4)
                 HStack(spacing: 5) {
                     Image(systemName: "lock.shield")
                     Text("Notes stay on your devices. Save to share with connected devices.")

@@ -20,21 +20,179 @@ fn aad(config: &SessionConfig) -> Vec<u8> {
     )
     .into_bytes()
 }
-pub(super) fn identity(
-    config: &SessionConfig,
-    store: &dyn KeyStore,
-) -> Result<(Identity, DeviceKeys, AppKey)> {
+const REFERENCE: &str = "identity-ref.json";
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IdentityReference {
+    version: u32,
+    account: String,
+}
+fn valid_account(name: &str) -> bool {
+    name.strip_prefix("managed-")
+        .and_then(|s| s.strip_suffix("-identity-v1"))
+        .is_some_and(|s| {
+            s.len() == 64
+                && s.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
+}
+fn legacy_account(config: &SessionConfig) -> String {
     let namespace = Sha256::digest(config.state_dir.to_string_lossy().as_bytes())
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
-    let name = format!("managed-{namespace}-identity-v1");
+    format!("managed-{namespace}-identity-v1")
+}
+fn regular_file(path: &std::path::Path) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_file() => Ok(true),
+        Ok(_) => fail("managed state must be a regular file"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
+fn reference(config: &SessionConfig) -> Result<Option<String>> {
+    let path = config.state_dir.join(REFERENCE);
+    if !regular_file(&path)? {
+        return Ok(None);
+    }
+    let metadata = fs::metadata(&path)?;
+    if metadata.len() > 256 {
+        return fail("identity reference too large");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o777 != 0o600 {
+            return fail("identity reference permissions must be 0600");
+        }
+    }
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    fs::File::open(path)?.take(257).read_to_end(&mut bytes)?;
+    if bytes.len() > 256 {
+        return fail("identity reference too large");
+    }
+    let locator: IdentityReference = serde_json::from_slice(&bytes)?;
+    if locator.version != 1 || !valid_account(&locator.account) {
+        return fail("invalid identity reference");
+    }
+    Ok(Some(locator.account))
+}
+pub(super) fn save_reference(config: &SessionConfig, account: &str) -> Result<()> {
+    let temp = config
+        .state_dir
+        .join(format!(".identity-{}.tmp", random_id()));
+    let result = (|| -> Result<()> {
+        let mut opts = OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        checkpoint("reference_before_write")?;
+        let mut file = opts.open(&temp)?;
+        file.write_all(&serde_json::to_vec(&IdentityReference {
+            version: 1,
+            account: account.into(),
+        })?)?;
+        file.sync_all()?;
+        checkpoint("reference_before_rename")?;
+        fs::rename(&temp, config.state_dir.join(REFERENCE))?;
+        checkpoint("reference_after_rename")?;
+        fs::File::open(&config.state_dir)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temp);
+    }
+    result.map_err(|_| crate::Error::Managed {
+        code: super::SessionErrorCode::StorageCommitUncertain,
+        message: "identity reference commit could not be confirmed; reopen before retrying".into(),
+    })
+}
+fn validate_envelope(
+    envelope: &Envelope,
+    identity: &Identity,
+    manifest: &crate::AppManifest,
+) -> Result<()> {
+    if envelope.version != 1 {
+        return fail("unsupported session journal version");
+    }
+    if &envelope.identity != identity || !envelope.metadata.manifest.compatible_with(manifest) {
+        return fail("session identity or manifest changed");
+    }
+    envelope.metadata.validate()?;
+    super::limits::state(envelope)?;
+    AppKey::from_slice(&envelope.group_key)?;
+    if let Some(prepared) = &envelope.prepared {
+        validate_envelope(&prepared.target, identity, manifest)?;
+    }
+    Ok(())
+}
+pub(super) fn identity(
+    config: &SessionConfig,
+    store: &dyn KeyStore,
+) -> Result<(Identity, DeviceKeys, AppKey, Option<String>)> {
+    use super::{fail_code, SessionErrorCode};
+    let locator = reference(config)?;
+    let existing = regular_file(&config.state_dir.join("session.enc"))?;
+    let candidate = config.legacy_identity_key.as_deref();
+    if candidate.is_some() && (locator.is_some() || !existing) {
+        return fail_code(
+            SessionErrorCode::InvalidConfiguration,
+            "legacy candidate requires existing state without an identity reference",
+        );
+    }
+    if candidate.is_some_and(|s| !valid_account(s)) {
+        return fail_code(
+            SessionErrorCode::InvalidConfiguration,
+            "invalid legacy identity account",
+        );
+    }
+    let name = if let Some(account) = locator.as_deref().or(candidate) {
+        account.to_owned()
+    } else if existing {
+        legacy_account(config)
+    } else {
+        use rand_core::{OsRng, RngCore};
+        let mut bytes = [0u8; 32];
+        OsRng.try_fill_bytes(&mut bytes).map_err(|e| {
+            crate::Error::Crypto(format!("identity namespace entropy unavailable: {e}"))
+        })?;
+        format!(
+            "managed-{}-identity-v1",
+            bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        )
+    };
     let bundle: IdentityBundle = match store.get(&name)? {
-        Some(bytes) => serde_json::from_slice(&bytes)?,
-        None => {
-            if config.state_dir.join("session.enc").exists() {
-                return fail("secure storage identity absent for existing state");
+        Some(bytes) => match serde_json::from_slice(&bytes) {
+            Ok(bundle) => bundle,
+            Err(_) if candidate.is_some() => {
+                return fail_code(
+                    SessionErrorCode::IdentityCandidateMismatch,
+                    "legacy identity candidate does not match",
+                )
             }
+            Err(e) => return Err(e.into()),
+        },
+        None if candidate.is_some() => {
+            return fail_code(
+                SessionErrorCode::IdentityCandidateMismatch,
+                "legacy identity candidate does not match",
+            )
+        }
+        None if existing && locator.is_none() => {
+            return fail_code(
+                SessionErrorCode::IdentityMigrationRequired,
+                "legacy identity migration required",
+            )
+        }
+        None if locator.is_some() => {
+            return fail("secure storage identity absent for existing reference")
+        }
+        None => {
             let identity = Identity::new(
                 format!("device-{}", random_id()),
                 &config.metadata.manifest.app_id,
@@ -51,18 +209,45 @@ pub(super) fn identity(
             bundle
         }
     };
-    if bundle.certificate.is_empty()
-        || bundle.private_key.is_empty()
-        || bundle.identity.app_id != config.metadata.manifest.app_id
-    {
-        return fail("incomplete secure storage identity");
+    let validate = || -> Result<(Identity, DeviceKeys, AppKey)> {
+        if bundle.certificate.is_empty()
+            || bundle.private_key.is_empty()
+            || bundle.identity.app_id != config.metadata.manifest.app_id
+        {
+            return fail("incomplete secure storage identity");
+        }
+        let keys = DeviceKeys::from_der(bundle.certificate, bundle.private_key)?;
+        crate::sync::validate_device_keys(&keys)?;
+        let key = AppKey::from_slice(&bundle.storage_key)?;
+        if existing {
+            let envelope = load(config, &key)?
+                .ok_or_else(|| crate::Error::Protocol("existing journal disappeared".into()))?;
+            validate_envelope(&envelope, &bundle.identity, &config.metadata.manifest)?;
+        }
+        Ok((bundle.identity, keys, key))
+    };
+    let (identity, keys, key) = match validate() {
+        Err(crate::Error::Io(e)) => return Err(e.into()),
+        Err(_) if candidate.is_some() => {
+            return fail_code(
+                SessionErrorCode::IdentityCandidateMismatch,
+                "legacy identity candidate does not match",
+            )
+        }
+        result => result?,
+    };
+    if locator.is_none() && !existing {
+        save_reference(config, &name)?;
     }
-    let keys = DeviceKeys::from_der(bundle.certificate, bundle.private_key)?;
-    crate::sync::validate_device_keys(&keys)?;
     Ok((
-        bundle.identity,
+        identity,
         keys,
-        AppKey::from_slice(&bundle.storage_key)?,
+        key,
+        if locator.is_none() && existing {
+            Some(name)
+        } else {
+            None
+        },
     ))
 }
 pub(super) fn load(config: &SessionConfig, key: &AppKey) -> Result<Option<Envelope>> {
@@ -186,6 +371,273 @@ mod tests {
             },
         )
     }
+    #[derive(Default)]
+    struct ObservedKeyStore {
+        values: std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>,
+        gets: std::sync::atomic::AtomicUsize,
+        writes: std::sync::atomic::AtomicUsize,
+    }
+    impl ObservedKeyStore {
+        fn reset_counts(&self) {
+            self.gets.store(0, std::sync::atomic::Ordering::SeqCst);
+            self.writes.store(0, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    impl KeyStore for ObservedKeyStore {
+        fn get(&self, name: &str) -> Result<Option<Vec<u8>>> {
+            self.gets.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(self.values.lock().unwrap().get(name).cloned())
+        }
+        fn set(&self, name: &str, value: &[u8]) -> Result<()> {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.values
+                .lock()
+                .unwrap()
+                .insert(name.into(), value.into());
+            Ok(())
+        }
+        fn delete(&self, name: &str) -> Result<()> {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.values.lock().unwrap().remove(name);
+            Ok(())
+        }
+    }
+    fn state_entries(path: &std::path::Path) -> std::collections::BTreeSet<std::ffi::OsString> {
+        fs::read_dir(path)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect()
+    }
+    #[test]
+    fn unsafe_identity_references_fail_before_secure_store_access_or_writes() {
+        let mut cases = vec!["unsupported_version", "oversized"];
+        #[cfg(unix)]
+        cases.extend(["permissions", "symlink"]);
+        for case in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let keys = Arc::new(ObservedKeyStore::default());
+            let c = config(dir.path());
+            drop(Session::open(c.clone(), keys.clone()).unwrap());
+            let path = dir.path().join(REFERENCE);
+            let valid = fs::read(&path).unwrap();
+            match case {
+                "unsupported_version" => {
+                    let mut value: serde_json::Value = serde_json::from_slice(&valid).unwrap();
+                    value["version"] = serde_json::json!(2);
+                    fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+                }
+                "oversized" => fs::write(&path, vec![b' '; 257]).unwrap(),
+                #[cfg(unix)]
+                "permissions" => {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+                }
+                #[cfg(unix)]
+                "symlink" => {
+                    fs::rename(&path, dir.path().join("original-reference")).unwrap();
+                    std::os::unix::fs::symlink("original-reference", &path).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let journal = fs::read(dir.path().join("session.enc")).unwrap();
+            let reference_bytes = fs::read(&path).unwrap();
+            let entries = state_entries(dir.path());
+            let values = keys.values.lock().unwrap().clone();
+            keys.reset_counts();
+            assert!(Session::open(c, keys.clone()).is_err(), "{case}");
+            assert_eq!(
+                keys.gets.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "{case}"
+            );
+            assert_eq!(
+                keys.writes.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "{case}"
+            );
+            assert_eq!(*keys.values.lock().unwrap(), values, "{case}");
+            assert_eq!(
+                fs::read(dir.path().join("session.enc")).unwrap(),
+                journal,
+                "{case}"
+            );
+            assert_eq!(fs::read(&path).unwrap(), reference_bytes, "{case}");
+            assert_eq!(state_entries(dir.path()), entries, "{case}");
+            #[cfg(unix)]
+            if case == "symlink" {
+                assert!(fs::symlink_metadata(path).unwrap().file_type().is_symlink());
+            }
+        }
+    }
+    #[test]
+    fn authenticated_malformed_legacy_candidates_never_write_state_or_keys() {
+        for case in [
+            "envelope_json",
+            "envelope_version",
+            "certificate_key_mismatch",
+            "identity",
+            "manifest",
+            "metadata",
+            "limits",
+            "prepared_target",
+            "prepared_target_version",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let keys = Arc::new(ObservedKeyStore::default());
+            let mut c = config(dir.path());
+            let session = Session::open(c.clone(), keys.clone()).unwrap();
+            let storage_key = session.inner.storage_key.clone();
+            let mut envelope = session.inner.envelope.lock().unwrap().clone();
+            drop(session);
+            let account = reference(&c).unwrap().unwrap();
+            fs::remove_file(dir.path().join(REFERENCE)).unwrap();
+            c.legacy_identity_key = Some(account.clone());
+            match case {
+                "envelope_json" => {
+                    fs::write(
+                        dir.path().join("session.enc"),
+                        encrypt_blob(&storage_key, b"authenticated invalid json", &aad(&c))
+                            .unwrap(),
+                    )
+                    .unwrap();
+                }
+                "certificate_key_mismatch" => {
+                    let mut bundle: IdentityBundle =
+                        serde_json::from_slice(&keys.get(&account).unwrap().unwrap()).unwrap();
+                    bundle.private_key = DeviceKeys::generate(&bundle.identity)
+                        .unwrap()
+                        .key_der()
+                        .to_vec();
+                    keys.set(&account, &serde_json::to_vec(&bundle).unwrap())
+                        .unwrap();
+                }
+                _ => {
+                    match case {
+                        "envelope_version" => envelope.version = 2,
+                        "identity" => envelope.identity.device_id = "other-device".into(),
+                        "manifest" => envelope.metadata.manifest.app_id = "other.app".into(),
+                        "metadata" => envelope.metadata.display_name = "invalid\nname".into(),
+                        "limits" => envelope.epoch.clear(),
+                        "prepared_target" | "prepared_target_version" => {
+                            let mut target = envelope.clone();
+                            if case == "prepared_target_version" {
+                                target.version = 2;
+                            } else {
+                                target.metadata.display_name = "invalid\nname".into();
+                            }
+                            envelope.prepared = Some(super::super::PreparedTransaction {
+                                id: "invalid-target".into(),
+                                changes: vec![],
+                                target: Box::new(target),
+                            });
+                        }
+                        _ => unreachable!(),
+                    }
+                    save(&c, &storage_key, &envelope).unwrap();
+                }
+            }
+            let journal = fs::read(dir.path().join("session.enc")).unwrap();
+            let entries = state_entries(dir.path());
+            let values = keys.values.lock().unwrap().clone();
+            keys.reset_counts();
+            assert!(
+                matches!(
+                    Session::open(c, keys.clone()),
+                    Err(crate::Error::Managed {
+                        code: super::super::SessionErrorCode::IdentityCandidateMismatch,
+                        ..
+                    })
+                ),
+                "{case}"
+            );
+            assert_eq!(
+                keys.gets.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "{case}"
+            );
+            assert_eq!(
+                keys.writes.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "{case}"
+            );
+            assert_eq!(*keys.values.lock().unwrap(), values, "{case}");
+            assert_eq!(
+                fs::read(dir.path().join("session.enc")).unwrap(),
+                journal,
+                "{case}"
+            );
+            assert!(!dir.path().join(REFERENCE).exists(), "{case}");
+            assert_eq!(state_entries(dir.path()), entries, "{case}");
+        }
+    }
+    #[test]
+    fn locator_commit_failures_never_publish_first_journal_and_retry_safely() {
+        for stage in [
+            "reference_before_write",
+            "reference_before_rename",
+            "reference_after_rename",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let keys = Arc::new(MemoryKeyStore::new());
+            FAILURE.with(|f| *f.borrow_mut() = Some((stage.into(), 0)));
+            assert!(Session::open(config(dir.path()), keys.clone()).is_err());
+            assert!(!dir.path().join("session.enc").exists());
+            let committed_reference = reference(&config(dir.path())).unwrap();
+            let s = Session::open(config(dir.path()), keys.clone()).unwrap();
+            assert!(dir.path().join("session.enc").is_file());
+            if let Some(account) = committed_reference {
+                assert_eq!(reference(&config(dir.path())).unwrap(), Some(account));
+            }
+            let identity = s.snapshot().unwrap().identity;
+            drop(s);
+            assert_eq!(
+                Session::open(config(dir.path()), keys)
+                    .unwrap()
+                    .snapshot()
+                    .unwrap()
+                    .identity,
+                identity
+            );
+        }
+    }
+    #[test]
+    fn legacy_locator_is_persisted_only_after_successful_journal_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = Arc::new(MemoryKeyStore::new());
+        let c = config(dir.path());
+        let s = Session::open(c.clone(), keys.clone()).unwrap();
+        let identity = s.snapshot().unwrap().identity;
+        drop(s);
+        let account = reference(&c).unwrap().unwrap();
+        let canonical = fs::canonicalize(dir.path()).unwrap();
+        let mut canonical_config = config(&canonical);
+        let old = legacy_account(&canonical_config);
+        keys.set(&old, &keys.get(&account).unwrap().unwrap())
+            .unwrap();
+        keys.delete(&account).unwrap();
+        fs::remove_file(dir.path().join(REFERENCE)).unwrap();
+        let before = fs::read(dir.path().join("session.enc")).unwrap();
+        FAILURE.with(|f| *f.borrow_mut() = Some(("before_write".into(), 0)));
+        assert!(Session::open(c.clone(), keys.clone()).is_err());
+        assert!(reference(&c).unwrap().is_none());
+        assert_eq!(fs::read(dir.path().join("session.enc")).unwrap(), before);
+        canonical_config.legacy_identity_key = Some(old.clone());
+        FAILURE.with(|f| *f.borrow_mut() = Some(("reference_before_rename".into(), 0)));
+        assert!(Session::open(canonical_config.clone(), keys.clone()).is_err());
+        assert!(reference(&c).unwrap().is_none());
+        assert_eq!(
+            Session::open(canonical_config, keys)
+                .unwrap()
+                .snapshot()
+                .unwrap()
+                .identity,
+            identity
+        );
+        assert_eq!(reference(&c).unwrap(), Some(old));
+    }
+
     #[test]
     fn empty_name_is_generated_once_and_survives_restart() {
         let dir = tempfile::tempdir().unwrap();
@@ -460,16 +912,10 @@ mod tests {
         b.set("records", "local", b"preserved".to_vec()).unwrap();
         a.shutdown().unwrap();
         drop(a);
-        let namespace = Sha256::digest(
-            std::fs::canonicalize(ad.path())
-                .unwrap()
-                .to_string_lossy()
-                .as_bytes(),
-        )
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
-        let name = format!("managed-{namespace}-identity-v1");
+        let locator: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(ad.path().join("identity-ref.json")).unwrap())
+                .unwrap();
+        let name = locator["account"].as_str().unwrap().to_owned();
         let mut bundle: IdentityBundle =
             serde_json::from_slice(&ak.get(&name).unwrap().unwrap()).unwrap();
         let keys = DeviceKeys::generate(&bundle.identity).unwrap();

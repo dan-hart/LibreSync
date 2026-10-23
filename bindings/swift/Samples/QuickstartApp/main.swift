@@ -7,7 +7,7 @@ import LibreSync
 struct NotesQuickstart:App {
     @StateObject private var host=NotesHost()
     @Environment(\.scenePhase) private var phase
-    var body:some Scene {WindowGroup {Group {if let model=host.model {TabView{NotesEditor(model:model).tabItem{Text("Notes")};LibreSyncConnectView(model:model).tabItem{Text("Connect")};LibreSyncDevicesView(model:model).tabItem{Text("Devices")};LibreSyncStatusView(model:model).tabItem{Text("Status")}}}else{Text(host.error ?? "Opening secure storage…")}}.task{await host.open()}.onChange(of:phase){value in if value == .active{host.model?.start()}else if value == .background{host.model?.stop()}}}}
+    var body:some Scene {WindowGroup {Group {if let model=host.model {TabView{NotesEditor(model:model).tabItem{Text("Notes")};LibreSyncConnectView(model:model).tabItem{Text("Connect")};ScrollView { LibreSyncDevicesView(model: model).frame(maxWidth: .infinity, alignment: .leading).padding() }.tabItem{Text("Devices")};LibreSyncStatusView(model:model).tabItem{Text("Status")}}}else{Text(host.error ?? "Opening secure storage…")}}.task{await host.open()}.onChange(of:phase){value in if value == .active{host.model?.start()}else if value == .background{host.model?.stop()}}}}
 }
 @MainActor
 private final class NotesHost:ObservableObject {

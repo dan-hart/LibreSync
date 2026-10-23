@@ -19,6 +19,8 @@ use std::{
 #[derive(Clone)]
 pub struct SessionConfig {
     pub state_dir: PathBuf,
+    /// Exact legacy secure-store account used only to migrate a relocated journal.
+    pub legacy_identity_key: Option<String>,
     /// An empty display name selects a generated name, persisted with the installation.
     pub metadata: DeviceMetadata,
     pub listen: std::net::SocketAddr,
@@ -46,6 +48,7 @@ impl SessionConfig {
             .collect();
         Self {
             state_dir: path.into(),
+            legacy_identity_key: None,
             metadata,
             listen: "0.0.0.0:0"
                 .parse()
@@ -197,7 +200,8 @@ impl Session {
         {
             return fail("managed adapter must support transactions");
         }
-        let (identity, keys, storage_key) = store::identity(&config, keystore.as_ref())?;
+        let (identity, keys, storage_key, pending_reference) =
+            store::identity(&config, keystore.as_ref())?;
         let mut envelope = match store::load(&config, &storage_key)? {
             Some(e) => {
                 if e.identity != identity
@@ -254,6 +258,9 @@ impl Session {
             .checked_add(1)
             .ok_or_else(|| Error::Protocol("generation exhausted".into()))?;
         store::save(&config, &storage_key, &envelope)?;
+        if let Some(account) = pending_reference {
+            store::save_reference(&config, &account)?;
+        }
         Ok(Self {
             inner: Arc::new(Inner {
                 storage_uncertain: std::sync::atomic::AtomicBool::new(false),
@@ -717,7 +724,9 @@ impl Inner {
                 ),
                 Error::Managed { code, .. } => {
                     let action = match code {
-                        SessionErrorCode::StorageUnavailable => {
+                        SessionErrorCode::StorageUnavailable
+                        | SessionErrorCode::IdentityMigrationRequired
+                        | SessionErrorCode::IdentityCandidateMismatch => {
                             DiagnosticAction::CheckSecureStorage
                         }
                         SessionErrorCode::IncompatibleSchema => {
@@ -987,6 +996,8 @@ pub enum SessionErrorCode {
     StorageUnavailable,
     StorageCommitUncertain,
     Busy,
+    IdentityMigrationRequired,
+    IdentityCandidateMismatch,
 }
 fn fail_code<T>(code: SessionErrorCode, message: &str) -> Result<T> {
     Err(Error::Managed {

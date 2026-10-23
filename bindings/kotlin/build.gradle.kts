@@ -1,6 +1,6 @@
 plugins { id("com.android.library") version "9.1.1"; id("com.android.application") version "9.1.1" apply false; id("org.jetbrains.kotlin.plugin.compose") version "2.2.10" apply false; id("org.jetbrains.kotlin.plugin.serialization") version "2.2.10"; id("maven-publish") }
 group="io.libresync"
-version="0.8.0"
+version="0.8.1"
 android {
  namespace="io.libresync.sdk"
  compileSdk { version=release(37) { minorApiLevel=0 } }

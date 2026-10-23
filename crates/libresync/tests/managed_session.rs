@@ -506,21 +506,14 @@ fn populated_merge_retains_encrypted_premerge_recovery_snapshot() {
 #[test]
 fn partial_identity_bundle_and_unavailable_secure_storage_never_regenerate_identity() {
     use libresync::KeyStore;
-    use sha2::{Digest, Sha256};
     let dir = tempfile::tempdir().unwrap();
     let keys = Arc::new(MemoryKeyStore::new());
     let session = Session::open(config(dir.path()), keys.clone()).unwrap();
     drop(session);
-    let namespace = Sha256::digest(
-        std::fs::canonicalize(dir.path())
-            .unwrap()
-            .to_string_lossy()
-            .as_bytes(),
-    )
-    .iter()
-    .map(|b| format!("{b:02x}"))
-    .collect::<String>();
-    let name = format!("managed-{namespace}-identity-v1");
+    let locator: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("identity-ref.json")).unwrap())
+            .unwrap();
+    let name = locator["account"].as_str().unwrap().to_owned();
     let mut bundle: serde_json::Value =
         serde_json::from_slice(&keys.get(&name).unwrap().unwrap()).unwrap();
     bundle["private_key"] = serde_json::json!([]);
@@ -787,4 +780,168 @@ fn stopping_one_discovery_runtime_preserves_other_app_registrations() {
     b.set("records", "after-stop", b"still-running".to_vec())
         .unwrap();
     wait_for(|| c.get("records", "after-stop").unwrap() == Some(b"still-running".to_vec()));
+}
+
+#[test]
+fn relocated_state_preserves_identity_and_records() {
+    let root = tempfile::tempdir().unwrap();
+    let original = root.path().join("original");
+    let moved = root.path().join("moved");
+    let keys = Arc::new(MemoryKeyStore::new());
+    let session = Session::open(config(&original), keys.clone()).unwrap();
+    session
+        .set("records", "note", b"preserved".to_vec())
+        .unwrap();
+    let peer_dir = root.path().join("peer");
+    let peer = Session::open(config(&peer_dir), keys.clone()).unwrap();
+    session.start().unwrap();
+    peer.start().unwrap();
+    peer.connect(
+        &session
+            .create_invitation(std::time::Duration::from_secs(30))
+            .unwrap(),
+    )
+    .unwrap();
+    let before = session.snapshot().unwrap();
+    let identity = before.identity;
+    let fingerprints = before
+        .peers
+        .iter()
+        .map(|p| (&p.identity, &p.fingerprint))
+        .collect::<Vec<_>>();
+    assert_eq!(fingerprints.len(), 1);
+    session.shutdown().unwrap();
+    peer.shutdown().unwrap();
+    drop(peer);
+    drop(session);
+    std::fs::rename(original, &moved).unwrap();
+    let reopened = Session::open(config(&moved), keys).unwrap();
+    let after = reopened.snapshot().unwrap();
+    assert_eq!(after.identity, identity);
+    assert_eq!(
+        after
+            .peers
+            .iter()
+            .map(|p| (&p.identity, &p.fingerprint))
+            .collect::<Vec<_>>(),
+        fingerprints
+    );
+    assert_eq!(
+        reopened.get("records", "note").unwrap(),
+        Some(b"preserved".to_vec())
+    );
+}
+
+fn make_legacy(path: &std::path::Path, keys: &MemoryKeyStore) -> String {
+    use libresync::KeyStore;
+    use sha2::{Digest, Sha256};
+    let locator: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path.join("identity-ref.json")).unwrap()).unwrap();
+    let random_account = locator["account"].as_str().unwrap();
+    let namespace = Sha256::digest(
+        std::fs::canonicalize(path)
+            .unwrap()
+            .to_string_lossy()
+            .as_bytes(),
+    )
+    .iter()
+    .map(|b| format!("{b:02x}"))
+    .collect::<String>();
+    let legacy = format!("managed-{namespace}-identity-v1");
+    keys.set(&legacy, &keys.get(random_account).unwrap().unwrap())
+        .unwrap();
+    keys.delete(random_account).unwrap();
+    std::fs::remove_file(path.join("identity-ref.json")).unwrap();
+    legacy
+}
+#[test]
+fn legacy_migration_and_wrong_candidates_preserve_state() {
+    let root = tempfile::tempdir().unwrap();
+    let old = root.path().join("old");
+    let moved = root.path().join("moved");
+    let keys = Arc::new(MemoryKeyStore::new());
+    let s = Session::open(config(&old), keys.clone()).unwrap();
+    s.set("records", "note", b"legacy".to_vec()).unwrap();
+    let identity = s.snapshot().unwrap().identity;
+    drop(s);
+    let legacy = make_legacy(&old, &keys);
+    std::fs::rename(old, &moved).unwrap();
+    let before = std::fs::read(moved.join("session.enc")).unwrap();
+    assert!(matches!(
+        Session::open(config(&moved), keys.clone()),
+        Err(libresync::Error::Managed {
+            code: libresync::SessionErrorCode::IdentityMigrationRequired,
+            ..
+        })
+    ));
+    let mut c = config(&moved);
+    c.legacy_identity_key = Some(format!("managed-{}-identity-v1", "0".repeat(64)));
+    assert!(matches!(
+        Session::open(c.clone(), keys.clone()),
+        Err(libresync::Error::Managed {
+            code: libresync::SessionErrorCode::IdentityCandidateMismatch,
+            ..
+        })
+    ));
+    assert_eq!(std::fs::read(moved.join("session.enc")).unwrap(), before);
+    assert!(!moved.join("identity-ref.json").exists());
+    let unrelated_dir = root.path().join("unrelated");
+    drop(Session::open(config(&unrelated_dir), keys.clone()).unwrap());
+    let unrelated: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(unrelated_dir.join("identity-ref.json")).unwrap())
+            .unwrap();
+    c.legacy_identity_key = Some(unrelated["account"].as_str().unwrap().to_owned());
+    assert!(matches!(
+        Session::open(c.clone(), keys.clone()),
+        Err(libresync::Error::Managed {
+            code: libresync::SessionErrorCode::IdentityCandidateMismatch,
+            ..
+        })
+    ));
+    assert_eq!(std::fs::read(moved.join("session.enc")).unwrap(), before);
+    assert!(!moved.join("identity-ref.json").exists());
+    c.legacy_identity_key = Some(legacy.clone());
+    let s = Session::open(c, keys.clone()).unwrap();
+    assert_eq!(s.snapshot().unwrap().identity, identity);
+    assert_eq!(s.get("records", "note").unwrap(), Some(b"legacy".to_vec()));
+    drop(s);
+    let reference: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(moved.join("identity-ref.json")).unwrap()).unwrap();
+    assert_eq!(reference["account"], legacy);
+    assert!(Session::open(config(&moved), keys).is_ok());
+}
+#[test]
+fn same_path_legacy_migration_retains_original_account() {
+    let dir = tempfile::tempdir().unwrap();
+    let keys = Arc::new(MemoryKeyStore::new());
+    drop(Session::open(config(dir.path()), keys.clone()).unwrap());
+    let legacy = make_legacy(dir.path(), &keys);
+    drop(Session::open(config(dir.path()), keys).unwrap());
+    let reference: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("identity-ref.json")).unwrap())
+            .unwrap();
+    assert_eq!(reference["account"], legacy);
+}
+#[test]
+fn authoritative_reference_does_not_fallback_to_candidate_or_regenerate() {
+    use libresync::KeyStore;
+    let dir = tempfile::tempdir().unwrap();
+    let keys = Arc::new(MemoryKeyStore::new());
+    drop(Session::open(config(dir.path()), keys.clone()).unwrap());
+    let reference: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("identity-ref.json")).unwrap())
+            .unwrap();
+    keys.delete(reference["account"].as_str().unwrap()).unwrap();
+    let before = std::fs::read(dir.path().join("session.enc")).unwrap();
+    assert!(Session::open(config(dir.path()), keys.clone()).is_err());
+    assert!(keys
+        .get(reference["account"].as_str().unwrap())
+        .unwrap()
+        .is_none());
+    std::fs::write(dir.path().join("identity-ref.json"), b"{broken").unwrap();
+    assert!(Session::open(config(dir.path()), keys).is_err());
+    assert_eq!(
+        std::fs::read(dir.path().join("session.enc")).unwrap(),
+        before
+    );
 }

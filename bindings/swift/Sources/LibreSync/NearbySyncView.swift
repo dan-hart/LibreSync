@@ -12,71 +12,153 @@ public struct LibreSyncNearbySyncView: View {
   }
 
   public var body: some View {
-    VStack(alignment: .leading, spacing: 20) {
-      HStack(alignment: .top) {
-        Image(systemName: "personalhotspot").font(.largeTitle).accessibilityHidden(true)
-        VStack(alignment: .leading, spacing: 5) {
-          Text("Nearby Sync").font(.title2.bold())
-          Text("Keep this app’s data together across your devices.").foregroundColor(.secondary)
-        }
-        Spacer()
+    platformForm
+      .sheet(isPresented: $addingDevice, onDismiss: { model.endPairing() }) {
+        NearbySyncAddDeviceView(model: model) { addingDevice = false }
       }
-      GroupBox {
-        HStack {
-          VStack(alignment: .leading, spacing: 4) {
-            Text(model.localDisplayName).font(.headline)
-            Text(model.phaseDescription).font(.subheadline).foregroundColor(.secondary)
+  }
+
+  @ViewBuilder private var platformForm: some View {
+    #if os(iOS)
+      settingsForm
+    #else
+      ScrollView {
+        VStack(alignment: .leading, spacing: 24) {
+          VStack(alignment: .leading, spacing: 8) {
+            macSectionLabel("This device")
+            GroupBox {
+              deviceIdentity.padding(8).frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Text("Sync directly between your devices on the same local network.")
+              .font(.caption).foregroundColor(.secondary)
           }
-          Spacer()
-          if let onRename { Button("Rename", action: onRename).disabled(model.isBusy) }
-        }.padding(6)
-      }
-      HStack {
-        Text("Your devices").font(.headline)
-        Spacer()
-        Button {
-          model.beginPairing()
-          addingDevice = model.isPairing
-        } label: {
-          Label("Add Device", systemImage: "plus")
-        }.disabled(model.isBusy)
-      }
-      if model.snapshot?.peers.isEmpty ?? true {
-        Text("Add your first device to sync directly over your local network.")
-          .foregroundColor(.secondary)
-      } else {
-        LibreSyncDevicesView(model: model).frame(minHeight: 140)
-      }
-      if let error = model.errorMessage {
-        VStack(alignment: .leading, spacing: 6) {
-          Label("Sync needs attention", systemImage: "exclamationmark.triangle").font(.headline)
-          Text(error).textSelection(.enabled)
-          Button("Retry Nearby Sync") { model.wake() }.disabled(model.isBusy)
-        }.accessibilityElement(children: .combine)
-      }
-      DisclosureGroup("Connection help and details") {
-        VStack(alignment: .leading, spacing: 10) {
-          Text(
-            "Keep both devices on the same local network and open this app on each device. Device names help you choose; the private code or invitation authenticates the connection."
-          )
-          Text(permissionHelp)
-          if let technicalError = model.error {
-            Text(technicalError).font(.caption).textSelection(.enabled)
-          }
-          Button("Check Local Network access") { model.requestPermission() }
-          ForEach(Array((model.snapshot?.diagnostics ?? []).enumerated()), id: \.offset) {
-            _, event in
-            if case .diagnostic(let diagnostic) = event {
-              Text(diagnostic.message).font(.caption).textSelection(.enabled)
+          VStack(alignment: .leading, spacing: 8) {
+            macSectionLabel("Your devices")
+            GroupBox {
+              VStack(alignment: .leading, spacing: 16) {
+                deviceContents
+                Button(action: addDevice) {
+                  Label("Add Device", systemImage: "plus")
+                }.buttonStyle(.borderedProminent).disabled(model.isBusy)
+              }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
             }
           }
-        }.padding(.top, 8)
+          if let error = model.errorMessage {
+            GroupBox {
+              VStack(alignment: .leading, spacing: 10) {
+                attentionContents(error)
+              }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
+            }
+          }
+          GroupBox {
+            connectionHelp.padding(8).frame(maxWidth: .infinity, alignment: .leading)
+          }
+        }
+        .frame(maxWidth: 620, alignment: .leading)
+        .padding(24)
+        .frame(maxWidth: .infinity, alignment: .top)
+      }
+    #endif
+  }
+
+  private func macSectionLabel(_ title: String) -> some View {
+    Text(title).font(.subheadline.weight(.semibold)).foregroundColor(.secondary)
+  }
+
+  private var settingsForm: some View {
+    Form {
+      Section {
+        deviceIdentity
+      } header: {
+        Text("This device")
+      } footer: {
+        Text("Sync directly between your devices on the same local network.")
+      }
+      Section {
+        deviceContents
+        Button(action: addDevice) {
+          Label("Add Device", systemImage: "plus.circle.fill")
+            .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
+        }.disabled(model.isBusy)
+      } header: {
+        Text("Your devices")
+      }
+      if let error = model.errorMessage {
+        Section {
+          attentionContents(error)
+        }
+      }
+      Section {
+        connectionHelp
       }
     }
-    .padding(20)
-    .sheet(isPresented: $addingDevice, onDismiss: { model.endPairing() }) {
-      NearbySyncAddDeviceView(model: model) { addingDevice = false }
+  }
+
+  private var deviceIdentity: some View {
+    HStack(alignment: .top, spacing: 12) {
+      Image(systemName: localDeviceIcon)
+        .font(.title2).foregroundStyle(.tint).frame(width: 32)
+        .accessibilityHidden(true)
+      VStack(alignment: .leading, spacing: 5) {
+        Text(model.localDisplayName).font(.headline).fixedSize(horizontal: false, vertical: true)
+        Text(model.phaseDescription).font(.subheadline).foregroundColor(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      Spacer(minLength: 8)
+      if let onRename {
+        Button("Rename", action: onRename).disabled(model.isBusy)
+      }
+    }.padding(.vertical, 6)
+  }
+
+  @ViewBuilder private var deviceContents: some View {
+    if model.snapshot?.peers.isEmpty ?? true {
+      VStack(alignment: .leading, spacing: 8) {
+        Text("Your devices belong together").font(.headline)
+        Text("Add another device to keep this app’s data in sync. Open Nearby Sync on both devices to get started.")
+          .foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+      }.padding(.vertical, 8)
+    } else {
+      LibreSyncDevicesView(model: model)
     }
+  }
+
+  @ViewBuilder private func attentionContents(_ error: String) -> some View {
+    Label("Sync needs attention", systemImage: "exclamationmark.triangle").font(.headline)
+    Text(error).textSelection(.enabled)
+    Button("Retry Nearby Sync") { model.wake() }.disabled(model.isBusy)
+  }
+
+  private var connectionHelp: some View {
+    DisclosureGroup("Connection help and details") {
+      VStack(alignment: .leading, spacing: 12) {
+        Text("Keep both devices on the same local network and open this app on each device. Device names help you choose; the private code or invitation authenticates the connection.")
+        Text(permissionHelp)
+        Button("Check Local Network access") { model.requestPermission() }
+        if let technicalError = model.error {
+          Text(technicalError).font(.caption).textSelection(.enabled)
+        }
+        ForEach(Array((model.snapshot?.diagnostics ?? []).enumerated()), id: \.offset) {
+          _, event in
+          if case .diagnostic(let diagnostic) = event {
+            Text(diagnostic.message).font(.caption).textSelection(.enabled)
+          }
+        }
+      }.foregroundColor(.secondary).padding(.vertical, 8)
+    }
+  }
+
+  private var localDeviceIcon: String {
+    #if os(iOS)
+      return "iphone"
+    #else
+      return "desktopcomputer"
+    #endif
+  }
+
+  private func addDevice() {
+    model.beginPairing()
+    addingDevice = model.isPairing
   }
 
   private var permissionHelp: String {
@@ -102,17 +184,37 @@ private struct NearbySyncAddDeviceView: View {
   #endif
 
   var body: some View {
-    ScrollView {
-      VStack(alignment: .leading, spacing: 18) {
+    #if os(iOS)
+      NavigationView {
+        pairingContent
+          .navigationTitle("Add Device")
+          .navigationBarTitleDisplayMode(.inline)
+          .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+              Button("Done", action: dismiss)
+            }
+          }
+      }.navigationViewStyle(.stack)
+    #else
+      VStack(spacing: 0) {
         HStack {
-          Text("Add a device").font(.title2.bold())
+          Text("Add Device").font(.title2.bold())
           Spacer()
           Button("Done", action: dismiss).keyboardShortcut(.cancelAction)
-        }
+        }.padding(24)
+        Divider()
+        pairingContent
+      }.frame(idealWidth: 520, idealHeight: 640)
+    #endif
+  }
+
+  private var pairingContent: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 20) {
         Text(
           "Open Nearby Sync on both devices. Only connect devices you trust with this app’s data.")
         if model.pairingSucceeded {
-          Label("Device added", systemImage: "checkmark.circle.fill").font(.headline)
+          Label("Device added", systemImage: "checkmark.circle.fill").font(.title2.bold()).foregroundColor(.green)
           Text("Review shared data in Your devices if asked before syncing existing records.")
         } else {
           GroupBox("Show on this device") {
@@ -120,8 +222,9 @@ private struct NearbySyncAddDeviceView: View {
               Text(
                 "On your other device, choose \(model.localDisplayName) and enter the code shown here."
               )
-              HStack {
+              VStack(alignment: .leading, spacing: 10) {
                 Button("Show six-digit code") { model.offerCode() }
+                  .buttonStyle(.borderedProminent)
                 Button("Show QR instead") { model.offerQR() }
               }.disabled(model.isBusy)
               if let invitation = model.invitation { invitationView(invitation) }
@@ -136,9 +239,9 @@ private struct NearbySyncAddDeviceView: View {
                     .foregroundColor(.secondary)
                 }
                 ForEach(availableDevices, id: \.identity.device_id) { peer in
-                  HStack {
+                  HStack(alignment: .top, spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
-                      Text(peer.advertisement?.display_name ?? "Nearby device").font(.headline)
+                      Text(peer.advertisement?.display_name ?? "Nearby device").font(.headline).fixedSize(horizontal: false, vertical: true)
                       Text(availability(peer, at: tick.date)).font(.caption).foregroundColor(
                         .secondary)
                     }
@@ -155,9 +258,11 @@ private struct NearbySyncAddDeviceView: View {
                     text: $code
                   )
                   .textFieldStyle(.roundedBorder)
+                  .accessibilityLabel("Six-digit pairing code")
                   .onSubmit { connectSelected() }
                   .disabled(model.isBusy)
                   Button("Connect") { connectSelected() }
+                    .buttonStyle(.borderedProminent)
                     .disabled(
                       !LibreSyncSessionModel.validCode(code)
                         || !model.canPair(selected, at: tick.date) || model.isBusy)
@@ -198,7 +303,6 @@ private struct NearbySyncAddDeviceView: View {
         }
       }.padding(24)
     }
-    .frame(idealWidth: 520, idealHeight: 610)
     .alert("Connect this device?", isPresented: $confirmInvitation) {
       Button("Cancel", role: .cancel) {}
       Button("Connect") { model.connect(encoded) }
@@ -244,7 +348,7 @@ private struct NearbySyncAddDeviceView: View {
         VStack(alignment: .leading, spacing: 8) {
           if invitation.invitation.secret.count == 6 {
             Text(invitation.invitation.secret).font(
-              .system(size: 34, weight: .semibold, design: .monospaced)
+              .system(.largeTitle, design: .monospaced).weight(.semibold)
             )
             .textSelection(.enabled).accessibilityLabel(
               "Pairing code \(invitation.invitation.secret.map(String.init).joined(separator: " "))"
@@ -256,7 +360,9 @@ private struct NearbySyncAddDeviceView: View {
           } else {
             Text("QR unavailable. Show a six-digit code instead.")
           }
-          Text("Expires in \(Int(remaining)) seconds. Keep this invitation private.").font(.caption)
+          Label("Expires in \(Int(remaining)) seconds", systemImage: "clock")
+            .font(.subheadline.monospacedDigit()).foregroundColor(.secondary)
+          Text("Keep this invitation private.").font(.caption).foregroundColor(.secondary)
         }
       }
     }
