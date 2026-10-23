@@ -2,7 +2,7 @@
 
 ## v0.8.0 (2026-10-23)
 
-Native Apple apps can embed the guided Nearby Sync screen through `LibreSyncSessionModel` and `LibreSyncNearbySyncView`. The Swift SDK includes explicit code/QR pairing, readable device status, invitation cleanup and persistent generated friendly names. The same Rust naming behavior is available to managed Android and Linux integrations; the new guided screen is Apple-specific.
+Native Apple apps can embed the guided Nearby Sync screen through `LibreSyncSessionModel` and `LibreSyncNearbySyncView`. The Swift SDK includes explicit code/QR pairing, readable device status, invitation cleanup and persistent generated friendly names. The same Rust naming behavior is available to managed Android and Linux integrations; the new guided screen is Apple-specific. Native Apple discovery refreshes endpoints and retries transient resolution failures so peers recover when listener ports change after pause/resume.
 
 Nearby Notes demos for macOS and iOS share a note contract and a host that durably saves coherent inbox records and exact receipt proofs before Applied acknowledgement. This release also refreshes untouched Mac note editors after remote changes, warns before overwriting a newer received note, preserves Xcode 15 project compatibility and updates rustls/rustls-webpki for security advisories.
 
