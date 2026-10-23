@@ -1,8 +1,8 @@
-# Install v0.7.0 native SDKs
+# Install v0.8.0 native SDKs
 
-Swift Git consumers select `https://github.com/dan-hart/LibreSync.git` at exact tag `v0.7.0`; the root manifest downloads the immutable release XCFramework ZIP with its exact checksum. Alternatively extract `LibreSyncSwift-0.7.0.zip` and use its local package. Source builds and CI explicitly set `LIBRESYNC_USE_LOCAL_XCFRAMEWORK=1` after `scripts/build-apple-sdk.sh`.
+Swift Git consumers select `https://github.com/dan-hart/LibreSync.git` at exact tag `v0.8.0`; the root manifest downloads the immutable release XCFramework ZIP with its exact checksum. Alternatively extract `LibreSyncSwift-0.8.0.zip` and use its local package. Source builds and CI explicitly set `LIBRESYNC_USE_LOCAL_XCFRAMEWORK=1` after `scripts/build-apple-sdk.sh`.
 
-Android consumers extract `LibreSyncAndroid-0.7.0-maven.zip`, add that directory as a Maven repository, and depend on `io.libresync:libresync:0.7.0` plus optional `io.libresync:libresync-compose:0.7.0`. Both AARs include the license; public AndroidX/Kotlin dependencies require network or a populated cache. See [Android setup](../bindings/kotlin/README.md) and [Swift setup](../bindings/swift/README.md).
+Android consumers extract `LibreSyncAndroid-0.8.0-maven.zip`, add that directory as a Maven repository, and depend on `io.libresync:libresync:0.8.0` plus optional `io.libresync:libresync-compose:0.8.0`. Both AARs include the license; public AndroidX/Kotlin dependencies require network or a populated cache. See [Android setup](../bindings/kotlin/README.md) and [Swift setup](../bindings/swift/README.md).
 
 Use managed ABI v1, Swift async and Kotlin suspend/Flow Session APIs. Legacy C/Swift Engine APIs remain. Historical Kotlin raw Engine/backup APIs had no JNI implementation and now explicitly refuse; migrate to Session. Native custom policies are limited to the reviewed notes/Momentum and transactional `logical-records-v1` contracts. Commit coherent inbox records and exact receipts durably before acknowledging; Stored is not app Applied. Events are bounded notifications, not a durable transaction log.
 
@@ -39,10 +39,10 @@ Historical Kotlin raw Engine/backup declarations never had JNI implementations. 
 
 ## Build and distribute
 
-`scripts/package-native-sdk.sh 0.7.0` builds five Apple slices and both Android ABIs, then emits complete Swift/XCFramework ZIPs, core/Compose AARs, a Maven repository ZIP, C header/schema and SHA256SUMS. Every public archive/AAR includes AGPL licensing. Native source/compiler provenance and fresh extracted consumer checks belong in release evidence. Follow [the release checklist](RELEASING.md); root Git-SPM remote resolution is verified after exact release assets are published.
+`scripts/package-native-sdk.sh 0.8.0` builds five Apple slices and both Android ABIs, then emits complete Swift/XCFramework ZIPs, core/Compose AARs, a Maven repository ZIP, C header/schema and SHA256SUMS. Every public archive/AAR includes AGPL licensing. Native source/compiler provenance and fresh extracted consumer checks belong in release evidence. Follow [the release checklist](RELEASING.md); root Git-SPM remote resolution is verified after exact release assets are published.
 
-## Native Nearby Sync source integration
+## Native Nearby Sync integration
 
-The source SDK provides `LibreSyncNearbySyncView` for guided native Apple pairing and device management. Use `LibreSyncSessionModel.startAndWait()` and await `stopAndWait()` before closing the session. An omitted/empty Swift `displayName` opts into a generated name persisted by Rust in the encrypted installation journal. This source feature is not part of the immutable v0.7.0 release assets described above.
+The v0.8.0 Swift SDK provides `LibreSyncNearbySyncView` for guided native Apple pairing and device management. Use `LibreSyncSessionModel.startAndWait()` and await `stopAndWait()` before closing the session. An omitted/empty Swift `displayName` opts into a generated name persisted by Rust in the encrypted installation journal. The guided screen is included in the v0.8.0 Swift release package. Follow the [Swift app integration guide](../bindings/swift/README.md#integrate-nearby-sync-in-an-app).
 
-The [macOS demo](../demos/NearbySyncMac/README.md) builds the current local Rust library and Swift components into a signed `.app`; `scripts/run-nearby-sync-demo.sh --two` launches separate profiles for local testing. No Momentum or As Needed integration is changed by running it. The application still owns coherent inbox persistence before acknowledging Applied. Android and Linux may use the shared Rust friendly-name behavior; this first UI slice adds Apple components and the macOS demo.
+The [macOS demo](../demos/NearbySyncMac/README.md) builds the current local Rust library and Swift components into a signed `.app`; `scripts/run-nearby-sync-demo.sh --two` launches separate profiles for local testing. No Momentum or As Needed integration is changed by running it. The application still owns coherent inbox persistence before acknowledging Applied. Android and Linux may use the shared Rust friendly-name behavior; the guided UI is Apple-specific, with macOS and iOS demos.

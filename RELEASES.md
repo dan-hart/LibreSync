@@ -1,5 +1,15 @@
 # Releases
 
+## v0.8.0 (2026-10-23)
+
+Native Apple apps can embed the guided Nearby Sync screen through `LibreSyncSessionModel` and `LibreSyncNearbySyncView`. The Swift SDK includes explicit code/QR pairing, readable device status, invitation cleanup and persistent generated friendly names. The same Rust naming behavior is available to managed Android and Linux integrations; the new guided screen is Apple-specific.
+
+Nearby Notes demos for macOS and iOS share a note contract and a host that durably saves coherent inbox records and exact receipt proofs before Applied acknowledgement. This release also refreshes untouched Mac note editors after remote changes, warns before overwriting a newer received note, preserves Xcode 15 project compatibility and updates rustls/rustls-webpki for security advisories.
+
+Install the exact v0.8.0 [native SDKs](docs/SDK.md) and follow the [Swift integration guide](bindings/swift/README.md#integrate-nearby-sync-in-an-app). Apps such as As Needed and Momentum must integrate their own model, lifecycle and durable-save boundary; this release does not modify or automatically migrate either app. Momentum's opt-in policy patch remains pinned to `766064b`. Unsupported historical Kotlin Engine APIs still refuse migration-free use; arbitrary native policy callbacks remain unsupported.
+
+LAN operation requires no cloud account, service or relay. Mobile background execution remains OS-limited; physical iOS privacy/camera, physical Android hardware, two-minute human usability and Finder/Dock reopen remain separate acceptance limits. No Developer ID signing or notarization is claimed. See [acceptance evidence](docs/ACCEPTANCE.md), [security qualifications](SECURITY.md) and [release verification](docs/RELEASING.md). Release archives retain AGPL licensing and exact SHA256 sums; crates.io publication is outside this release.
+
 ## v0.7.0 (2026-10-01)
 
 Managed sessions now own discovery, authenticated version-2 QR/code pairing, automatic exchange/retry, truthful Pending/Stored/Applied status, bootstrap consent/recovery and device repair. AlwaysOn isolates supported app spaces and stores/forwards data with independent keys and trust. Native Swift and Android SDKs include secure platform storage, optional Connect/Devices/Status UI, complete Apple slices and 16 KiB-compatible JNI/AAR/Maven packages.

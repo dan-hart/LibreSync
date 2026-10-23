@@ -6,6 +6,8 @@ narrative context live in `RELEASES.md`.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-23
+
 ### Added
 
 - Add a native iOS Nearby Notes demo using the Mac demo’s note contract, shared host model, and Nearby Sync components, with secure local storage and foreground/background lifecycle handling.

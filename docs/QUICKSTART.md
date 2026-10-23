@@ -16,7 +16,7 @@ brew install dan-hart/tap/libresync
 ```
 From a release tag:
 ```
-cargo install --git https://github.com/dan-hart/LibreSync --tag v0.7.0 libresync-cli
+cargo install --git https://github.com/dan-hart/LibreSync --tag v0.8.0 libresync-cli
 ```
 Or from a local checkout:
 ```
